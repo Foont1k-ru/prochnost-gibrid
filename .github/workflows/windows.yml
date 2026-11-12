@@ -33,11 +33,21 @@ jobs:
         with:
           python-version: '3.12'
 
-      - uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: x64
+      # Важно: окружение MSVC здесь НЕ поднимаем. Генератору "Visual Studio 17 2022"
+      # оно не нужно, а переменная VSINSTALLDIR от таких действий ломает поиск
+      # установленной VS (проверено: прогон от 12.11.2026 упал именно на этом).
+      - name: Диагностика окружения
+        shell: cmd
+        run: |
+          cmake --version
+          echo --- установленные Visual Studio ---
+          "%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property displayName,installationVersion,installationPath
+          echo --- каталоги ---
+          dir "%ProgramFiles%\Microsoft Visual Studio" 2>nul
 
       - name: Сборка (build.cmd Release)
+        id: buildcmd
+        continue-on-error: true
         shell: cmd
         working-directory: ${{ env.SRC }}
         run: |
@@ -45,6 +55,44 @@ jobs:
           set RC=%ERRORLEVEL%
           type win_stand_log.txt
           exit /b %RC%
+
+      # Запасной путь: если генератор VS почему-то не найдётся — собираем тем же
+      # MSVC, но через Ninja (здесь окружение как раз нужно). Результат подшивается
+      # в тот же журнал отдельным блоком.
+      - name: Окружение MSVC для запасного пути
+        if: steps.buildcmd.outcome == 'failure'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Запасная сборка (Ninja + MSVC)
+        if: steps.buildcmd.outcome == 'failure'
+        shell: cmd
+        working-directory: ${{ env.SRC }}
+        run: |
+          echo. >> win_stand_log.txt
+          echo === ЗАПАСНОЙ ПУТЬ: Ninja + MSVC === >> win_stand_log.txt
+          cmake -S . -B build/ninja -G Ninja -DCMAKE_BUILD_TYPE=Release -DPGIB_BUILD_UI=ON >> win_stand_log.txt 2>&1 || goto bad
+          cmake --build build/ninja >> win_stand_log.txt 2>&1 || goto bad
+          build\ninja\pgib_tests.exe >> win_stand_log.txt 2>&1 || goto bad
+          echo === ЗАПАСНОЙ ПУТЬ ПРОШЁЛ === >> win_stand_log.txt
+          type win_stand_log.txt
+          exit /b 0
+          :bad
+          echo === ЗАПАСНОЙ ПУТЬ ПРОВАЛЕН === >> win_stand_log.txt
+          type win_stand_log.txt
+          exit /b 1
+
+      - name: Итог
+        if: always()
+        shell: bash
+        run: |
+          echo "## Итог" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ steps.buildcmd.outcome }}" = "success" ]; then
+            echo "build.cmd на Windows: **УСПЕХ**" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "build.cmd на Windows: **ПРОВАЛ** (подробности в win_stand_log.txt)" >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Сохранить журнал и результаты
         if: always()
