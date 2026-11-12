@@ -1,0 +1,57 @@
+name: Windows приёмочная сборка
+
+on: [push, workflow_dispatch]
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Разложить исходники (если загружен архив проекта)
+        shell: bash
+        run: |
+          shopt -s nullglob
+          for z in *.zip; do
+            echo "Распаковываю $z"
+            if command -v unzip >/dev/null 2>&1; then
+              unzip -q -o "$z"
+            else
+              powershell -NoProfile -Command "Expand-Archive -Path '$z' -DestinationPath . -Force"
+            fi
+          done
+          B="$(find . -name build.cmd -not -path './.github/*' -print -quit)"
+          if [ -z "$B" ]; then
+            echo "::error::build.cmd не найден — загрузите архив prochnost-gibrid-win.zip в корень репозитория"
+            exit 1
+          fi
+          echo "Найден build.cmd: $B"
+          echo "SRC=$(dirname "$B")" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Сборка (build.cmd Release)
+        shell: cmd
+        working-directory: ${{ env.SRC }}
+        run: |
+          call build.cmd Release > win_stand_log.txt 2>&1
+          set RC=%ERRORLEVEL%
+          type win_stand_log.txt
+          exit /b %RC%
+
+      - name: Сохранить журнал и результаты
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-stand
+          path: |
+            ${{ env.SRC }}/win_stand_log.txt
+            ${{ env.SRC }}/out/**
+          if-no-files-found: warn
