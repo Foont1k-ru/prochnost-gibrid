@@ -1,0 +1,16 @@
+# Основные зависимости (точные версии, требование ТЗ §2).
+PySide6-Essentials==6.12.0
+numpy==2.4.6
+scipy==1.16.3
+pyqtgraph==0.13.7
+ezdxf==1.4.5
+reportlab==5.1.0
+openpyxl==3.1.5
+
+# Тесты и качество кода
+pytest==9.2.0
+pytest-qt==4.5.0
+hypothesis==6.140.3
+ruff==0.14.3
+mypy==1.18.2
+pyinstaller==6.16.0

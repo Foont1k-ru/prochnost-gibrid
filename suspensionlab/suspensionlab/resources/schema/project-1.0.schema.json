@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:suspensionlab:project:1.0",
+  "title": "Проект Подвеска.Про, версия 1.0",
+  "description": "Структурная схема сохранённого проекта. Не удостоверяет инженерную корректность геометрии.",
+  "type": "object",
+  "required": ["schema_version", "meta", "vehicle", "front_axle", "rear_axle", "view", "snapshots", "locks"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "meta": {"type": "object"},
+    "vehicle": {"type": "object"},
+    "front_axle": {"$ref": "#/$defs/axle"},
+    "rear_axle": {"$ref": "#/$defs/axle"},
+    "model_b": {"type": ["object", "null"]},
+    "snapshots": {"type": "array", "items": {"type": "object"}},
+    "view": {"type": "object"},
+    "locks": {"type": "object", "additionalProperties": {"type": "boolean"}}
+  },
+  "$defs": {
+    "point": {
+      "type": "object",
+      "required": ["x", "y", "z"],
+      "properties": {
+        "x": {"type": "number"}, "y": {"type": "number"}, "z": {"type": "number"},
+        "locked": {"type": "boolean"}
+      }
+    },
+    "axle": {
+      "type": "object",
+      "required": ["type", "hardpoints"],
+      "properties": {
+        "type": {"type": "string"},
+        "hardpoints": {"type": "object", "additionalProperties": {"$ref": "#/$defs/point"}},
+        "links": {"type": "object"},
+        "wheel": {"type": "object"}, "spring": {"type": "object"},
+        "damper": {"type": "object"}, "arb": {"type": "object"},
+        "steering": {"type": "object"}, "drivetrain": {"type": "object"},
+        "setup": {"type": "object"}, "travel": {"type": "object"}
+      }
+    }
+  }
+}
