@@ -53,3 +53,74 @@ class LowerArmDamper:
         ratio = lower_arm_motion_ratio_at_pose(self.model, pose, self.lower, self.upper)
         stroke = stroke_state(length, limits) if limits is not None else None
         return DamperMetrics(length, compression, ratio, stroke)
+
+
+@dataclass(frozen=True)
+class LinearDamperCharacteristic:
+    """Условные коэффициенты сжатия и отбоя, Н·с/мм; задаются явно.
+
+    Не описывает сухое трение, газовое усилие, гистерезис и нелинейные клапаны.
+    """
+
+    compression_n_s_per_mm: float
+    rebound_n_s_per_mm: float
+
+    def __post_init__(self) -> None:
+        from math import isfinite
+
+        values = (self.compression_n_s_per_mm, self.rebound_n_s_per_mm)
+        if not all(isfinite(value) and value >= 0 for value in values):
+            raise ValueError("Коэффициенты демпфирования должны быть конечными и неотрицательными")
+
+
+@dataclass(frozen=True)
+class DamperDynamics:
+    """Скорости сжатия и силы с выбранными знаками; диссипация в ваттах."""
+
+    wheel_velocity_mm_s: float
+    compression_velocity_mm_s: float
+    resistance_n: float
+    wheel_force_n: float
+    dissipated_power_w: float
+    stroke_limits_checked: bool
+
+
+def evaluate_linear_damping(
+    metrics: DamperMetrics,
+    characteristic: LinearDamperCharacteristic,
+    wheel_velocity_mm_s: float,
+) -> DamperDynamics:
+    """Оценка демпфирования для заданной мгновенной скорости колеса.
+
+    Ход и скорость колеса положительны вверх. Скорость сжатия амортизатора
+    равна MR * скорость колеса; сопротивление на элементе имеет тот же знак,
+    что скорость сжатия. Сила на колесе противоположна его скорости, а
+    положительная мощность — энергия, рассеиваемая в виде тепла. Результат
+    не включает упоры и не добавляется в баланс сил автоматически.
+    """
+    from math import isfinite
+
+    if not isfinite(wheel_velocity_mm_s):
+        raise ValueError("Скорость колеса должна быть конечной")
+    if metrics.has_detected_conflict:
+        raise ValueError("Демпфирование не определяется на упоре или при ошибке геометрии")
+    if (not isfinite(metrics.length_mm) or metrics.length_mm <= 0
+            or not isfinite(metrics.compression_from_static_mm)):
+        raise ValueError("Длина и сжатие амортизатора должны быть корректными")
+    if metrics.stroke is not None and (
+        metrics.stroke.length_mm != metrics.length_mm
+        or not all(isfinite(v) and v > 0 for v in (
+            metrics.stroke.compression_clearance_mm, metrics.stroke.extension_clearance_mm
+        ))
+    ):
+        raise ValueError("Некорректные данные проверки упоров амортизатора")
+    if metrics.motion_ratio is None or not isfinite(metrics.motion_ratio):
+        raise ValueError("Передаточное отношение амортизатора не определено")
+    velocity = metrics.motion_ratio * wheel_velocity_mm_s
+    coefficient = characteristic.compression_n_s_per_mm if velocity >= 0 else characteristic.rebound_n_s_per_mm
+    resistance = coefficient * velocity
+    wheel_force = -resistance * metrics.motion_ratio
+    power = resistance * velocity / 1000.0
+    if not all(isfinite(value) for value in (velocity, resistance, wheel_force, power)):
+        raise ValueError("Результат демпфирования не является конечным")
+    return DamperDynamics(wheel_velocity_mm_s, velocity, resistance, wheel_force, power, metrics.stroke is not None)

@@ -113,5 +113,7 @@ def test_dense_demo_prints_displacements_and_forces(capsys: pytest.CaptureFixtur
     text = capsys.readouterr().out
     assert "УЧЕБНЫЙ ПРИМЕР" in text
     assert "Угол плеча" in text and "Сжатие стоек" in text
+    assert "Сила амортизаторов на колёса Л/П" in text
+    assert "не симуляция движения во времени" in text
     assert "-30.0/+30.0" in text and "+35.0/-35.0" in text
     assert "нет результата" not in text
