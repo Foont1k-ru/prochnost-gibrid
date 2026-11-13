@@ -11,6 +11,7 @@ from typing import Literal
 import numpy as np
 
 from ..model.entities import Axle
+from .damper import DamperMetrics, LowerArmDamper
 from .double_wishbone import DoubleWishbone
 from .spring_characteristics import (
     BumpStopCharacteristic,
@@ -21,6 +22,7 @@ from .spring_characteristics import (
     spring_state,
 )
 from .springs import lower_arm_motion_ratio_at_pose, lower_arm_spring_length, spring_wheel_support
+from .stroke import StrokeLimits
 
 
 class EquilibriumError(ValueError):
@@ -43,6 +45,7 @@ class EquilibriumSample:
     residual_n: float
     bump_stop: BumpStopState | None = None
     total_support_n: float | None = None
+    damper: DamperMetrics | None = None
 
 
 @dataclass(frozen=True)
@@ -71,13 +74,21 @@ class SpringEquilibrium:
         side: Literal["left", "right"] = "left",
         coil_bind_length_mm: float | None = None,
         bump_stop: BumpStopCharacteristic | None = None,
+        damper_mount: Literal["lower_arm"] | None = None,
+        damper_limits: StrokeLimits | None = None,
         max_step_mm: float = 2.0,
     ) -> None:
         if not isfinite(static_spring_length_mm) or static_spring_length_mm <= 0:
             raise ValueError("Статическая длина пружины должна быть положительной и конечной")
         if not isfinite(max_step_mm) or max_step_mm <= 0:
             raise ValueError("Шаг продолжения должен быть положительным и конечным")
+        if damper_mount not in (None, "lower_arm"):
+            raise ValueError("Неизвестный вариант крепления амортизатора")
+        if damper_mount is None and damper_limits is not None:
+            raise ValueError("Для проверки амортизатора требуется указать его крепление")
         self.model = DoubleWishbone(axle, side)
+        self.damper = LowerArmDamper(self.model, axle) if damper_mount is not None else None
+        self.damper_limits = damper_limits
         self.characteristic = SpringCharacteristic(
             axle.spring.free_len_mm, axle.spring.rate_N_mm, tuple(axle.spring.progressive), coil_bind_length_mm,
         )
@@ -103,6 +114,11 @@ class SpringEquilibrium:
             "equilibrium_stability_not_checked",
             "continuous_reachable_branch_not_guaranteed",
         ) + (("spring_coil_bind_unspecified",) if coil_bind_length_mm is None else ())
+        if self.damper is None:
+            self.limitations += ("damper_mount_unspecified",)
+        else:
+            self.limitations += ("damper_lower_arm_mount_assumed", "damper_damping_force_not_modeled")
+            self.limitations += (("damper_limits_unspecified",) if damper_limits is None else ("damper_limits_discrete_only",))
         if bump_stop is None:
             self.limitations += ("bump_stop_not_modeled",)
         else:
@@ -115,6 +131,10 @@ class SpringEquilibrium:
         if not isfinite(load_n) or load_n <= 0:
             raise ValueError("Нагрузка на колесо должна быть положительной и конечной")
         pose = self.model.solve(travel_mm, max_step_mm=self.max_step_mm)
+        damper = self.damper.evaluate(pose, self.damper_limits) if self.damper is not None else None
+        if damper is not None and damper.has_detected_conflict:
+            reason = damper.error or (damper.stroke.status if damper.stroke is not None else "неизвестная ошибка")
+            raise EquilibriumError(travel_mm, f"недопустимое положение амортизатора: {reason}")
         distance = lower_arm_spring_length(self.model, pose, self.lower, self.upper)
         length = self.static_spring_length_mm + (distance - self.initial_mount_length)
         if not isfinite(length) or length <= 0:
@@ -131,7 +151,7 @@ class SpringEquilibrium:
         residual = total - load_n
         if not isfinite(total) or not isfinite(residual):
             raise EquilibriumError(travel_mm, "суммарная сила или невязка не является конечной")
-        return EquilibriumSample(travel_mm, state, ratio, support, residual, bump, total)
+        return EquilibriumSample(travel_mm, state, ratio, support, residual, bump, total, damper)
 
     def find(
         self,
@@ -145,7 +165,9 @@ class SpringEquilibrium:
 
         Не находит все решения и не гарантирует непрерывность непроверенных
         частей интервала. Численные или физические ошибки в оценённых точках
-        прерывают поиск. Допуск относится к ширине интервала, не силе.
+        прерывают поиск. Упоры амортизатора проверяются только при явном
+        указании крепления и границ и лишь в вычисленных точках. Допуск
+        относится к ширине интервала, не силе.
         """
         if not all(isfinite(v) for v in (load_n, from_travel_mm, to_travel_mm, travel_tolerance_mm)):
             raise ValueError("Нагрузка, границы и допуск должны быть конечными")

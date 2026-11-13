@@ -166,3 +166,20 @@ def test_coincident_damper_mounts_do_not_abort_other_sweep_points(planar_axle: A
     assert singular.spring is not None and singular.spring.frequency_hz is None
     assert singular.total_support_n is None
     assert later is not None and later.damper is not None and later.damper.error is None
+
+
+def test_equilibrium_rejects_intermediate_damper_collision(planar_axle: Axle) -> None:
+    from suspensionlab.core.equilibrium import EquilibriumError
+    from suspensionlab.core.stroke import StrokeLimits
+
+    # Обе границы допустимы, но при h=20 опоры почти совпадают: расстояние 3 мм.
+    lo, up = planar_axle.hardpoints["damper_lo"], planar_axle.hardpoints["damper_up"]
+    lo.x, lo.y, lo.z = 0, 500, 150
+    up.x, up.y, up.z = 3, 300 + 200 * sqrt(1 - (20 / 400)**2), 160
+    system = SpringEquilibrium(planar_axle, 230, damper_mount="lower_arm", damper_limits=StrokeLimits(5, 100))
+    assert system.evaluate(0, 1).damper is not None
+    assert system.evaluate(40, 1).damper is not None
+    load = planar_reference(20)[4]
+    with pytest.raises(EquilibriumError, match="below_compressed") as exc:
+        system.find(load, 0, 40)
+    assert exc.value.travel_mm == 20

@@ -12,6 +12,7 @@ from typing import Literal
 import numpy as np
 
 from ..model.entities import Axle, Vehicle
+from .damper import DamperMetrics, LowerArmDamper
 from .double_wishbone import DoubleWishbone, KinematicsError, Pose
 from .drivetrain import (
     HalfshaftGeometry,
@@ -40,7 +41,7 @@ from .springs import (
     sprung_mass_per_corner,
     wheel_rate,
 )
-from .stroke import StrokeLimits, StrokeState, stroke_state
+from .stroke import StrokeLimits
 from .sweep import LimitedSweep, limited_sweep
 
 
@@ -59,17 +60,6 @@ class SpringMetrics:
     frequency_hz: float | None
     error: str | None = None
     wheel_support_n: float | None = None
-
-
-@dataclass(frozen=True)
-class DamperMetrics:
-    """Изменение длины и запасы амортизатора, закреплённого на нижнем рычаге."""
-
-    length_mm: float
-    compression_from_static_mm: float
-    motion_ratio: float | None
-    stroke: StrokeState | None
-    error: str | None = None
 
 
 @dataclass(frozen=True)
@@ -202,20 +192,7 @@ def analyze_corner(
         fraction = vehicle.front_weight_pct / 100 if axle.role == "front" else 1 - vehicle.front_weight_pct / 100
         unsprung = vehicle.unsprung_front_kg if axle.role == "front" else vehicle.unsprung_rear_kg
         mass = sprung_mass_per_corner(vehicle.mass_kg, fraction, unsprung)
-    damper_lower = damper_upper = None
-    damper_initial_length = 0.0
-    if damper_mount is not None:
-        try:
-            dp, dq = axle.hardpoints["damper_lo"], axle.hardpoints["damper_up"]
-        except KeyError as exc:
-            raise ValueError("Не заданы опоры амортизатора") from exc
-        damper_lower = np.array([dp.x, dp.y * model.sign, dp.z], dtype=float)
-        damper_upper = np.array([dq.x, dq.y * model.sign, dq.z], dtype=float)
-        if not np.all(np.isfinite(damper_lower)) or not np.all(np.isfinite(damper_upper)):
-            raise ValueError("Координаты опор амортизатора должны быть конечными")
-        damper_initial_length = lower_arm_spring_length(model, model.initial_pose(), damper_lower, damper_upper)
-        if damper_initial_length <= 1e-9:
-            raise ValueError("Опоры амортизатора совпадают")
+    damper_model = LowerArmDamper(model, axle) if damper_mount is not None else None
     sweep = limited_sweep(model, travels_mm, max_step_mm)
     samples: list[CornerSample | None] = []
     for point in sweep.points:
@@ -226,19 +203,8 @@ def analyze_corner(
         geometry = corner_metrics(model, pose, static_camber_deg=axle.setup.camber_deg, static_toe_deg=axle.setup.toe_deg_total / 2)
         derivatives = corner_derivatives(model, pose, static_camber_deg=axle.setup.camber_deg, static_toe_deg=axle.setup.toe_deg_total / 2)
         bump = bump_stop_state(bump_stop, pose.travel_mm) if bump_stop is not None else None
-        damper = None
-        damper_restricted = False
-        if damper_lower is not None and damper_upper is not None:
-            damper_length = lower_arm_spring_length(model, pose, damper_lower, damper_upper)
-            damper_compression = damper_initial_length - damper_length
-            if damper_length <= 1e-9:
-                damper = DamperMetrics(damper_length, damper_compression, None, None, "Опоры амортизатора совпадают")
-                damper_restricted = True
-            else:
-                damper_ratio = lower_arm_motion_ratio_at_pose(model, pose, damper_lower, damper_upper)
-                damper_stroke = stroke_state(damper_length, damper_limits) if damper_limits is not None else None
-                damper = DamperMetrics(damper_length, damper_compression, damper_ratio, damper_stroke)
-                damper_restricted = damper_stroke is not None and damper_stroke.status != "inside"
+        damper = damper_model.evaluate(pose, damper_limits) if damper_model is not None else None
+        damper_restricted = damper is not None and damper.has_detected_conflict
         spring = None
         if lower is not None and upper is not None and characteristic is not None:
             ratio = lower_arm_motion_ratio_at_pose(model, pose, lower, upper)
