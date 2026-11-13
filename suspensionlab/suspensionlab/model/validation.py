@@ -74,6 +74,11 @@ def validate_axle(axle: Axle, project: Project | None = None) -> list[Issue]:
     if spec.role != role:
         issues.append(_issue("error", "diag.type_role_mismatch", role, type=axle.type_code))
 
+    if axle.type_code != "double_wishbone":
+        issues.append(_issue("info", "diag.no_kinematic_solver", role))
+    if axle.drivetrain.driven:
+        issues.append(_issue("info", "diag.drive_geometry_only", role))
+
     # --- наличие обязательных точек -------------------------------------
     for point_spec in spec.points:
         if point_spec.code not in axle.hardpoints:
@@ -194,7 +199,8 @@ def validate_axle(axle: Axle, project: Project | None = None) -> list[Issue]:
     if axle.drivetrain.driven and not spec.supports_driven:
         issues.append(_issue("warning", "diag.drive_not_supported", role))
     if axle.drivetrain.driven:
-        for code in ("halfshaft_in", "halfshaft_out"):
+        drive_points = ("differential_center", "pinion_center", "driveshaft_front") if axle.is_live_axle else ("differential_center", "driveshaft_front", "halfshaft_in", "halfshaft_out")
+        for code in drive_points:
             if code not in axle.hardpoints:
                 issues.append(_issue("warning", "diag.drive_points_missing", role, code=code))
 

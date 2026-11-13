@@ -150,6 +150,8 @@ _COMMON_ELASTIC = (
 )
 
 _COMMON_DRIVE = (
+    _p("differential_center", "drivetrain", "body", 25.0, 0.0, 260.0, mirrored=False),
+    _p("driveshaft_front", "drivetrain", "body", 900.0, 0.0, 320.0, mirrored=False),
     _p("halfshaft_in", "drivetrain", "body", 0.0, 120.0, 300.0),
     _p("halfshaft_out", "drivetrain", "upright", 0.0, 700.0, 310.0),
 )
@@ -157,9 +159,43 @@ _COMMON_DRIVE = (
 _COMMON_WHEEL = (_p("wheel_center", "wheel", "upright", 0.0, 762.0, 310.0),)
 
 _COMMON_LINK_TAIL = (
+    LinkSpec(code="driveshaft_to_differential", pivot=("driveshaft_front",), end="differential_center", group="drivetrain"),
+    LinkSpec(code="differential_output", pivot=("differential_center",), end="halfshaft_in", group="drivetrain"),
     LinkSpec(code="halfshaft", pivot=("halfshaft_in",), end="halfshaft_out", group="drivetrain"),
 )
 
+
+# Макферсон: типовая статическая компоновка, не кинематический решатель.
+MACPHERSON = SuspensionTypeSpec(
+    code="macpherson_front",
+    role="front",
+    points=(
+        _p("lca_f_in", "lower_arm", "body", 120.0, 250.0, 140.0),
+        _p("lca_r_in", "lower_arm", "body", -140.0, 260.0, 150.0),
+        _p("lbj", "lower_arm", "upright", 0.0, 690.0, 145.0),
+        _p("strut_top", "strut", "body", 0.0, 465.0, 620.0),
+        _p("strut_bottom", "strut", "upright", 0.0, 665.0, 310.0),
+        _p("tierod_in", "steering", "body", -120.0, 280.0, 170.0),
+        _p("tierod_out", "steering", "upright", -150.0, 640.0, 175.0),
+        _p("spring_lo", "spring", "upright", 10.0, 650.0, 320.0),
+        _p("spring_up", "spring", "body", 10.0, 460.0, 580.0),
+        _p("damper_lo", "damper", "upright", 5.0, 660.0, 315.0),
+        _p("damper_up", "damper", "body", 5.0, 465.0, 615.0),
+        _p("arb_lo", "arb", "arm", 0.0, 470.0, 155.0),
+        _p("arb_up", "arb", "body", 0.0, 405.0, 320.0),
+        *_COMMON_DRIVE,
+        *_COMMON_WHEEL,
+    ),
+    links=(
+        LinkSpec(code="lower_arm", pivot=("lca_f_in", "lca_r_in"), end="lbj", group="lower_arm"),
+        LinkSpec(code="strut", pivot=("strut_top",), end="strut_bottom", group="strut", joint="bushing"),
+        LinkSpec(code="tierod", pivot=("tierod_in",), end="tierod_out", group="steering", joint="rod_end"),
+        *_COMMON_LINK_TAIL,
+    ),
+    supports_driven=True,
+    supports_steering=True,
+    point_groups=("lower_arm", "strut", "steering", "spring", "damper", "arb", "drivetrain", "wheel"),
+)
 
 # ---------------------------------------------------------------------------
 # Передняя двухрычажная
@@ -293,6 +329,7 @@ LIVE_AXLE_POINTS = (
     _p("damper_up_l", "damper", "body", 120.0, 470.0, 500.0, mirrored=False),
     _p("damper_lo_r", "damper", "axle", 120.0, -470.0, 160.0, mirrored=False),
     _p("damper_up_r", "damper", "body", 120.0, -470.0, 500.0, mirrored=False),
+    _p("differential_center", "drivetrain", "axle", 25.0, 0.0, 260.0, mirrored=False),
     _p("pinion_center", "drivetrain", "axle", 0.0, 0.0, 300.0, mirrored=False),
     _p("driveshaft_front", "drivetrain", "body", 900.0, 0.0, 320.0, mirrored=False),
     _p("axle_center_l", "axle", "axle", 0.0, 640.0, 310.0, mirrored=False),
@@ -309,6 +346,8 @@ LIVE_AXLE_LINKS = (
     LinkSpec(code="panhard", pivot=("panhard_body",), end="panhard_axle", group="lateral", joint="rod_end"),
     LinkSpec(code="torque_arm", pivot=("torquearm_in",), end="torquearm_out", group="torque_arm", joint="bushing"),
     LinkSpec(code="driveshaft", pivot=("driveshaft_front",), end="pinion_center", group="drivetrain", joint="cv"),
+    LinkSpec(code="left_axle_shaft", pivot=("differential_center",), end="axle_center_l", group="drivetrain"),
+    LinkSpec(code="right_axle_shaft", pivot=("differential_center",), end="axle_center_r", group="drivetrain"),
 )
 
 LIVE_AXLE = SuspensionTypeSpec(
@@ -333,18 +372,43 @@ LIVE_AXLE = SuspensionTypeSpec(
     ),
 )
 
+# Задняя полузависимая торсионная балка; её упругость не моделируется.
+TORSION_BEAM = SuspensionTypeSpec(
+    code="torsion_beam_rear",
+    role="rear",
+    points=(
+        _p("beam_pivot_l", "trailing_links", "body", 400.0, 450.0, 250.0, mirrored=False),
+        _p("beam_pivot_r", "trailing_links", "body", 400.0, -450.0, 250.0, mirrored=False),
+        _p("beam_hub_l", "axle", "axle", 0.0, 670.0, 310.0, mirrored=False),
+        _p("beam_hub_r", "axle", "axle", 0.0, -670.0, 310.0, mirrored=False),
+        _p("beam_cross_l", "axle", "axle", 120.0, 520.0, 230.0, mirrored=False),
+        _p("beam_cross_r", "axle", "axle", 120.0, -520.0, 230.0, mirrored=False),
+        *(point for point in LIVE_AXLE_POINTS if point.group in ("spring", "damper", "wheel")),
+    ),
+    links=(
+        LinkSpec(code="beam_arm_left", pivot=("beam_pivot_l",), end="beam_hub_l", group="trailing_links"),
+        LinkSpec(code="beam_arm_right", pivot=("beam_pivot_r",), end="beam_hub_r", group="trailing_links"),
+        LinkSpec(code="beam_cross", pivot=("beam_cross_l",), end="beam_cross_r", group="axle"),
+        LinkSpec(code="beam_cross_left", pivot=("beam_cross_l",), end="beam_hub_l", group="axle"),
+        LinkSpec(code="beam_cross_right", pivot=("beam_cross_r",), end="beam_hub_r", group="axle"),
+    ),
+    supports_driven=False,
+    supports_steering=False,
+    point_groups=("trailing_links", "axle", "spring", "damper", "wheel"),
+)
+
 #: Все типы подвесок, доступные в приложении.
 REGISTRY: dict[str, SuspensionTypeSpec] = {
-    spec.code: spec for spec in (DOUBLE_WISHBONE, MULTILINK_FRONT, MULTILINK_REAR, LIVE_AXLE)
+    spec.code: spec for spec in (MACPHERSON, DOUBLE_WISHBONE, MULTILINK_FRONT, MULTILINK_REAR, TORSION_BEAM, LIVE_AXLE)
 }
 
 
 def types_for_role(role: str) -> tuple[str, ...]:
     """Коды типов подвески для передней или задней оси."""
     if role == "front":
-        return ("double_wishbone", "multilink_front")
+        return ("macpherson_front", "multilink_front", "double_wishbone")
     if role == "rear":
-        return ("multilink_rear", "live_axle_coil")
+        return ("multilink_rear", "torsion_beam_rear", "live_axle_coil")
     return ()
 
 

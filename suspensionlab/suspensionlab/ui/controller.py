@@ -65,9 +65,11 @@ class AppController(QObject):
         self._revalidate()
 
     # ------------------------------------------------------------------ файлы
-    def new_project(self, template_key: str | None = None) -> None:
+    def new_project(self, template_key: str | None = None, project: Project | None = None) -> None:
         """Создаёт новый проект (пустой или из шаблона)."""
-        if template_key:
+        if project is not None:
+            self.project = project
+        elif template_key:
             self.project = load_template(template_key)
             LOG.info("Создан проект из шаблона %s", template_key)
         else:

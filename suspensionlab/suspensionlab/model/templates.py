@@ -73,3 +73,41 @@ def load_template(key: str) -> Project:
             project.meta.name = ""
             return project
     raise ProjectIOError("error.project.read_failed", path=key)
+
+
+@dataclass(frozen=True, slots=True)
+class VehicleTemplateOptions:
+    """Конфигурация учебного шаблона; редуктор задаётся только точками."""
+
+    category: str = "passenger"
+    front_type: str = "macpherson_front"
+    rear_type: str = "multilink_rear"
+    front_driven: bool = True
+    rear_driven: bool = False
+
+
+def create_vehicle_template(options: VehicleTemplateOptions) -> Project:
+    """Создаёт отдельные оси без подмены типа подвески или расчётной модели."""
+    from .entities import Axle
+
+    allowed = {
+        "passenger": (("macpherson_front", "multilink_front", "double_wishbone"),
+                      ("multilink_rear", "torsion_beam_rear")),
+        "suv": (("multilink_front", "double_wishbone"), ("multilink_rear", "live_axle_coil")),
+    }
+    if options.category not in allowed:
+        raise ValueError("Unknown vehicle category")
+    front_types, rear_types = allowed[options.category]
+    if options.front_type not in front_types or options.rear_type not in rear_types:
+        raise ValueError("Unsupported suspension for vehicle category")
+    if options.rear_type == "torsion_beam_rear" and options.rear_driven:
+        raise ValueError("Driven torsion beam is not represented")
+    front = Axle(role="front", type_code=options.front_type)
+    rear = Axle(role="rear", type_code=options.rear_type)
+    front.layout = front.spec.default_layout
+    rear.layout = rear.spec.default_layout
+    front.drivetrain.driven = options.front_driven
+    rear.drivetrain.driven = options.rear_driven
+    project = Project(front=front, rear=rear)
+    project.meta.name = ""
+    return project

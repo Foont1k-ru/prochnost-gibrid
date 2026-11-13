@@ -171,7 +171,7 @@ class AxleCanvas(QWidget):
                 us.append(u)
                 vs.append(v)
                 u2, v2 = self._axle_project(axle, point.x, -point.y, point.z)
-                if not axle.is_live_axle:
+                if not axle.has_explicit_sides:
                     us.append(u2)
                     vs.append(v2)
             radius = axle.wheel.r_dynamic_mm
@@ -179,7 +179,7 @@ class AxleCanvas(QWidget):
             if code:
                 point = axle.hardpoints[code]
                 centers = [point.as_tuple()]
-                if axle.is_live_axle:
+                if axle.has_explicit_sides:
                     right = axle.hardpoints.get("wheel_center_r")
                     if right is not None:
                         centers.append(right.as_tuple())
@@ -278,7 +278,7 @@ class AxleCanvas(QWidget):
 
     def _draw_axle(self, painter: QPainter, axle: Axle, colors) -> None:
         """Рисует одну ось во всех слоях."""
-        sides = (1.0,) if axle.is_live_axle else (1.0, -1.0)
+        sides = (1.0,) if axle.has_explicit_sides else (1.0, -1.0)
         radius = axle.wheel.r_dynamic_mm
 
         # колесо
@@ -288,11 +288,11 @@ class AxleCanvas(QWidget):
         fill.setAlpha(90)
         painter.setBrush(fill)
         for side in (1.0, -1.0):
-            code = ("wheel_center_l" if side > 0 else "wheel_center_r") if axle.is_live_axle else axle.wheel_center_code()
+            code = ("wheel_center_l" if side > 0 else "wheel_center_r") if axle.has_explicit_sides else axle.wheel_center_code()
             if code is None or code not in axle.hardpoints:
                 continue
             point = axle.hardpoints[code]
-            y = point.y if axle.is_live_axle else point.y * side
+            y = point.y if axle.has_explicit_sides else point.y * side
             u, v = self._axle_project(axle, point.x, y, point.z)
             center = self._to_screen(u, v)
             if self._mode in ("front", "side"):
@@ -327,8 +327,10 @@ class AxleCanvas(QWidget):
         link_pen = QPen(QColor(colors.link), 2.4)
         painter.setPen(link_pen)
         for link_spec in axle.spec.links:
+            if link_spec.group == "drivetrain" and not axle.drivetrain.driven:
+                continue
             for side in sides:
-                if axle.is_live_axle:
+                if axle.has_explicit_sides:
                     segments = axle.link_endpoints(link_spec.code)
                 else:
                     segments = self._mirror_segments(axle, link_spec.code, side)
@@ -360,9 +362,12 @@ class AxleCanvas(QWidget):
         for code in axle.point_codes():
             if code not in axle.hardpoints:
                 continue
+            point_spec = axle.spec.point(code)
+            if point_spec is not None and point_spec.group == "drivetrain" and not axle.drivetrain.driven:
+                continue
             point = axle.hardpoints[code]
             for side in sides:
-                y = point.y if axle.is_live_axle else point.y * side
+                y = point.y if axle.has_explicit_sides else point.y * side
                 u, v = self._axle_project(axle, point.x, y, point.z)
                 screen = self._to_screen(u, v)
                 selected = self._is_selected(axle, code)
@@ -374,7 +379,7 @@ class AxleCanvas(QWidget):
                 painter.setBrush(QColor(color))
                 radius_px = 5.0 if selected or hovered else 3.4
                 painter.drawEllipse(screen, radius_px, radius_px)
-                if (selected or hovered) and (side > 0 or axle.is_live_axle):
+                if (selected or hovered) and (side > 0 or axle.has_explicit_sides):
                     painter.setFont(QFont(self.font().family(), 9))
                     painter.setPen(QPen(QColor(colors.label)))
                     point_spec = axle.spec.point(code)
@@ -413,7 +418,7 @@ class AxleCanvas(QWidget):
 
     def _pair_points(self, axle: Axle, code_in: str, code_out: str, side: float):
         """Пара точек (низ, верх) для пружины/амортизатора с учётом стороны."""
-        if axle.is_live_axle:
+        if axle.has_explicit_sides:
             suffix = "_l" if side > 0 else "_r"
             first = axle.hardpoints.get(code_in + suffix)
             second = axle.hardpoints.get(code_out + suffix)
@@ -473,13 +478,16 @@ class AxleCanvas(QWidget):
         best_distance = HIT_RADIUS_PX
         for role in self._roles:
             axle = self._controller.project.axle(role)
-            sides = (1.0,) if axle.is_live_axle else (1.0, -1.0)
+            sides = (1.0,) if axle.has_explicit_sides else (1.0, -1.0)
             for code in axle.point_codes():
                 if code not in axle.hardpoints:
                     continue
+                point_spec = axle.spec.point(code)
+                if point_spec is not None and point_spec.group == "drivetrain" and not axle.drivetrain.driven:
+                    continue
                 point = axle.hardpoints[code]
                 for side in sides:
-                    y = point.y if axle.is_live_axle else point.y * side
+                    y = point.y if axle.has_explicit_sides else point.y * side
                     screen = self._to_screen(*self._axle_project(axle, point.x, y, point.z))
                     distance = math.hypot(screen.x() - position.x(), screen.y() - position.y())
                     if distance < best_distance:

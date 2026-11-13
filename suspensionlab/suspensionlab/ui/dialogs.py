@@ -4,8 +4,12 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
+    QFormLayout,
+    QGroupBox,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -15,7 +19,8 @@ from PySide6.QtWidgets import (
 )
 
 from ..i18n import tr
-from ..model.templates import TemplateInfo, list_templates
+from ..model.entities import Project
+from ..model.templates import TemplateInfo, VehicleTemplateOptions, create_vehicle_template, list_templates
 
 
 class TemplateDialog(QDialog):
@@ -27,14 +32,29 @@ class TemplateDialog(QDialog):
         self.resize(560, 380)
         self._templates: list[TemplateInfo] = list_templates()
         self._list = QListWidget(self)
+        for category in ("passenger", "suv"):
+            item = QListWidgetItem(tr(f"template.config.{category}"))
+            item.setData(Qt.ItemDataRole.UserRole, category)
+            self._list.addItem(item)
         for info in self._templates:
             item = QListWidgetItem(tr(info.title_key))
             item.setData(Qt.ItemDataRole.UserRole, info.key)
             item.setToolTip(tr(info.description_key))
             self._list.addItem(item)
-        if self._templates:
-            self._list.setCurrentRow(0)
+        self._list.setCurrentRow(0)
 
+        self._config = QGroupBox(tr("template.config.title"), self)
+        self._front = QComboBox(self._config)
+        self._rear = QComboBox(self._config)
+        self._front_drive = QCheckBox(tr("template.config.driven"), self._config)
+        self._rear_drive = QCheckBox(tr("template.config.driven"), self._config)
+        self._front_drive.setChecked(True)
+        form = QFormLayout(self._config)
+        form.addRow(tr("template.config.front"), self._front)
+        form.addRow(tr("template.config.front_drive"), self._front_drive)
+        form.addRow(tr("template.config.rear"), self._rear)
+        form.addRow(tr("template.config.rear_drive"), self._rear_drive)
+        self._rear.currentIndexChanged.connect(self._rear_changed)
         self._description = QLabel(self)
         self._description.setObjectName("Hint")
         self._description.setWordWrap(True)
@@ -52,20 +72,52 @@ class TemplateDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel(tr("empty.subtitle")))
         layout.addWidget(self._list, 1)
+        layout.addWidget(self._config)
         layout.addWidget(self._description)
         layout.addWidget(buttons)
 
     def _update_description(self, row: int) -> None:
         """Показывает описание выбранного шаблона."""
-        if 0 <= row < len(self._templates):
-            self._description.setText(tr(self._templates[row].description_key))
+        configured = row in (0, 1)
+        self._config.setVisible(configured)
+        if configured:
+            front = ("macpherson_front", "multilink_front", "double_wishbone") if row == 0 else ("multilink_front", "double_wishbone")
+            rear = ("multilink_rear", "torsion_beam_rear") if row == 0 else ("multilink_rear", "live_axle_coil")
+            self._front.clear()
+            self._rear.clear()
+            for code in front:
+                self._front.addItem(tr(f"type.{code}.name"), code)
+            for code in rear:
+                self._rear.addItem(tr(f"type.{code}.name"), code)
+            self._front_drive.setChecked(True)
+            self._rear_drive.setChecked(row == 1)
+            self._rear_changed()
+            self._description.setText(tr("template.config.limits"))
+        elif 2 <= row < len(self._templates) + 2:
+            self._description.setText(tr(self._templates[row - 2].description_key))
         else:
             self._description.setText("")
+
+    def _rear_changed(self) -> None:
+        allowed = self._rear.currentData() != "torsion_beam_rear"
+        if not allowed:
+            self._rear_drive.setChecked(False)
+        self._rear_drive.setEnabled(allowed)
+
+    def selected_project(self) -> Project | None:
+        row = self._list.currentRow()
+        if row not in (0, 1):
+            return None
+        return create_vehicle_template(VehicleTemplateOptions(
+            category="passenger" if row == 0 else "suv",
+            front_type=str(self._front.currentData()), rear_type=str(self._rear.currentData()),
+            front_driven=self._front_drive.isChecked(), rear_driven=self._rear_drive.isChecked(),
+        ))
 
     def selected_key(self) -> str | None:
         """Ключ выбранного шаблона."""
         item = self._list.currentItem()
-        return str(item.data(Qt.ItemDataRole.UserRole)) if item is not None else None
+        return str(item.data(Qt.ItemDataRole.UserRole)) if item is not None and self._list.currentRow() >= 2 else None
 
 
 class SnapshotDialog(QDialog):

@@ -488,9 +488,14 @@ class MainWindow(QMainWindow):
         if not self._confirm_discard_changes():
             return
         dialog = TemplateDialog(self)
-        if dialog.exec() and dialog.selected_key():
-            self.controller.new_project(dialog.selected_key())
-            self._show_workspace()
+        if dialog.exec():
+            project = dialog.selected_project()
+            if project is not None:
+                self.controller.new_project(project=project)
+                self._show_workspace()
+            elif dialog.selected_key():
+                self.controller.new_project(dialog.selected_key())
+                self._show_workspace()
 
     def _open_project(self) -> None:
         """Открыть файл проекта."""

@@ -126,3 +126,33 @@ def test_snapshot_creation_undo_and_redo(window):
     assert not c.project.snapshots
     c.redo_last()
     assert c.project.snapshots[0].name == "До изменения"
+
+
+def test_configurable_template_dialog(window, qtbot, tmp_path):
+    from suspensionlab.ui.dialogs import TemplateDialog
+
+    dialog = TemplateDialog(window)
+    qtbot.addWidget(dialog)
+    dialog.show()
+    assert dialog.selected_key() is None
+    assert dialog._front.currentData() == "macpherson_front"
+    assert dialog._front_drive.isChecked() and not dialog._rear_drive.isChecked()
+    dialog._rear.setCurrentIndex(dialog._rear.findData("torsion_beam_rear"))
+    assert not dialog._rear_drive.isEnabled() and not dialog._rear_drive.isChecked()
+    project = dialog.selected_project()
+    assert project is not None and project.rear.type_code == "torsion_beam_rear"
+    window.controller.new_project(project=project)
+    window._show_workspace()
+    for mode in ("front", "side", "top"):
+        window._canvases["both"].set_view_mode(mode)
+        window._canvases["both"].grab()
+    path = window.controller.save_project(tmp_path / "configured")
+    window.controller.open_project(path)
+    assert window.controller.project.front.type_code == "macpherson_front"
+    dialog._list.setCurrentRow(1)
+    assert dialog._front.currentData() == "multilink_front"
+    assert dialog._front_drive.isChecked() and dialog._rear_drive.isChecked()
+    dialog._rear.setCurrentIndex(dialog._rear.findData("live_axle_coil"))
+    assert dialog.selected_project().rear.type_code == "live_axle_coil"
+    dialog._list.setCurrentRow(2)
+    assert dialog.selected_project() is None and dialog.selected_key() == "ring"

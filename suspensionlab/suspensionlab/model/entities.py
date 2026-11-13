@@ -510,6 +510,11 @@ class Axle:
         """Неразрезной мост?"""
         return self.type_code == "live_axle_coil"
 
+    @property
+    def has_explicit_sides(self) -> bool:
+        """Обе стороны заданы отдельными точками, а не зеркалируются."""
+        return self.type_code in ("live_axle_coil", "torsion_beam_rear")
+
     # ------------------------------------------------------------------ точки
     def ensure_points(self, overwrite: bool = False) -> None:
         """Добавляет недостающие точки типа; лишние не удаляет.
@@ -593,7 +598,7 @@ class Axle:
     # ------------------------------------------------------------------ колесо
     def wheel_center_code(self) -> str | None:
         """Код точки центра колеса для текущего типа подвески."""
-        if self.is_live_axle and "wheel_center_l" in self.hardpoints:
+        if self.has_explicit_sides and "wheel_center_l" in self.hardpoints:
             return "wheel_center_l"
         if "wheel_center" in self.hardpoints:
             return "wheel_center"
@@ -601,8 +606,11 @@ class Axle:
 
     def track_mm(self) -> float:
         """Колея оси по координатам центров колёс (мм)."""
-        if self.is_live_axle and "wheel_center_l" in self.hardpoints:
-            return 2.0 * abs(self.hardpoints["wheel_center_l"].y)
+        if self.has_explicit_sides and "wheel_center_l" in self.hardpoints:
+            right = self.hardpoints.get("wheel_center_r")
+            if right is not None:
+                return abs(self.hardpoints["wheel_center_l"].y - right.y)
+            return 0.0
         code = self.wheel_center_code()
         if code is None:
             return 0.0

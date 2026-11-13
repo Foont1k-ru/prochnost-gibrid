@@ -25,7 +25,7 @@ from suspensionlab.model.suspension_types import REGISTRY, get_type, types_for_r
 
 
 def test_registry_contains_required_types() -> None:
-    assert set(REGISTRY) == {"double_wishbone", "multilink_front", "multilink_rear", "live_axle_coil"}
+    assert set(REGISTRY) == {"macpherson_front", "double_wishbone", "multilink_front", "multilink_rear", "torsion_beam_rear", "live_axle_coil"}
     assert "double_wishbone" in types_for_role("front")
     assert "live_axle_coil" in types_for_role("rear")
 
