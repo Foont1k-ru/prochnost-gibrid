@@ -34,6 +34,9 @@ jobs:
         run: python -m mypy suspensionlab
       - name: Запустить тесты, включая Qt
         run: python -m pytest -q --junitxml=test-results.xml
+      - name: Показать ошибки тестов в аннотациях
+        if: failure()
+        run: python scripts/annotate_pytest.py test-results.xml
       - name: Сохранить отчёт тестов
         if: always()
         uses: actions/upload-artifact@v4
