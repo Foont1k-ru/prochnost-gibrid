@@ -1020,3 +1020,139 @@ def test_autosave_directory_failure_is_reported(window, monkeypatch):
     monkeypatch.setattr(module, "autosave_path", fail)
     assert not window.controller.autosave()
     assert messages[-1] == "autosave.failed"
+
+
+def test_snapshot_restore_history_and_save_reload(window, tmp_path):
+    c = window.controller
+    c.new_project("ring")
+    initial = c.project.vehicle.mass_kg
+    c.add_snapshot("До изменений")
+    c.set_value(c.project.vehicle, "mass_kg", initial + 100)
+    c.set_lock("front.point.ubj.z", True)
+    snapshots, locks, view = c.project.snapshots, c.project.locks, c.project.view
+    c.select(Selection("point", "front", "ubj"))
+    c.restore_snapshot(0)
+    assert c.selection is None and c.dirty
+    assert c.project.vehicle.mass_kg == initial
+    assert c.project.snapshots is snapshots and c.project.locks is locks and c.project.view is view
+    assert c.undo.undo_label_key() == "undo.restore_snapshot"
+    c.undo_last()
+    assert c.project.vehicle.mass_kg == initial + 100
+    c.undo_last()
+    assert not c.is_locked("front.point.ubj.z")
+    c.undo_last()
+    assert c.project.vehicle.mass_kg == initial
+    c.redo_last()
+    c.redo_last()
+    c.redo_last()
+    assert c.project.vehicle.mass_kg == initial and c.is_locked("front.point.ubj.z")
+    path = c.save_project(tmp_path / "restored")
+    c.open_project(path)
+    assert c.project.vehicle.mass_kg == initial and c.project.snapshots[0].name == "До изменений"
+    assert c.is_locked("front.point.ubj.z")
+
+
+def test_snapshot_restore_invalid_preserves_history_and_selection(window):
+    c = window.controller
+    c.new_project("ring")
+    c.add_snapshot("Повреждён")
+    c.set_value(c.project.vehicle, "mass_kg", c.project.vehicle.mass_kg + 50)
+    c.undo_last()
+    assert c.undo.can_redo
+    c.project.snapshots[0].data = {}
+    c.select(Selection("vehicle"))
+    before = c.project.to_dict()
+    depth = c.undo.depth()
+    with pytest.raises(ValueError):
+        c.restore_snapshot(0)
+    assert c.project.to_dict() == before and c.selection == Selection("vehicle")
+    assert c.undo.depth() == depth and c.undo.can_redo
+    with pytest.raises(ValueError):
+        c.restore_snapshot(-1)
+    c.redo_last()
+    assert c.project.vehicle.mass_kg == before["vehicle"]["mass_kg"] + 50
+
+
+def test_restore_snapshot_dialog_duplicate_names_and_empty(window, qtbot):
+    from suspensionlab.ui.dialogs import RestoreSnapshotDialog
+
+    c = window.controller
+    c.new_project("ring")
+    empty = RestoreSnapshotDialog(c.project, window)
+    qtbot.addWidget(empty)
+    assert not empty._restore.isEnabled() and empty.selected_index() == -1
+    c.add_snapshot("Одинаковое")
+    c.set_value(c.project.vehicle, "mass_kg", 2000)
+    c.add_snapshot("Одинаковое")
+    dialog = RestoreSnapshotDialog(c.project, window)
+    qtbot.addWidget(dialog)
+    assert dialog._list.item(0).text() == "1. Одинаковое"
+    assert dialog._list.item(1).text() == "2. Одинаковое"
+    dialog._list.setCurrentRow(1)
+    assert dialog.selected_index() == 1 and dialog._restore.isEnabled()
+    c.set_value(c.project.vehicle, "mass_kg", 2200)
+    c.restore_snapshot(dialog.selected_index())
+    assert c.project.vehicle.mass_kg == 2000
+
+
+def test_snapshot_menu_cancel_and_invalid(window, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    from suspensionlab.ui import main_window
+
+    c = window.controller
+    c.new_project("ring")
+    c.add_snapshot("A")
+    before = c.project.to_dict()
+
+    class FakeDialog:
+        def __init__(self, *args):
+            pass
+
+        def exec(self):
+            return 0
+
+        def selected_index(self):
+            return 0
+
+    monkeypatch.setattr(main_window, "RestoreSnapshotDialog", FakeDialog)
+    window.action_restore_snapshot.trigger()
+    assert c.project.to_dict() == before
+    c.project.snapshots[0].data = {}
+    before = c.project.to_dict()
+    FakeDialog.exec = lambda self: 1
+    warnings = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda *args: warnings.append(args))
+    window.action_restore_snapshot.trigger()
+    assert len(warnings) == 1 and c.project.to_dict() == before
+
+
+def test_snapshot_menu_applies_selected_entry_and_invalidates_results(window, qtbot, monkeypatch):
+    from suspensionlab.ui import main_window
+    from suspensionlab.ui.analysis_dialog import AnalysisDialog
+
+    c = window.controller
+    c.new_project("ring")
+    baseline = c.project.vehicle.mass_kg
+    c.add_snapshot("Начало")
+    c.set_value(c.project.vehicle, "mass_kg", baseline + 100)
+    analysis = AnalysisDialog(c, window)
+    qtbot.addWidget(analysis)
+    analysis._run.click()
+    assert analysis._table.rowCount() > 0
+
+    class FakeDialog:
+        def __init__(self, *args):
+            pass
+
+        def exec(self):
+            return 1
+
+        def selected_index(self):
+            return 0
+
+    monkeypatch.setattr(main_window, "RestoreSnapshotDialog", FakeDialog)
+    window.action_restore_snapshot.trigger()
+    assert c.project.vehicle.mass_kg == baseline and c.dirty
+    assert analysis._table.rowCount() == 0
+    assert window._stack.currentWidget() is window._tabs

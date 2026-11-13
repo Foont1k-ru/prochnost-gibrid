@@ -25,6 +25,7 @@ from ..model.commands import (
 )
 from ..model.entities import Axle, Hardpoint, Project, Snapshot
 from ..model.project_io import ProjectIOError, load_project, save_project
+from ..model.snapshot_restore import RestoreSnapshotCommand, prepare_snapshot
 from ..model.templates import load_template
 from ..model.units import UnitSettings
 from ..model.validation import Issue, validate_project
@@ -184,6 +185,19 @@ class AppController(QObject):
         self.undo.push(ValueCommand(self.project, "snapshots", old, [*old, snapshot], "undo.snapshot"))
         self._touch()
 
+    def restore_snapshot(self, index: int) -> None:
+        """Восстанавливает автомобиль и оси как отменяемый шаг, не меняя файл."""
+        if not 0 <= index < len(self.project.snapshots):
+            raise ValueError("Снимок не найден")
+        restored = prepare_snapshot(self.project.snapshots[index].data)
+        command = RestoreSnapshotCommand(self.project, restored)
+        self.select(None)
+        self.undo.push(command)
+        self._revalidate()
+        self._set_dirty(True)
+        self.projectReplaced.emit()
+        self.modelChanged.emit()
+
     def set_lock(self, key: str, locked: bool) -> None:
         """Фиксирует или расфиксирует параметр (замок в модели проекта)."""
         self.undo.push(DictFlagCommand(self.project.locks, key, locked))
@@ -195,12 +209,16 @@ class AppController(QObject):
 
     def undo_last(self) -> None:
         """Отменяет последнее изменение."""
+        if self.undo.undo_label_key() == "undo.restore_snapshot":
+            self.select(None)
         if self.undo.undo():
             self.projectReplaced.emit()
             self._touch(validate=True)
 
     def redo_last(self) -> None:
         """Повторяет отменённое изменение."""
+        if self.undo.redo_label_key() == "undo.restore_snapshot":
+            self.select(None)
         if self.undo.redo():
             self.projectReplaced.emit()
             self._touch(validate=True)

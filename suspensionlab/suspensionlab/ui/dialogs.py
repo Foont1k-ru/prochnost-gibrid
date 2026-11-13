@@ -144,3 +144,33 @@ class SnapshotDialog(QDialog):
     def name(self) -> str:
         """Введённое имя снимка."""
         return self._edit.text().strip()
+
+
+class RestoreSnapshotDialog(QDialog):
+    """Выбор снимка с явным перечислением области восстановления."""
+
+    def __init__(self, project: Project, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(tr("snapshot_restore.title"))
+        self.resize(580, 340)
+        self._list = QListWidget(self)
+        for index, snapshot in enumerate(project.snapshots):
+            self._list.addItem(f"{index + 1}. {snapshot.name}")
+        if project.snapshots:
+            self._list.setCurrentRow(0)
+        notice = QLabel(tr("snapshot_restore.scope"), self)
+        notice.setWordWrap(True)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, self)
+        self._restore = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        self._restore.setText(tr("snapshot_restore.action"))
+        self._restore.setEnabled(bool(project.snapshots))
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText(tr("dialog.cancel"))
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout = QVBoxLayout(self)
+        layout.addWidget(notice)
+        layout.addWidget(self._list, 1)
+        layout.addWidget(buttons)
+
+    def selected_index(self) -> int:
+        return self._list.currentRow()

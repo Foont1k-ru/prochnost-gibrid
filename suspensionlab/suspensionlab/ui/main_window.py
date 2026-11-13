@@ -33,7 +33,7 @@ from .analysis_dialog import AnalysisDialog
 from .antiroll_dialog import AntiRollDialog
 from .canvas.axle_view import AxleCanvas
 from .controller import AppController, Selection
-from .dialogs import SnapshotDialog, TemplateDialog
+from .dialogs import RestoreSnapshotDialog, SnapshotDialog, TemplateDialog
 from .docks.diagnostics import DiagnosticsPanel
 from .docks.inspector import Inspector
 from .docks.project_tree import ProjectTree
@@ -178,6 +178,9 @@ class MainWindow(QMainWindow):
         self.action_snapshot = QAction(tr("menu.edit.snapshot"), self)
         self.action_snapshot.triggered.connect(self._save_snapshot)
 
+        self.action_restore_snapshot = QAction(tr("snapshot_restore.menu"), self)
+        self.action_restore_snapshot.triggered.connect(self._restore_snapshot)
+
         self.action_theme = QAction(tr("menu.view.theme"), self)
         self.action_theme.setCheckable(True)
         self.action_theme.triggered.connect(self._toggle_theme)
@@ -245,6 +248,7 @@ class MainWindow(QMainWindow):
         menu_edit.addAction(self.action_redo)
         menu_edit.addSeparator()
         menu_edit.addAction(self.action_snapshot)
+        menu_edit.addAction(self.action_restore_snapshot)
 
         menu_view = bar.addMenu(tr("menu.view"))
         menu_view.addAction(self.view_actions["front"])
@@ -568,6 +572,18 @@ class MainWindow(QMainWindow):
         dialog = SnapshotDialog(self.controller.project.meta.name, self)
         if dialog.exec() and dialog.name():
             self.controller.add_snapshot(dialog.name())
+
+    def _restore_snapshot(self) -> None:
+        """Восстанавливает выбранный снимок без сохранения в файл."""
+        dialog = RestoreSnapshotDialog(self.controller.project, self)
+        if not dialog.exec():
+            return
+        try:
+            self.controller.restore_snapshot(dialog.selected_index())
+        except ValueError:
+            QMessageBox.warning(self, tr("snapshot_restore.title"), tr("snapshot_restore.invalid"))
+            return
+        self._show_workspace()
 
     def _show_error(self, error: ProjectIOError) -> None:
         """Показывает понятное сообщение об ошибке с кнопкой журнала."""
