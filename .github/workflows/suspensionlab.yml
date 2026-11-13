@@ -4,9 +4,15 @@ on:
   push:
   pull_request:
   workflow_dispatch:
+    inputs:
+      diagnostic_run_id:
+        description: ID прогона с отчётом для диагностики (необязательно)
+        required: false
+        type: string
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   test:
@@ -44,3 +50,26 @@ jobs:
           name: suspensionlab-windows-test-results
           path: suspensionlab/test-results.xml
           if-no-files-found: warn
+
+  diagnostic:
+    name: Диагностика сохранённого JUnit
+    if: github.event_name == 'workflow_dispatch' && inputs.diagnostic_run_id != ''
+    runs-on: windows-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: suspensionlab
+    env:
+      PYTHONUTF8: '1'
+      GH_TOKEN: ${{ github.token }}
+      RUN_ID: ${{ inputs.diagnostic_run_id }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Прочитать результаты указанного прогона
+        shell: pwsh
+        run: |
+          if ($env:RUN_ID -notmatch '^\d+$') { throw "Invalid run ID" }
+          gh run download $env:RUN_ID --name suspensionlab-windows-test-results --dir diagnostic-report
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/annotate_pytest.py diagnostic-report/test-results.xml
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
