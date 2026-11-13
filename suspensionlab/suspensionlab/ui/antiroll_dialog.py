@@ -35,6 +35,7 @@ from ..i18n import tr
 from .analysis_dialog import AnalysisDialog
 from .canvas.antiroll_preview import AntiRollPreview
 from .controller import AppController
+from .widgets.playback import PlaybackControls
 
 
 class AntiRollDialog(QDialog):
@@ -126,6 +127,10 @@ class AntiRollDialog(QDialog):
         preview_layout.addWidget(self._preview, 1)
         preview_layout.addWidget(self._preview_status)
         preview_layout.addLayout(nav)
+        self._playback = PlaybackControls(self._table.currentRow, lambda row: self._table.setCurrentCell(row, 0),
+                                          self._playback_problem, self)
+        preview_layout.addWidget(self._playback)
+        self.finished.connect(lambda _result: self._playback.set_count(0))
         self._split = QSplitter(Qt.Orientation.Horizontal, self)
         self._split.addWidget(self._table)
         self._split.addWidget(preview_container)
@@ -172,6 +177,7 @@ class AntiRollDialog(QDialog):
         return field
 
     def _clear_results(self) -> None:
+        self._playback.set_count(0)
         self._points = ()
         self._suspensions = []
         self._checks = []
@@ -277,6 +283,7 @@ class AntiRollDialog(QDialog):
                 self._table.setItem(row, column, item)
         self._status.setText(tr("analysis.complete", count=len(result.points), failures=failures))
         if result.points:
+            self._playback.set_count(len(result.points))
             self._slider.setRange(0, len(result.points) - 1)
             self._slider.setEnabled(True)
             self._previous.setEnabled(True)
@@ -290,7 +297,9 @@ class AntiRollDialog(QDialog):
 
     def _show_row(self, row: int, *_args: object) -> None:
         if not 0 <= row < len(self._points):
+            self._playback.observe_row(row)
             return
+        self._playback.observe_row(row)
         self._slider.blockSignals(True)
         self._slider.setValue(row)
         self._slider.blockSignals(False)
@@ -332,3 +341,17 @@ class AntiRollDialog(QDialog):
             else:
                 damper_status = tr(f"analysis.damper_status.{damper.stroke.status}" if damper.stroke else "analysis.damper_status.unknown")
         return spring_length, spring_status, damper_length, damper_status
+
+    def _playback_problem(self, row: int) -> str | None:
+        if not 0 <= row < len(self._points) or self._points[row].state is None or self._suspensions[row] is None:
+            return tr("playback.missing")
+        checks = self._checks[row]
+        if checks is None:
+            return tr("playback.missing")
+        for check in checks:
+            if check.spring is not None and check.spring.status in ("invalid", "coil_bind"):
+                return tr("playback.spring_conflict")
+            if check.damper is not None and (check.damper.invalid or
+                    (check.damper.stroke is not None and check.damper.stroke.status != "inside")):
+                return tr("playback.damper_conflict")
+        return None

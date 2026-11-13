@@ -35,6 +35,7 @@ from ..core.sweep import travel_grid
 from ..i18n import tr
 from .canvas.pose_preview import PosePreview
 from .controller import AppController
+from .widgets.playback import PlaybackControls
 
 
 class AnalysisDialog(QDialog):
@@ -120,6 +121,11 @@ class AnalysisDialog(QDialog):
         preview_layout.addWidget(self._preview, 1)
         preview_layout.addWidget(self._preview_status)
         preview_layout.addLayout(navigation)
+        self._playback = PlaybackControls(self._table.currentRow, lambda row: self._table.setCurrentCell(row, 0),
+                                          self._playback_problem, self)
+        preview_layout.addWidget(self._playback)
+        self._playback_reasons: list[str | None] = []
+        self.finished.connect(lambda _result: self._playback.set_count(0))
         self._split = QSplitter(Qt.Orientation.Horizontal, self)
         self._split.addWidget(self._table)
         self._split.addWidget(preview_container)
@@ -174,8 +180,10 @@ class AnalysisDialog(QDialog):
         return box
 
     def _clear_results(self) -> None:
+        self._playback.set_count(0)
         self._frames = []
         self._cambers = []
+        self._playback_reasons = []
         self._preview.clear()
         self._preview_status.setText(tr("analysis.preview_empty"))
         self._slider.setEnabled(False)
@@ -249,6 +257,17 @@ class AnalysisDialog(QDialog):
         if not all(isfinite(value) and 0 < value < 100000 for value in (radius, width)):
             frames = [None] * len(frames)
         self._frames = frames
+        self._playback_reasons = []
+        for frame, sample in zip(frames, result.samples, strict=True):
+            reason = None
+            if frame is None or sample is None:
+                reason = tr("playback.missing")
+            elif sample.spring is not None and (sample.spring.error is not None or
+                                                  (sample.spring.state is not None and sample.spring.state.status == "coil_bind")):
+                reason = tr("playback.spring_conflict")
+            elif sample.damper is not None and sample.damper.has_detected_conflict:
+                reason = tr("playback.damper_conflict")
+            self._playback_reasons.append(reason)
         self._cambers = [sample.geometry.camber_deg if sample is not None else 0 for sample in result.samples]
         self._preview.configure([frame for frame in frames if frame is not None], radius, width)
         self._table.setRowCount(len(travels))
@@ -293,6 +312,7 @@ class AnalysisDialog(QDialog):
                 self._table.setItem(row, column, item)
         self._status.setText(tr("analysis.complete", count=len(travels), failures=failures))
         if travels:
+            self._playback.set_count(len(travels))
             self._slider.setRange(0, len(travels) - 1)
             self._slider.setEnabled(True)
             self._previous.setEnabled(True)
@@ -303,7 +323,9 @@ class AnalysisDialog(QDialog):
 
     def _show_row(self, row: int, *_args: object) -> None:
         if not 0 <= row < len(self._frames):
+            self._playback.observe_row(row)
             return
+        self._playback.observe_row(row)
         self._slider.blockSignals(True)
         self._slider.setValue(row)
         self._slider.blockSignals(False)
@@ -319,6 +341,9 @@ class AnalysisDialog(QDialog):
         item = self._table.item(row, 8)
         state = item.text() if item is not None else ""
         self._preview_status.setText(tr("analysis.preview_warning", state=state))
+
+    def _playback_problem(self, row: int) -> str | None:
+        return self._playback_reasons[row] if 0 <= row < len(self._playback_reasons) else tr("playback.missing")
 
     @staticmethod
     def _explicit_number(field: QLineEdit, minimum: float, maximum: float) -> float:

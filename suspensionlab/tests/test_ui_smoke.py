@@ -755,3 +755,128 @@ def test_combined_checks_reject_incomplete_limits(window, qtbot):
     dialog._run.click()
     assert dialog._table.rowCount() == 1
     assert "не включено" in dialog._table.item(0, 14).text()
+
+
+def test_playback_in_corner_dialog_stops_before_coil_bind_and_on_edits(window, qtbot):
+    from suspensionlab.ui.analysis_dialog import AnalysisDialog
+
+    window.controller.new_project("ring")
+    dialog = AnalysisDialog(window.controller, window)
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog._from.setValue(0)
+    dialog._to.setValue(2)
+    dialog._spring.setChecked(True)
+    dialog._spring_length.setValue(230)
+    dialog._coil_bind.setValue(229.9)
+    dialog._run.click()
+    assert dialog._table.rowCount() == 3 and dialog._table.currentRow() == 0
+    assert dialog._playback_problem(0) is None
+    assert dialog._playback_problem(1) is not None
+    dialog._playback._button.click()
+    assert dialog._playback._timer.isActive()
+    dialog._playback.advance()
+    assert not dialog._playback._timer.isActive()
+    assert dialog._table.currentRow() == 0
+    assert "конфликт пружины" in dialog._playback._message.text()
+    dialog._next.click()  # ручной диагностический показ по-прежнему возможен
+    assert dialog._table.currentRow() == 1 and dialog._preview.frame is not None
+    dialog._playback._button.click()
+    assert not dialog._playback._timer.isActive()
+    dialog._coil_bind.setValue(0)  # неизведанный предел не считается проверенным
+    dialog._run.click()
+    dialog._playback._button.click()
+    assert dialog._playback._timer.isActive()
+    assert "Неизвестные пределы не проверены" in dialog._playback._message.text()
+    dialog._playback.advance()
+    assert dialog._table.currentRow() == 1
+    dialog._side.setCurrentIndex(1)
+    assert not dialog._playback._timer.isActive() and dialog._table.rowCount() == 0
+    assert not dialog._playback._button.isEnabled()
+
+
+def test_playback_timer_fps_pause_and_close(window, qtbot):
+    from suspensionlab.ui.analysis_dialog import AnalysisDialog
+
+    window.controller.new_project("ring")
+    dialog = AnalysisDialog(window.controller, window)
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog._from.setValue(0)
+    dialog._to.setValue(3)
+    dialog._run.click()
+    dialog._playback._fps.setValue(30)
+    assert dialog._playback._timer.interval() == 33
+    dialog._playback._button.click()
+    qtbot.waitUntil(lambda: dialog._table.currentRow() > 0, timeout=3000)
+    dialog._playback._button.click()
+    assert not dialog._playback._timer.isActive()
+    if dialog._table.currentRow() == 3:
+        dialog._table.setCurrentCell(0, 0)
+    dialog._playback._button.click()
+    assert dialog._playback._timer.isActive()
+    dialog.reject()
+    assert not dialog._playback._timer.isActive()
+
+
+def test_playback_combined_stops_before_either_side_limit(window, qtbot):
+    from suspensionlab.ui.antiroll_dialog import AntiRollDialog
+
+    window.controller.new_project("ring")
+    dialog = AntiRollDialog(window.controller, window)
+    qtbot.addWidget(dialog)
+    dialog._from.setValue(0)
+    dialog._to.setValue(2)
+    dialog._axis_x.setText("-250")
+    dialog._axis_z.setText("320")
+    dialog._rate.setText("1000")
+    dialog._show_damper.setChecked(True)
+    dialog._damper_min.setValue(394)
+    dialog._damper_max.setValue(450)
+    dialog._run.click()
+    assert dialog._playback_problem(0) is None
+    assert dialog._playback_problem(1) == "обнаружен конфликт амортизатора"
+    dialog._playback._button.click()
+    dialog._playback.advance()
+    assert dialog._table.currentRow() == 0 and not dialog._playback._timer.isActive()
+    assert "конфликт амортизатора" in dialog._playback._message.text()
+    dialog._damper_min.setValue(0)
+    dialog._damper_max.setValue(0)
+    dialog._run.click()
+    dialog._playback._button.click()
+    dialog._playback.advance()
+    assert dialog._table.currentRow() == 1
+    dialog._table.setCurrentCell(2, 0)  # ручной переход на конец ставит паузу
+    assert not dialog._playback._timer.isActive()
+    assert "конец таблицы" in dialog._playback._message.text()
+    dialog._table.setCurrentCell(0, 0)
+    dialog._playback._button.click()
+    assert dialog._playback._timer.isActive()
+    window.controller.new_project("city")
+    assert not dialog._playback._timer.isActive() and dialog._preview.frame is None
+
+
+def test_playback_stops_before_unsolved_row(window, qtbot, monkeypatch):
+    from dataclasses import replace
+
+    from suspensionlab.core.analysis import analyze_corner
+    from suspensionlab.core.double_wishbone import KinematicsError
+    from suspensionlab.core.sweep import SweepPoint
+    from suspensionlab.ui import analysis_dialog
+
+    window.controller.new_project("ring")
+    dialog = analysis_dialog.AnalysisDialog(window.controller, window)
+    qtbot.addWidget(dialog)
+    dialog._from.setValue(0)
+    dialog._to.setValue(1)
+    original = analyze_corner(window.controller.project.front, window.controller.project.vehicle, [0, 1])
+    failed = SweepPoint(1, None, KinematicsError(1, "test"))
+    partial = replace(original, sweep=replace(original.sweep, points=(original.sweep.points[0], failed)),
+                      samples=(original.samples[0], None))
+    monkeypatch.setattr(analysis_dialog, "analyze_corner", lambda *args, **kwargs: partial)
+    dialog._run.click()
+    dialog._playback._button.click()
+    dialog._playback.advance()
+    assert dialog._table.currentRow() == 0 and dialog._preview.frame is not None
+    assert not dialog._playback._timer.isActive()
+    assert "нет рассчитанной схемы" in dialog._playback._message.text()
