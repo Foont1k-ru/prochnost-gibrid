@@ -580,11 +580,14 @@ def test_antiroll_preview_steps_both_views_and_invalidates(window, qtbot):
 
 def test_antiroll_preview_does_not_reuse_stale_state_on_failure(window, qtbot, monkeypatch):
     from suspensionlab.core.antiroll import AntiRollPoint, AntiRollScenario, AntiRollStudy, AntiRollSweep
+    from PySide6.QtWidgets import QLabel
+
     from suspensionlab.ui import antiroll_dialog
 
     window.controller.new_project("ring")
     dialog = antiroll_dialog.AntiRollDialog(window.controller, window)
     qtbot.addWidget(dialog)
+    assert any("статус определяется до округления" in label.text() for label in dialog.findChildren(QLabel))
     dialog._from.setValue(0)
     dialog._to.setValue(1)
     dialog._axis_x.setText("-250")
@@ -921,17 +924,22 @@ def test_corner_export_contains_displayed_rows_context_and_no_stale_results(wind
         rows = list(csv.reader(handle, delimiter=";"))
     assert ["Название проекта", "'=unsafe name"] in rows
     assert "экспериментальная" in metadata["Ограничения"].lower()
+    assert "статус определяется до округления" in metadata["Точность"]
+    assert "статус определяется до округления" in dialog._notice.text()
     assert c.project.to_dict() == before
     dialog._to.setValue(2)
     assert not dialog._export_button.isEnabled() and dialog._table.rowCount() == 0
 
 
 def test_antiroll_export_preserves_assumptions_and_failures(window, qtbot, monkeypatch):
+    from PySide6.QtWidgets import QLabel
+
     from suspensionlab.ui import antiroll_dialog
 
     window.controller.new_project("ring")
     dialog = antiroll_dialog.AntiRollDialog(window.controller, window)
     qtbot.addWidget(dialog)
+    assert any("статус определяется до округления" in label.text() for label in dialog.findChildren(QLabel))
     dialog._from.setValue(0)
     dialog._to.setValue(1)
     dialog._axis_x.setText("-250")
@@ -947,6 +955,7 @@ def test_antiroll_export_preserves_assumptions_and_failures(window, qtbot, monke
     assert len(captured) == 1
     report = captured[0]
     params = dict(report.metadata)
+    assert "статус определяется до округления" in params["Точность"]
     assert params["Координата оси X, мм"] == "-250"
     assert params["Крутильная жёсткость, Н·м/рад"] == "1000"
     assert params["Длина смыкания, мм (0 — неизвестна)"] == "231.0"
