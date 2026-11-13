@@ -117,3 +117,18 @@ def test_dense_demo_prints_displacements_and_forces(capsys: pytest.CaptureFixtur
     assert "не симуляция движения во времени" in text
     assert "-30.0/+30.0" in text and "+35.0/-35.0" in text
     assert "нет результата" not in text
+
+
+def test_sweep_returns_exact_poses_used_for_the_two_links():
+    from suspensionlab.core.springs import lower_arm_point
+
+    system = study()
+    result = system.sweep([(0, 0), (10, -5), (2000, -2000), (0, 0)])
+    for point in result.points[:2]:
+        assert point.state is not None and point.left_pose is not None and point.right_pose is not None
+        assert point.left_pose.travel_mm == pytest.approx(point.left_travel_mm)
+        assert point.right_pose.travel_mm == pytest.approx(point.right_travel_mm)
+        assert point.state.left.lower_mm == pytest.approx(lower_arm_point(system.left.model, point.left_pose, system.left.lower))
+        assert point.state.right.lower_mm == pytest.approx(lower_arm_point(system.right.model, point.right_pose, system.right.lower))
+    for point in result.points[2:]:
+        assert point.state is None and point.left_pose is None and point.right_pose is None

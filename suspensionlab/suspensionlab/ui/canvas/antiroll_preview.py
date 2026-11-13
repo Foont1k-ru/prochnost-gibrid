@@ -8,8 +8,9 @@ from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import QWidget
 
 from ...core.antiroll import AntiRollState
-from ...core.pose_view import Point
+from ...core.pose_view import Point, PoseView
 from ...i18n import tr
+from .pose_preview import PosePreview
 
 
 class AntiRollPreview(QWidget):
@@ -19,6 +20,8 @@ class AntiRollPreview(QWidget):
         super().__init__(parent)
         self.setMinimumSize(300, 250)
         self.frame: AntiRollState | None = None
+        self.left_suspension: PoseView | None = None
+        self.right_suspension: PoseView | None = None
         self.axis_x = 0.0
         self.axis_z = 0.0
         self.mode: Literal["front", "top"] = "front"
@@ -27,6 +30,7 @@ class AntiRollPreview(QWidget):
 
     def clear(self) -> None:
         self.frame = None
+        self.left_suspension = self.right_suspension = None
         self.bounds = {}
         self.message = tr("analysis.preview_empty")
         self.update()
@@ -35,12 +39,20 @@ class AntiRollPreview(QWidget):
         self.mode = mode
         self.update()
 
-    def configure(self, states: list[AntiRollState], axis_x: float, axis_z: float) -> None:
+    def configure(self, states: list[AntiRollState], axis_x: float, axis_z: float,
+                  suspensions: list[PoseView] | None = None) -> None:
         self.axis_x, self.axis_z = axis_x, axis_z
         points: list[Point] = []
         for state in states:
             for link in (state.left, state.right):
                 points.extend((link.lower_mm, link.upper_mm, (axis_x, link.upper_mm[1], axis_z)))
+        for frame in suspensions or ():
+            points.extend((frame.upper_front, frame.upper_rear, frame.lower_front, frame.lower_rear,
+                           frame.upper_ball, frame.lower_ball))
+            if frame.spring:
+                points.extend(frame.spring)
+            if frame.damper:
+                points.extend(frame.damper)
         self.bounds = {}
         if not points:
             return
@@ -49,12 +61,14 @@ class AntiRollPreview(QWidget):
             vertical = [point[coordinate] for point in points]
             self.bounds[mode] = (min(ys), max(ys), min(vertical), max(vertical))
 
-    def show_frame(self, frame: AntiRollState) -> None:
-        self.frame = frame
+    def show_frame(self, frame: AntiRollState, left: PoseView | None = None,
+                   right: PoseView | None = None) -> None:
+        self.frame, self.left_suspension, self.right_suspension = frame, left, right
         self.update()
 
     def show_missing(self) -> None:
         self.frame = None
+        self.left_suspension = self.right_suspension = None
         self.message = tr("analysis.preview_no_pose")
         self.update()
 
@@ -75,6 +89,21 @@ class AntiRollPreview(QWidget):
             return QPointF(self.width() / 2 - (point[1] - yc) * scale,
                            self.height() / 2 - (vertical - vc) * scale)
 
+        for suspension in (self.left_suspension, self.right_suspension):
+            if suspension is None:
+                continue
+            painter.setPen(QPen(QColor("#3689e6"), 2))
+            for a, b in ((suspension.upper_front, suspension.upper_ball),
+                         (suspension.upper_rear, suspension.upper_ball),
+                         (suspension.lower_front, suspension.lower_ball),
+                         (suspension.lower_rear, suspension.lower_ball),
+                         (suspension.upper_ball, suspension.lower_ball)):
+                painter.drawLine(screen(a), screen(b))
+            if suspension.spring:
+                PosePreview._draw_spring(painter, screen(suspension.spring[0]), screen(suspension.spring[1]))
+            if suspension.damper:
+                painter.setPen(QPen(QColor("#b670d0"), 3))
+                painter.drawLine(screen(suspension.damper[0]), screen(suspension.damper[1]))
         state = self.frame
         left_pivot = (self.axis_x, state.left.upper_mm[1], self.axis_z)
         right_pivot = (self.axis_x, state.right.upper_mm[1], self.axis_z)
@@ -83,7 +112,7 @@ class AntiRollPreview(QWidget):
         painter.setPen(QPen(QColor("#dd9748"), 3))
         painter.drawLine(screen(left_pivot), screen(state.left.upper_mm))
         painter.drawLine(screen(right_pivot), screen(state.right.upper_mm))
-        painter.setPen(QPen(QColor("#2ea86f"), 3))
+        painter.setPen(QPen(QColor("#e35e75"), 3))
         painter.drawLine(screen(state.left.upper_mm), screen(state.left.lower_mm))
         painter.drawLine(screen(state.right.upper_mm), screen(state.right.lower_mm))
         painter.setPen(self.palette().text().color())

@@ -69,6 +69,9 @@ class AntiRollPoint:
     right_travel_mm: float
     state: AntiRollState | None
     error: str | None
+    # Те же позы, которые использовались при расчёте стойки; на отказе обе отсутствуют.
+    left_pose: Pose | None = None
+    right_pose: Pose | None = None
 
 
 @dataclass(frozen=True)
@@ -235,5 +238,6 @@ class AntiRollStudy:
                         state, la, ra = self._state(lp, rp, la, ra)
                 except (KinematicsError, ValueError) as exc:
                     failure = str(exc)
-            results.append(AntiRollPoint(left, right, state if failure is None else None, failure))
+            results.append(AntiRollPoint(left, right, state if failure is None else None, failure,
+                                         lp if failure is None else None, rp if failure is None else None))
         return AntiRollSweep(tuple(results), self.limitations)

@@ -551,7 +551,7 @@ def test_antiroll_preview_steps_both_views_and_invalidates(window, qtbot):
     assert dialog._table.rowCount() == 5
     assert dialog._preview.frame is not None and dialog._preview.frame.left_travel_mm == 0
     assert dialog._preview.axis_x == -250 and dialog._preview.axis_z == 320
-    assert "условная ось" in dialog._preview_status.text()
+    assert "упоры, смыкание, столкновения и прочность не проверены" in dialog._preview_status.text().lower()
     bounds = dict(dialog._preview.bounds)
     dialog._next.click()
     state = dialog._preview.frame
@@ -608,3 +608,74 @@ def test_antiroll_preview_does_not_reuse_stale_state_on_failure(window, qtbot, m
     assert "test failure" in dialog._table.item(1, 12).text()
     dialog._previous.click()
     assert dialog._preview.frame is not None and dialog._preview.bounds == bounds
+
+
+def test_combined_preview_uses_exact_antiroll_poses_on_both_sides(window, qtbot):
+    from math import dist
+
+    from suspensionlab.core.damper import LowerArmDamper
+    from suspensionlab.core.double_wishbone import DoubleWishbone
+    from suspensionlab.core.springs import lower_arm_point
+    from suspensionlab.ui.antiroll_dialog import AntiRollDialog
+
+    window.controller.new_project("ring")
+    axle = window.controller.project.front
+    original = window.controller.project.to_dict()
+    dialog = AntiRollDialog(window.controller, window)
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog._from.setValue(0)
+    dialog._to.setValue(1)
+    dialog._axis_x.setText("-250")
+    dialog._axis_z.setText("320")
+    dialog._rate.setText("1000")
+    dialog._show_spring.setChecked(True)
+    dialog._show_damper.setChecked(True)
+    dialog._run.click()
+    dialog._next.click()
+    row = dialog._points[1]
+    assert row.state is not None and row.left_pose is not None and row.right_pose is not None
+    left, right = dialog._preview.left_suspension, dialog._preview.right_suspension
+    assert left is not None and right is not None
+    assert left.travel_mm == 1 and right.travel_mm == -1
+    assert left.spring is not None and left.damper is not None
+    assert right.spring is not None and right.damper is not None
+    for name, pose, view, link in (("left", row.left_pose, left, row.state.left),
+                                   ("right", row.right_pose, right, row.state.right)):
+        model = DoubleWishbone(axle, name)
+        damper = LowerArmDamper(model, axle)
+        assert dist(*view.damper) == pytest.approx(damper.evaluate(pose).length_mm)
+        arb = axle.hardpoints["arb_lo"]
+        import numpy as np
+        lower = np.array((arb.x, model.sign * arb.y, arb.z))
+        assert link.lower_mm == pytest.approx(lower_arm_point(model, pose, lower))
+        assert view.lower_ball == pytest.approx(pose.point(model.points["lbj"], model.center0))
+    assert window.controller.project.to_dict() == original
+    dialog._preview.grab()
+    dialog._view.setCurrentIndex(1)
+    dialog._preview.grab()
+    dialog._show_spring.setChecked(False)
+    assert dialog._preview.frame is None and dialog._table.rowCount() == 0
+    dialog._run.click()
+    assert dialog._preview.left_suspension.spring is None
+    assert dialog._preview.left_suspension.damper is not None
+
+
+def test_combined_preview_marks_missing_overlay_instead_of_inventing_it(window, qtbot):
+    from suspensionlab.ui.antiroll_dialog import AntiRollDialog
+
+    window.controller.new_project("ring")
+    axle = window.controller.project.front
+    axle.hardpoints["spring_lo"].x = float("nan")
+    dialog = AntiRollDialog(window.controller, window)
+    qtbot.addWidget(dialog)
+    dialog._from.setValue(0)
+    dialog._to.setValue(0)
+    dialog._axis_x.setText("-250")
+    dialog._axis_z.setText("320")
+    dialog._rate.setText("1000")
+    dialog._show_spring.setChecked(True)
+    dialog._run.click()
+    assert dialog._preview.frame is not None
+    assert dialog._preview.left_suspension is None and dialog._preview.right_suspension is None
+    assert "только стабилизатор" in dialog._preview_status.text()

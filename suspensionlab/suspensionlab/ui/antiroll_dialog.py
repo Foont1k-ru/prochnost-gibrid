@@ -1,9 +1,12 @@
 """Экспериментальная таблица двух стоек идеализированного стабилизатора."""
 from __future__ import annotations
 
+from contextlib import suppress
+
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -23,6 +26,8 @@ from PySide6.QtWidgets import (
 )
 
 from ..core.antiroll import AntiRollPoint, AntiRollScenario, AntiRollStudy
+from ..core.double_wishbone import DoubleWishbone
+from ..core.pose_view import PoseView, pose_view
 from ..core.sweep import travel_grid
 from ..i18n import tr
 from .analysis_dialog import AnalysisDialog
@@ -53,6 +58,8 @@ class AntiRollDialog(QDialog):
         self._rate = QLineEdit(self)
         for edit in (self._axis_x, self._axis_z, self._rate):
             edit.setPlaceholderText(tr("analysis.explicit_required"))
+        self._show_spring = QCheckBox(tr("antiroll_ui.spring_overlay"), self)
+        self._show_damper = QCheckBox(tr("antiroll_ui.damper_overlay"), self)
 
         fields = QHBoxLayout()
         sweep = QFormLayout()
@@ -62,6 +69,8 @@ class AntiRollDialog(QDialog):
         params = QFormLayout()
         for key, edit in (("axis_x", self._axis_x), ("axis_z", self._axis_z), ("rate", self._rate)):
             params.addRow(tr(f"antiroll_ui.{key}"), edit)
+        params.addRow(self._show_spring)
+        params.addRow(self._show_damper)
         fields.addLayout(sweep)
         fields.addLayout(params)
 
@@ -79,6 +88,7 @@ class AntiRollDialog(QDialog):
         self._table.setAlternatingRowColors(True)
         self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._points: tuple[AntiRollPoint, ...] = ()
+        self._suspensions: list[tuple[PoseView, PoseView] | None] = []
         self._preview = AntiRollPreview(self)
         self._preview_status = QLabel(tr("analysis.preview_empty"), self)
         self._preview_status.setWordWrap(True)
@@ -133,6 +143,8 @@ class AntiRollDialog(QDialog):
             field.valueChanged.connect(self._invalidate)
         for edit in (self._axis_x, self._axis_z, self._rate):
             edit.textChanged.connect(self._invalidate)
+        self._show_spring.toggled.connect(self._invalidate)
+        self._show_damper.toggled.connect(self._invalidate)
         controller.modelChanged.connect(self._invalidate)
         controller.projectReplaced.connect(self._invalidate)
         self._invalidate()
@@ -147,6 +159,7 @@ class AntiRollDialog(QDialog):
 
     def _clear_results(self) -> None:
         self._points = ()
+        self._suspensions = []
         self._preview.clear()
         self._preview_status.setText(tr("analysis.preview_empty"))
         self._slider.setEnabled(False)
@@ -187,7 +200,18 @@ class AntiRollDialog(QDialog):
             self._status.setText(tr("analysis.error", reason=str(error)))
             return
         self._points = result.points
-        self._preview.configure([point.state for point in result.points if point.state is not None], x, z)
+        left_model, right_model = DoubleWishbone(axle, "left"), DoubleWishbone(axle, "right")
+        for point in result.points:
+            pair = None
+            if point.state is not None and point.left_pose is not None and point.right_pose is not None:
+                with suppress(ValueError, KeyError, ArithmeticError):
+                    pair = (pose_view(left_model, point.left_pose, axle, spring=self._show_spring.isChecked(),
+                                      damper=self._show_damper.isChecked()),
+                            pose_view(right_model, point.right_pose, axle, spring=self._show_spring.isChecked(),
+                                      damper=self._show_damper.isChecked()))
+            self._suspensions.append(pair)
+        self._preview.configure([point.state for point in result.points if point.state is not None], x, z,
+                                [view for pair in self._suspensions if pair is not None for view in pair])
         self._table.setRowCount(len(result.points))
         failures = 0
         for row, point in enumerate(result.points):
@@ -231,5 +255,10 @@ class AntiRollDialog(QDialog):
             self._preview.show_missing()
             self._preview_status.setText(tr("analysis.preview_no_pose"))
             return
-        self._preview.show_frame(point.state)
-        self._preview_status.setText(tr("antiroll_ui.preview_warning"))
+        suspension = self._suspensions[row]
+        if suspension is None:
+            self._preview.show_frame(point.state)
+            self._preview_status.setText(tr("antiroll_ui.overlay_missing"))
+        else:
+            self._preview.show_frame(point.state, *suspension)
+            self._preview_status.setText(tr("antiroll_ui.preview_warning"))
