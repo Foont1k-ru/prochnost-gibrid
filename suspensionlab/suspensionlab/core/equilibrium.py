@@ -158,3 +158,63 @@ class SpringEquilibrium:
         estimate_travel = lower.travel_mm + (upper.travel_mm - lower.travel_mm) / 2
         estimate = self.evaluate(estimate_travel, load_n)
         return EquilibriumResult(lower, upper, estimate, count + 1, self.limitations)
+
+
+@dataclass(frozen=True)
+class SpringSupportTangent:
+    """Локальная оценка производной силы с геометрическим вкладом, Н/мм."""
+
+    travel_mm: float
+    step_mm: float
+    elastic_component_n_mm: float
+    geometric_component_n_mm: float
+    total_n_mm: float
+    direct_difference_n_mm: float
+
+
+def estimate_spring_support_tangent(
+    problem: SpringEquilibrium,
+    travel_mm: float,
+    *,
+    step_mm: float = 0.01,
+) -> SpringSupportTangent:
+    """Оценивает d(F_пруж·MR)/dh центральной разностью изменения MR.
+
+    Возвращаются упругий и геометрический вклады, а также независимая от
+    разложения конечная разность полной силы для контроля шага. Выявленные
+    в трёх точках контактные границы и изломы характеристики не допускаются;
+    непрерывность между ними при конечном шаге не доказывается. Другие силы,
+    контакт шины и устойчивость автомобиля не оцениваются.
+    """
+    if not isfinite(travel_mm) or not isfinite(step_mm) or step_mm <= 0:
+        raise ValueError("Ход и шаг должны быть конечными, шаг — положительным")
+    low_travel, high_travel = travel_mm - step_mm, travel_mm + step_mm
+    if not isfinite(low_travel) or not isfinite(high_travel) or not low_travel < travel_mm < high_travel:
+        raise ValueError("Шаг слишком мал или велик для заданного хода")
+    # Нагрузка не влияет на силу и используется только для невязки evaluate.
+    low = problem.evaluate(low_travel, 1.0)
+    center = problem.evaluate(travel_mm, 1.0)
+    high = problem.evaluate(high_travel, 1.0)
+    if any(sample.spring.status != "loaded" for sample in (low, center, high)):
+        raise EquilibriumError(travel_mm, "жёсткость не определена вне нагруженного участка пружины")
+    curve = problem.characteristic.progressive
+    if curve:
+        def segment(sample: EquilibriumSample) -> int | None:
+            for i, (a, b) in enumerate(zip(curve, curve[1:], strict=False)):
+                if a[0] < sample.spring.compression_mm < b[0]:
+                    return i
+            return None
+
+        indices = {segment(sample) for sample in (low, center, high)}
+        if None in indices or len(indices) != 1:
+            raise EquilibriumError(travel_mm, "расчётный шаг пересекает излом характеристики")
+    rate, force = center.spring.tangent_rate_n_mm, center.spring.force_n
+    if rate is None or force is None:
+        raise EquilibriumError(travel_mm, "сила или жёсткость пружины не определена")
+    elastic = rate * center.motion_ratio**2
+    geometric = force * (high.motion_ratio - low.motion_ratio) / (2 * step_mm)
+    total = elastic + geometric
+    direct = (high.wheel_support_n - low.wheel_support_n) / (2 * step_mm)
+    if not all(isfinite(value) for value in (elastic, geometric, total, direct)):
+        raise EquilibriumError(travel_mm, "жёсткость не является конечной")
+    return SpringSupportTangent(travel_mm, step_mm, elastic, geometric, total, direct)

@@ -110,3 +110,23 @@ def test_intermediate_unavailable_force_aborts_search(monkeypatch: pytest.Monkey
     monkeypatch.setattr(system, "evaluate", fail_midpoint)
     with pytest.raises(EquilibriumError, match="недоступная точка"):
         system.find(load, 0, 20)
+
+
+def test_tangent_refuses_contact_knots_and_invalid_step() -> None:
+    from suspensionlab.core.equilibrium import estimate_spring_support_tangent
+
+    axle = load_template("ring").front
+    slack = SpringEquilibrium(axle, 260)
+    with pytest.raises(EquilibriumError, match="вне нагруженного участка"):
+        estimate_spring_support_tangent(slack, 0)
+    with pytest.raises(ValueError):
+        estimate_spring_support_tangent(slack, 0, step_mm=0)
+    with pytest.raises(ValueError):
+        estimate_spring_support_tangent(slack, 1e20, step_mm=0.01)
+    axle.spring.progressive = [(0, 0), (10, 100), (20, 300), (30, 500)]
+    at_knot = SpringEquilibrium(axle, 240)
+    with pytest.raises(EquilibriumError):
+        estimate_spring_support_tangent(at_knot, 0)
+    across_knot = SpringEquilibrium(axle, 240.01)
+    with pytest.raises(EquilibriumError, match="излом"):
+        estimate_spring_support_tangent(across_knot, 0, step_mm=1)
