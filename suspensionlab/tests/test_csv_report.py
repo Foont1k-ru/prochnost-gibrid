@@ -48,3 +48,13 @@ def test_bad_dimensions_do_not_touch_file(tmp_path):
     with pytest.raises(ValueError):
         write_csv_report(CSVReport((), ("a", "b"), (("1",),)), target)
     assert target.read_text(encoding="utf8") == "old"
+
+
+def test_empty_failed_path_report_preserves_failure_metadata_and_headers(tmp_path):
+    target = tmp_path / "failed.csv"
+    report = CSVReport((("Итог", "НЕ ПРОЙДЕНА"), ("Причина", "=опасный текст")),
+                       ("Ход, мм", "Сила, Н"), ())
+    write_csv_report(report, target)
+    with target.open(encoding="utf-8-sig", newline="") as handle:
+        rows = list(csv.reader(handle, delimiter=";"))
+    assert rows == [["Итог", "НЕ ПРОЙДЕНА"], ["Причина", "'=опасный текст"], [], ["Ход, мм", "Сила, Н"]]

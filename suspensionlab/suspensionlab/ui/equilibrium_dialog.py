@@ -16,12 +16,15 @@ from PySide6.QtWidgets import (
     QLabel,
     QMessageBox,
     QPushButton,
+    QTableWidget,
     QVBoxLayout,
     QWidget,
 )
 
 from ..core.equilibrium import EquilibriumPath, EquilibriumPathError, EquilibriumResult, SpringEquilibrium
 from ..core.stroke import StrokeLimits
+from ..export.csv_report import CSVReport
+from ..export.equilibrium_path import PATH_COLUMNS
 from ..i18n import tr
 from .controller import AppController
 from .equilibrium_path_dialog import EquilibriumPathDialog
@@ -195,13 +198,51 @@ class EquilibriumDialog(QDialog):
     def _show_path(self) -> None:
         if self._path is None:
             return
-        dialog = EquilibriumPathDialog(self._path, self)
+        path = self._path
+        dialog = EquilibriumPathDialog(path, self, report_factory=lambda table: self._path_report(path, table))
         self._path_dialog = dialog
         try:
             dialog.exec()
         finally:
             self._path_dialog = None
             dialog.deleteLater()
+
+    def _path_report(self, path: EquilibriumPath, table: QTableWidget) -> CSVReport:
+        """Снимок таблицы и результата проверки с явным описанием отказа."""
+        if self._path is not path or table.rowCount() != len(path.samples) or table.columnCount() != len(PATH_COLUMNS):
+            raise ValueError(tr("equilibrium_path.stale"))
+        if ((path.failure is None and (self._result is None or self._result.path is not path))
+                or (path.failure is not None and self._result is not None)):
+            raise ValueError(tr("equilibrium_path.stale"))
+        failure = path.failure
+        params = [
+            *self._report_parameters(),
+            (tr("equilibrium_path.report_status"), tr("equilibrium_path.report_failed" if failure else "equilibrium_path.report_passed")),
+            (tr("equilibrium_path.report_target"), f"{path.target_travel_mm:.4f}"),
+            (tr("equilibrium_path.report_requested_step"), f"{path.requested_step_mm:.4f}"),
+            (tr("equilibrium_path.report_actual_step"), f"{path.actual_step_mm:.4f}"),
+            (tr("equilibrium_path.report_count"), str(len(path.samples))),
+            (tr("equilibrium_path.report_failure_type"), tr(f"equilibrium_path.failure.{failure.kind}") if failure else "—"),
+            (tr("equilibrium_path.report_failure_requested"), f"{failure.requested_travel_mm:.4f}" if failure else "—"),
+            (tr("equilibrium_path.report_failure_actual"), f"{failure.failure_travel_mm:.4f}" if failure else "—"),
+            (tr("equilibrium_path.report_failure_reason"), failure.reason if failure else "—"),
+            (tr("equilibrium_path.report_limits"), tr("equilibrium_path.report_warning")),
+        ]
+        def item_text(row: int, column: int) -> str:
+            item = table.item(row, column)
+            if item is None:
+                raise ValueError(tr("equilibrium_path.stale"))
+            return item.text()
+
+        headers = [table.horizontalHeaderItem(i) for i in range(table.columnCount())]
+        if any(item is None for item in headers):
+            raise ValueError(tr("equilibrium_path.stale"))
+        columns = tuple(item.text() for item in headers if item is not None)
+        rows = tuple(tuple(item_text(row, col) for col in range(table.columnCount()))
+                     for row in range(table.rowCount()))
+        return make_report(self.controller, tr("equilibrium_path.title"), params, columns, rows,
+                           precision_text=tr("equilibrium_path.report_precision"),
+                           allow_empty_rows=failure is not None and not path.samples)
 
     def _report_parameters(self) -> list[tuple[str, str]]:
         axle = self.controller.project.axle(str(self._role.currentData()))

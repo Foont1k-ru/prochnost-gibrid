@@ -16,9 +16,9 @@ from .controller import AppController
 
 def make_report(controller: AppController, kind: str, parameters: list[tuple[str, str]],
                 columns: tuple[str, ...], rows: tuple[tuple[str, ...], ...], *,
-                precision_text: str | None = None) -> CSVReport:
+                precision_text: str | None = None, allow_empty_rows: bool = False) -> CSVReport:
     """Общий контекст проекта и заданные отображённые значения отчёта."""
-    if not columns or not rows or any(len(row) != len(columns) for row in rows):
+    if not columns or (not rows and not allow_empty_rows) or any(len(row) != len(columns) for row in rows):
         raise ValueError(tr("export.no_results"))
     data = json.dumps(controller.project.to_dict(), ensure_ascii=False, sort_keys=True,
                       separators=(",", ":"), allow_nan=False).encode("utf-8")
