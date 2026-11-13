@@ -104,3 +104,88 @@ def test_locks_survive_roundtrip(project) -> None:
     project.locks["setup.camber"] = True
     restored = Project.from_dict(project.to_dict())
     assert restored.locks.get("setup.camber") is True
+
+
+@pytest.mark.parametrize("operation", ["fsync", "replace"])
+def test_failed_atomic_save_preserves_existing_file_and_project_path(tmp_path, project, monkeypatch, operation):
+    from suspensionlab.model import project_io
+
+    target = tmp_path / "existing.susp.json"
+    target.write_bytes(b"previous contents")
+    project.path = "previous-project.susp.json"
+
+    def fail(*args):
+        raise OSError("simulated failure")
+
+    monkeypatch.setattr(project_io.os, operation, fail)
+    with pytest.raises(ProjectIOError) as error:
+        save_project(project, target)
+    assert error.value.message_key == "error.project.write_failed"
+    assert target.read_bytes() == b"previous contents"
+    assert project.path == "previous-project.susp.json"
+    assert sorted(p.name for p in tmp_path.iterdir()) == [target.name]
+
+
+def test_serialization_failure_does_not_touch_existing_file(tmp_path, project, monkeypatch):
+    from suspensionlab.model import project_io
+
+    target = tmp_path / "existing.susp.json"
+    target.write_text("old", encoding="utf8")
+    project.path = "old-path"
+
+    def fail(_project):
+        raise TypeError("not serializable")
+
+    monkeypatch.setattr(project_io, "project_to_json", fail)
+    with pytest.raises(ProjectIOError) as error:
+        save_project(project, target)
+    assert error.value.message_key == "error.project.write_failed"
+    assert target.read_text(encoding="utf8") == "old"
+    assert project.path == "old-path"
+    assert [p.name for p in tmp_path.iterdir()] == [target.name]
+
+
+def test_atomic_save_follows_existing_symlink_and_preserves_mode(tmp_path, project):
+    import os
+    import stat
+
+    if os.name == "nt":
+        pytest.skip("Символические ссылки на Windows могут требовать специальных прав")
+    real = tmp_path / "real.susp.json"
+    real.write_text("old", encoding="utf8")
+    real.chmod(0o640)
+    link = tmp_path / "link.susp.json"
+    link.symlink_to(real.name)
+    assert save_project(project, link) == link
+    assert link.is_symlink()
+    assert stat.S_IMODE(real.stat().st_mode) == 0o640
+    assert load_project(link).to_dict() == project.to_dict()
+
+
+def test_partial_write_failure_does_not_replace_previous_file(tmp_path, project, monkeypatch):
+    from suspensionlab.model import project_io
+
+    target = tmp_path / "existing.susp.json"
+    target.write_bytes(b"previous contents")
+    real_factory = project_io.tempfile.NamedTemporaryFile
+
+    class PartialWriter:
+        def __init__(self, handle):
+            self.handle = handle
+            self.name = handle.name
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            self.handle.close()
+
+        def write(self, text):
+            self.handle.write(text[:20])
+            raise OSError("partial write")
+
+    monkeypatch.setattr(project_io.tempfile, "NamedTemporaryFile", lambda **kwargs: PartialWriter(real_factory(**kwargs)))
+    with pytest.raises(ProjectIOError):
+        save_project(project, target)
+    assert target.read_bytes() == b"previous contents"
+    assert [p.name for p in tmp_path.iterdir()] == [target.name]

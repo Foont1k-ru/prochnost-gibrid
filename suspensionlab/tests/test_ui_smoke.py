@@ -978,3 +978,45 @@ def test_csv_save_dialog_cancel_extension_and_io_error(window, tmp_path, monkeyp
     monkeypatch.setattr(table_export.QFileDialog, "getSaveFileName", lambda *args: (str(tmp_path / "missing" / "file.csv"), ""))
     table_export.save_table_dialog(window, report)
     assert len(errors) == 1 and "Не удалось" in errors[0][2]
+
+
+def test_save_and_autosave_failure_preserve_original_and_dirty_state(window, tmp_path, monkeypatch):
+    from suspensionlab.model import project_io
+    from suspensionlab.model.project_io import ProjectIOError
+    from suspensionlab.ui import controller as module
+
+    c = window.controller
+    original = c.save_project(tmp_path / "project")
+    original_bytes = original.read_bytes()
+    backup = tmp_path / "autosave.susp.json"
+    backup.write_bytes(b"old backup")
+    monkeypatch.setattr(module, "autosave_path", lambda: backup)
+    c.set_value(c.project.vehicle, "mass_kg", c.project.vehicle.mass_kg + 50)
+    messages = []
+    c.statusMessage.connect(messages.append)
+
+    def fail(*args):
+        raise OSError("disk failure")
+
+    monkeypatch.setattr(project_io.os, "replace", fail)
+    with pytest.raises(ProjectIOError):
+        c.save_project()
+    assert c.dirty and c.project.path == str(original) and original.read_bytes() == original_bytes
+    assert not c.autosave()
+    assert backup.read_bytes() == b"old backup"
+    assert c.dirty and c.project.path == str(original) and messages[-1] == "autosave.failed"
+    assert not list(tmp_path.glob(".suspensionlab-project-*.tmp"))
+
+
+def test_autosave_directory_failure_is_reported(window, monkeypatch):
+    from suspensionlab.ui import controller as module
+
+    messages = []
+    window.controller.statusMessage.connect(messages.append)
+
+    def fail():
+        raise OSError("directory unavailable")
+
+    monkeypatch.setattr(module, "autosave_path", fail)
+    assert not window.controller.autosave()
+    assert messages[-1] == "autosave.failed"

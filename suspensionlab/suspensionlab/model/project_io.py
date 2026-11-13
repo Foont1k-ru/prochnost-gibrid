@@ -10,7 +10,11 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import stat
+import tempfile
 from collections.abc import Callable
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -111,14 +115,36 @@ def project_to_json(project: Project) -> str:
 
 
 def save_project(project: Project, path: str | Path) -> Path:
-    """Сохраняет проект в файл; возвращает фактический путь."""
+    """Сначала записывает временный файл рядом с целью, затем заменяет цель.
+
+    При ошибке прежний файл и путь проекта не изменяются. Символическая
+    ссылка на существующий файл остаётся ссылкой: заменяется её цель.
+    Атомарная замена не гарантирует сохранность при потере питания.
+    """
     target = ensure_suffix(Path(path))
+    temporary: str | None = None
     try:
+        text = project_to_json(project)
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(project_to_json(project), encoding="utf-8")
-    except OSError as error:
+        destination = target.resolve()
+        mode = stat.S_IMODE(destination.stat().st_mode) if destination.exists() else None
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", newline="", dir=destination.parent,
+                                         prefix=".suspensionlab-project-", suffix=".tmp", delete=False) as handle:
+            temporary = handle.name
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if mode is not None and os.name != "nt":
+            os.chmod(temporary, mode)
+        os.replace(temporary, destination)
+        temporary = None
+    except (OSError, UnicodeError, TypeError, ValueError, OverflowError, RuntimeError) as error:
         LOG.error("Не удалось записать проект %s: %s", target, error)
         raise ProjectIOError("error.project.write_failed", path=str(target)) from error
+    finally:
+        if temporary is not None:
+            with suppress(OSError):
+                os.unlink(temporary)
     project.path = str(target)
     LOG.info("Проект сохранён: %s", target)
     return target

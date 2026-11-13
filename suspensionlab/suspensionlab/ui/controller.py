@@ -112,7 +112,7 @@ class AppController(QObject):
         original_path = self.project.path
         try:
             save_project(self.project, autosave_path())
-        except ProjectIOError:
+        except (OSError, ProjectIOError):
             LOG.warning("Автосохранение не удалось", exc_info=True)
             self.statusMessage.emit("autosave.failed")
             return False
