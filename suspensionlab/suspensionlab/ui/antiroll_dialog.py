@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QSlider,
     QSplitter,
@@ -35,6 +36,7 @@ from ..i18n import tr
 from .analysis_dialog import AnalysisDialog
 from .canvas.antiroll_preview import AntiRollPreview
 from .controller import AppController
+from .table_export import make_table_report, save_table_dialog
 from .widgets.playback import PlaybackControls
 
 
@@ -141,11 +143,14 @@ class AntiRollDialog(QDialog):
         self._next.clicked.connect(lambda: self._slider.setValue(self._slider.value() + 1))
         self._run = QPushButton(tr("analysis.run"), self)
         self._run.clicked.connect(self._calculate)
+        self._export_button = QPushButton(tr("export.button"), self)
+        self._export_button.clicked.connect(self._export)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close, self)
         buttons.button(QDialogButtonBox.StandardButton.Close).setText(tr("analysis.close"))
         buttons.rejected.connect(self.reject)
         bottom = QHBoxLayout()
         bottom.addWidget(self._run)
+        bottom.addWidget(self._export_button)
         bottom.addStretch()
         bottom.addWidget(buttons)
         layout = QVBoxLayout(self)
@@ -178,6 +183,7 @@ class AntiRollDialog(QDialog):
 
     def _clear_results(self) -> None:
         self._playback.set_count(0)
+        self._export_button.setEnabled(False)
         self._points = ()
         self._suspensions = []
         self._checks = []
@@ -282,6 +288,7 @@ class AntiRollDialog(QDialog):
                 item.setToolTip(value)
                 self._table.setItem(row, column, item)
         self._status.setText(tr("analysis.complete", count=len(result.points), failures=failures))
+        self._export_button.setEnabled(bool(result.points))
         if result.points:
             self._playback.set_count(len(result.points))
             self._slider.setRange(0, len(result.points) - 1)
@@ -341,6 +348,35 @@ class AntiRollDialog(QDialog):
             else:
                 damper_status = tr(f"analysis.damper_status.{damper.stroke.status}" if damper.stroke else "analysis.damper_status.unknown")
         return spring_length, spring_status, damper_length, damper_status
+
+    def _report_parameters(self) -> list[tuple[str, str]]:
+        axle = self.controller.project.axle(str(self._role.currentData()))
+        unknown, disabled = tr("export.unknown"), tr("export.not_enabled")
+        def optional(enabled: bool, value: float) -> str:
+            return (str(value) if value else unknown) if enabled else disabled
+        return [
+            (tr("antiroll_ui.role"), self._role.currentText()), (tr("export.axle_type"), tr(axle.spec.name_key)),
+            (tr("antiroll_ui.mode"), self._mode.currentText()),
+            (tr("antiroll_ui.from"), str(self._from.value())), (tr("antiroll_ui.to"), str(self._to.value())),
+            (tr("antiroll_ui.step"), str(self._step.value())),
+            (tr("antiroll_ui.axis_x"), self._axis_x.text()), (tr("antiroll_ui.axis_z"), self._axis_z.text()),
+            (tr("antiroll_ui.rate"), self._rate.text()),
+            (tr("antiroll_ui.spring_overlay"), tr("export.yes") if self._show_spring.isChecked() else tr("export.no")),
+            (tr("analysis.spring_length"), optional(self._show_spring.isChecked(), self._spring_length.value())),
+            (tr("analysis.coil_bind"), optional(self._show_spring.isChecked(), self._coil_bind.value())),
+            (tr("antiroll_ui.damper_overlay"), tr("export.yes") if self._show_damper.isChecked() else tr("export.no")),
+            (tr("analysis.damper_min"), optional(self._show_damper.isChecked(), self._damper_min.value())),
+            (tr("analysis.damper_max"), optional(self._show_damper.isChecked(), self._damper_max.value())),
+        ]
+
+    def _export(self) -> None:
+        self._playback.stop(tr("playback.paused"))
+        try:
+            report = make_table_report(self.controller, self._table, tr("antiroll_ui.title"), self._report_parameters())
+        except (ValueError, UnicodeError) as error:
+            QMessageBox.warning(self, tr("export.error_title"), tr("export.error", reason=str(error)))
+            return
+        save_table_dialog(self, report)
 
     def _playback_problem(self, row: int) -> str | None:
         if not 0 <= row < len(self._points) or self._points[row].state is None or self._suspensions[row] is None:

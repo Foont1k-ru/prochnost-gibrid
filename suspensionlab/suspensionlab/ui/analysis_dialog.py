@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QSlider,
     QSplitter,
@@ -35,6 +36,7 @@ from ..core.sweep import travel_grid
 from ..i18n import tr
 from .canvas.pose_preview import PosePreview
 from .controller import AppController
+from .table_export import make_table_report, save_table_dialog
 from .widgets.playback import PlaybackControls
 
 
@@ -136,11 +138,14 @@ class AnalysisDialog(QDialog):
         self._next.clicked.connect(lambda: self._slider.setValue(self._slider.value() + 1))
         self._run = QPushButton(tr("analysis.run"), self)
         self._run.clicked.connect(self._calculate)
+        self._export_button = QPushButton(tr("export.button"), self)
+        self._export_button.clicked.connect(self._export)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close, self)
         buttons.button(QDialogButtonBox.StandardButton.Close).setText(tr("analysis.close"))
         buttons.rejected.connect(self.reject)
         row = QHBoxLayout()
         row.addWidget(self._run)
+        row.addWidget(self._export_button)
         row.addStretch()
         row.addWidget(buttons)
         layout = QVBoxLayout(self)
@@ -181,6 +186,7 @@ class AnalysisDialog(QDialog):
 
     def _clear_results(self) -> None:
         self._playback.set_count(0)
+        self._export_button.setEnabled(False)
         self._frames = []
         self._cambers = []
         self._playback_reasons = []
@@ -311,6 +317,7 @@ class AnalysisDialog(QDialog):
                 item.setToolTip(text)
                 self._table.setItem(row, column, item)
         self._status.setText(tr("analysis.complete", count=len(travels), failures=failures))
+        self._export_button.setEnabled(bool(travels))
         if travels:
             self._playback.set_count(len(travels))
             self._slider.setRange(0, len(travels) - 1)
@@ -341,6 +348,37 @@ class AnalysisDialog(QDialog):
         item = self._table.item(row, 8)
         state = item.text() if item is not None else ""
         self._preview_status.setText(tr("analysis.preview_warning", state=state))
+
+    def _report_parameters(self) -> list[tuple[str, str]]:
+        axle = self.controller.project.axle(str(self._role.currentData()))
+        unknown, disabled = tr("export.unknown"), tr("export.not_enabled")
+        def optional(enabled: bool, value: float) -> str:
+            return (str(value) if value else unknown) if enabled else disabled
+        params = [
+            (tr("analysis.role"), self._role.currentText()), (tr("export.axle_type"), tr(axle.spec.name_key)),
+            (tr("analysis.side"), self._side.currentText()),
+            (tr("analysis.from"), str(self._from.value())), (tr("analysis.to"), str(self._to.value())),
+            (tr("analysis.step"), str(self._step.value())),
+            (tr("analysis.spring_enable"), tr("export.yes") if self._spring.isChecked() else tr("export.no")),
+            (tr("analysis.spring_length"), optional(self._spring.isChecked(), self._spring_length.value())),
+            (tr("analysis.coil_bind"), optional(self._spring.isChecked(), self._coil_bind.value())),
+            (tr("analysis.damper_enable"), tr("export.yes") if self._damper.isChecked() else tr("export.no")),
+            (tr("analysis.damper_min"), optional(self._damper.isChecked(), self._damper_min.value())),
+            (tr("analysis.damper_max"), optional(self._damper.isChecked(), self._damper_max.value())),
+            (tr("analysis.damping_enable"), tr("export.yes") if self._damping.isChecked() else tr("export.no")),
+        ]
+        for label, field in (("velocity", self._velocity), ("compression", self._compression), ("rebound", self._rebound)):
+            params.append((tr(f"analysis.{label}"), field.text() if self._damping.isChecked() else disabled))
+        return params
+
+    def _export(self) -> None:
+        self._playback.stop(tr("playback.paused"))
+        try:
+            report = make_table_report(self.controller, self._table, tr("analysis.title"), self._report_parameters())
+        except (ValueError, UnicodeError) as error:
+            QMessageBox.warning(self, tr("export.error_title"), tr("export.error", reason=str(error)))
+            return
+        save_table_dialog(self, report)
 
     def _playback_problem(self, row: int) -> str | None:
         return self._playback_reasons[row] if 0 <= row < len(self._playback_reasons) else tr("playback.missing")

@@ -880,3 +880,95 @@ def test_playback_stops_before_unsolved_row(window, qtbot, monkeypatch):
     assert dialog._table.currentRow() == 0 and dialog._preview.frame is not None
     assert not dialog._playback._timer.isActive()
     assert "нет рассчитанной схемы" in dialog._playback._message.text()
+
+
+def test_corner_export_contains_displayed_rows_context_and_no_stale_results(window, qtbot, tmp_path, monkeypatch):
+    import csv
+
+    from suspensionlab.export.csv_report import write_csv_report
+    from suspensionlab.ui import analysis_dialog
+
+    c = window.controller
+    c.new_project("ring")
+    c.set_value(c.project.meta, "name", "=unsafe name")
+    before = c.project.to_dict()
+    dialog = analysis_dialog.AnalysisDialog(c, window)
+    qtbot.addWidget(dialog)
+    assert not dialog._export_button.isEnabled()
+    dialog._from.setValue(-1)
+    dialog._to.setValue(1)
+    dialog._damper.setChecked(True)
+    dialog._damping.setChecked(True)
+    dialog._velocity.setText("20")
+    dialog._compression.setText("2")
+    dialog._rebound.setText("4")
+    dialog._run.click()
+    assert dialog._export_button.isEnabled()
+    captured = []
+    monkeypatch.setattr(analysis_dialog, "save_table_dialog", lambda _parent, report: captured.append(report))
+    dialog._export_button.click()
+    assert len(captured) == 1
+    report = captured[0]
+    metadata = dict(report.metadata)
+    assert metadata["Название проекта"] == "=unsafe name"
+    assert metadata["Есть несохранённые изменения проекта"] == "да"
+    assert len(metadata["SHA-256 сериализуемой модели проекта"]) == 64
+    assert metadata["Скорость колеса, мм/с"] == "20"
+    assert metadata["Длина сжатого, мм (0 — неизвестна)"] == "не задано — не проверено"
+    assert len(report.rows) == 3 and report.rows[1][1] == dialog._table.item(1, 1).text()
+    path = write_csv_report(report, tmp_path / "corner.csv")
+    with path.open(encoding="utf-8-sig", newline="") as handle:
+        rows = list(csv.reader(handle, delimiter=";"))
+    assert ["Название проекта", "'=unsafe name"] in rows
+    assert "экспериментальная" in metadata["Ограничения"].lower()
+    assert c.project.to_dict() == before
+    dialog._to.setValue(2)
+    assert not dialog._export_button.isEnabled() and dialog._table.rowCount() == 0
+
+
+def test_antiroll_export_preserves_assumptions_and_failures(window, qtbot, monkeypatch):
+    from suspensionlab.ui import antiroll_dialog
+
+    window.controller.new_project("ring")
+    dialog = antiroll_dialog.AntiRollDialog(window.controller, window)
+    qtbot.addWidget(dialog)
+    dialog._from.setValue(0)
+    dialog._to.setValue(1)
+    dialog._axis_x.setText("-250")
+    dialog._axis_z.setText("320")
+    dialog._rate.setText("1000")
+    dialog._show_spring.setChecked(True)
+    dialog._spring_length.setValue(230)
+    dialog._coil_bind.setValue(231)
+    dialog._run.click()
+    captured = []
+    monkeypatch.setattr(antiroll_dialog, "save_table_dialog", lambda _parent, report: captured.append(report))
+    dialog._export_button.click()
+    assert len(captured) == 1
+    report = captured[0]
+    params = dict(report.metadata)
+    assert params["Координата оси X, мм"] == "-250"
+    assert params["Крутильная жёсткость, Н·м/рад"] == "1000"
+    assert params["Длина смыкания, мм (0 — неизвестна)"] == "231.0"
+    assert any("СМЫКАНИЕ ВИТКОВ" in field for row in report.rows for field in row)
+    dialog._rate.setText("2000")
+    assert not dialog._export_button.isEnabled() and dialog._table.rowCount() == 0
+
+
+def test_csv_save_dialog_cancel_extension_and_io_error(window, tmp_path, monkeypatch):
+    from suspensionlab.export.csv_report import CSVReport
+    from suspensionlab.ui import table_export
+
+    report = CSVReport((("Название", "пример"),), ("Ход",), (("1",),))
+    monkeypatch.setattr(table_export.QFileDialog, "getSaveFileName", lambda *args: ("", ""))
+    before = set(tmp_path.iterdir())
+    table_export.save_table_dialog(window, report)
+    assert set(tmp_path.iterdir()) == before
+    monkeypatch.setattr(table_export.QFileDialog, "getSaveFileName", lambda *args: (str(tmp_path / "result"), ""))
+    table_export.save_table_dialog(window, report)
+    assert (tmp_path / "result.csv").read_bytes().startswith(b"\xef\xbb\xbf")
+    errors = []
+    monkeypatch.setattr(table_export.QMessageBox, "warning", lambda *args: errors.append(args))
+    monkeypatch.setattr(table_export.QFileDialog, "getSaveFileName", lambda *args: (str(tmp_path / "missing" / "file.csv"), ""))
+    table_export.save_table_dialog(window, report)
+    assert len(errors) == 1 and "Не удалось" in errors[0][2]
