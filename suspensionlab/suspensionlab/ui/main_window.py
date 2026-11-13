@@ -37,6 +37,7 @@ from .dialogs import RestoreSnapshotDialog, SnapshotDialog, TemplateDialog
 from .docks.diagnostics import DiagnosticsPanel
 from .docks.inspector import Inspector
 from .docks.project_tree import ProjectTree
+from .equilibrium_dialog import EquilibriumDialog
 from .theme import THEMES, apply_theme
 from .widgets.empty_state import EmptyState
 
@@ -222,6 +223,9 @@ class MainWindow(QMainWindow):
         self.action_antiroll = QAction(tr("antiroll_ui.menu_action"), self)
         self.action_antiroll.triggered.connect(self._open_antiroll)
 
+        self.action_equilibrium = QAction(tr("equilibrium_ui.menu"), self)
+        self.action_equilibrium.triggered.connect(self._open_equilibrium)
+
         self.action_log = QAction(tr("menu.help.log"), self)
         self.action_log.triggered.connect(self._open_log)
 
@@ -275,6 +279,7 @@ class MainWindow(QMainWindow):
         menu_analysis = bar.addMenu(tr("analysis.menu"))
         menu_analysis.addAction(self.action_analysis)
         menu_analysis.addAction(self.action_antiroll)
+        menu_analysis.addAction(self.action_equilibrium)
 
         menu_help = bar.addMenu(tr("menu.help"))
         menu_help.addAction(self.action_manual)
@@ -506,6 +511,12 @@ class MainWindow(QMainWindow):
     def _open_antiroll(self) -> None:
         """Показывает отдельную идеализированную модель стабилизатора."""
         dialog = AntiRollDialog(self.controller, self)
+        dialog.exec()
+        dialog.deleteLater()
+
+    def _open_equilibrium(self) -> None:
+        """Открывает экспериментальный баланс одной стороны."""
+        dialog = EquilibriumDialog(self.controller, self)
         dialog.exec()
         dialog.deleteLater()
 

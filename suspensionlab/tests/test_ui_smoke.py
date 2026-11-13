@@ -1298,3 +1298,97 @@ def test_recovery_rejects_alias_of_autosave_and_releases_on_new_project(window, 
     assert backup.read_bytes() == data
     c.new_project("ring")
     assert not c.recovery_pending
+
+
+def test_equilibrium_dialog_matches_core_and_invalidates_stale_result(window, qtbot):
+    from suspensionlab.core.equilibrium import SpringEquilibrium
+    from suspensionlab.ui.equilibrium_dialog import EquilibriumDialog
+
+    c = window.controller
+    c.new_project("ring")
+    before = c.project.to_dict()
+    load = SpringEquilibrium(c.project.front, 230, coil_bind_length_mm=150).evaluate(12, 1).wheel_support_n
+    dialog = EquilibriumDialog(c, window)
+    qtbot.addWidget(dialog)
+    dialog._length.setValue(230)
+    dialog._bind.setValue(150)
+    dialog._load.setValue(load)
+    dialog._damper.setChecked(True)
+    dialog._damper_min.setValue(300)
+    dialog._damper_max.setValue(500)
+    dialog._run.click()
+    result = dialog._result
+    assert result is not None and result.path is not None and result.path.completed
+    assert result.estimate.travel_mm == pytest.approx(12, abs=0.1)
+    assert result.upper.travel_mm - result.lower.travel_mm <= 0.1
+    assert result.path.actual_step_mm <= 1
+    assert "не доказательство" in dialog._status.text()
+    assert "проверены в рассчитанных точках" in dialog._output.text()
+    assert c.project.to_dict() == before
+    dialog._side.setCurrentIndex(1)
+    assert dialog._result is None and dialog._output.text() == ""
+    dialog._run.click()
+    assert dialog._result is not None
+    assert dialog._result.estimate.travel_mm == pytest.approx(12, abs=0.1)
+    c.set_value(c.project.vehicle, "mass_kg", c.project.vehicle.mass_kg + 1)
+    assert dialog._result is None and dialog._output.text() == ""
+    dialog._role.setCurrentIndex(1)
+    assert not dialog._run.isEnabled()
+
+
+def test_equilibrium_dialog_rejects_incomplete_inputs_and_conflicts(window, qtbot):
+    from suspensionlab.core.equilibrium import SpringEquilibrium
+    from suspensionlab.ui.equilibrium_dialog import EquilibriumDialog
+
+    c = window.controller
+    c.new_project("ring")
+    dialog = EquilibriumDialog(c, window)
+    qtbot.addWidget(dialog)
+    dialog._run.click()
+    assert "положительные" in dialog._status.text() and dialog._result is None
+    dialog._length.setValue(230)
+    dialog._load.setValue(1000)
+    dialog._damper.setChecked(True)
+    dialog._run.click()
+    assert "обе" in dialog._status.text() and dialog._result is None
+    dialog._damper_min.setValue(500)
+    dialog._damper_max.setValue(300)
+    dialog._run.click()
+    assert "Расчёт не выполнен" in dialog._status.text()
+    dialog._damper.setChecked(False)
+    dialog._load.setValue(50000)
+    dialog._run.click()
+    assert "разные стороны" in dialog._status.text() and dialog._result is None
+    dialog._bind.setValue(231)
+    dialog._load.setValue(1000)
+    dialog._run.click()
+    assert "неопределённая сила" in dialog._status.text() and dialog._output.text() == ""
+    # Концы интервала допустимы, но от статики путь не начинается безопасно.
+    dialog._bind.setValue(230.1)
+    dialog._from.setValue(-20)
+    dialog._to.setValue(-10)
+    load = SpringEquilibrium(c.project.front, 230).evaluate(-12, 1).wheel_support_n
+    dialog._load.setValue(load)
+    dialog._run.click()
+    assert "Проверка пути не пройдена" in dialog._status.text()
+    assert "0.000" in dialog._status.text() and dialog._result is None and dialog._output.text() == ""
+
+
+def test_equilibrium_menu_opens_dialog(window, monkeypatch):
+    from suspensionlab.ui import main_window
+
+    calls = []
+
+    class FakeDialog:
+        def __init__(self, controller, parent):
+            calls.append((controller, parent))
+
+        def exec(self):
+            calls.append("exec")
+
+        def deleteLater(self):  # noqa: N802 (Qt API)
+            calls.append("delete")
+
+    monkeypatch.setattr(main_window, "EquilibriumDialog", FakeDialog)
+    window.action_equilibrium.trigger()
+    assert calls == [(window.controller, window), "exec", "delete"]
