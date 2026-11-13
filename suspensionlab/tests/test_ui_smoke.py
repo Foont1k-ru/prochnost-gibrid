@@ -551,7 +551,7 @@ def test_antiroll_preview_steps_both_views_and_invalidates(window, qtbot):
     assert dialog._table.rowCount() == 5
     assert dialog._preview.frame is not None and dialog._preview.frame.left_travel_mm == 0
     assert dialog._preview.axis_x == -250 and dialog._preview.axis_z == 320
-    assert "упоры, смыкание, столкновения и прочность не проверены" in dialog._preview_status.text().lower()
+    assert "препятствия и прочность не проверены" in dialog._preview_status.text().lower()
     bounds = dict(dialog._preview.bounds)
     dialog._next.click()
     state = dialog._preview.frame
@@ -679,3 +679,79 @@ def test_combined_preview_marks_missing_overlay_instead_of_inventing_it(window, 
     assert dialog._preview.frame is not None
     assert dialog._preview.left_suspension is None and dialog._preview.right_suspension is None
     assert "только стабилизатор" in dialog._preview_status.text()
+
+
+def test_combined_checks_unknown_known_conflict_and_invalidation(window, qtbot):
+    from suspensionlab.core.analysis import analyze_corner
+    from suspensionlab.core.stroke import StrokeLimits
+    from suspensionlab.ui.antiroll_dialog import AntiRollDialog
+
+    window.controller.new_project("ring")
+    dialog = AntiRollDialog(window.controller, window)
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog._from.setValue(0)
+    dialog._to.setValue(1)
+    dialog._axis_x.setText("-250")
+    dialog._axis_z.setText("320")
+    dialog._rate.setText("1000")
+    assert not dialog._spring_length.isEnabled() and not dialog._damper_min.isEnabled()
+    dialog._show_spring.setChecked(True)
+    dialog._show_damper.setChecked(True)
+    dialog._run.click()
+    assert "длина в статике неизвестна" in dialog._table.item(0, 14).text()
+    assert "не заданы" in dialog._table.item(0, 16).text()
+    assert dialog._table.item(0, 13).text() == "— / —"
+    dialog._spring_length.setValue(230)
+    dialog._coil_bind.setValue(150)
+    dialog._damper_min.setValue(350)
+    dialog._damper_max.setValue(450)
+    assert dialog._table.rowCount() == 0 and dialog._preview.frame is None
+    dialog._run.click()
+    dialog._next.click()
+    for side, travel, index in (("left", 1, 0), ("right", -1, 1)):
+        result = analyze_corner(window.controller.project.front, window.controller.project.vehicle, [travel], side=side,
+                                spring_mount="lower_arm", static_spring_length_mm=230, coil_bind_length_mm=150,
+                                damper_mount="lower_arm", damper_limits=StrokeLimits(350, 450)).samples[0]
+        assert result is not None and result.spring is not None and result.spring.state is not None and result.damper is not None
+        assert float(dialog._table.item(1, 13).text().split(" / ")[index]) == pytest.approx(result.spring.state.length_mm, abs=0.0051)
+        assert float(dialog._table.item(1, 15).text().split(" / ")[index]) == pytest.approx(result.damper.length_mm, abs=0.0051)
+    assert "выше заданной длины смыкания" in dialog._preview_status.text()
+    assert "Между заданными упорами" in dialog._preview_status.text()
+    dialog._coil_bind.setValue(231)
+    dialog._damper_min.setValue(100)
+    dialog._damper_max.setValue(200)
+    dialog._run.click()
+    assert "СМЫКАНИЕ ВИТКОВ" in dialog._preview_status.text()
+    assert "Превышен упор отбоя" in dialog._preview_status.text()
+    assert dialog._preview.frame is not None  # диагностическая геометрия, не физическое разрешение
+
+
+def test_combined_checks_reject_incomplete_limits(window, qtbot):
+    from suspensionlab.ui.antiroll_dialog import AntiRollDialog
+
+    window.controller.new_project("ring")
+    dialog = AntiRollDialog(window.controller, window)
+    qtbot.addWidget(dialog)
+    dialog._from.setValue(0)
+    dialog._to.setValue(0)
+    dialog._axis_x.setText("-250")
+    dialog._axis_z.setText("320")
+    dialog._rate.setText("1000")
+    dialog._show_spring.setChecked(True)
+    dialog._coil_bind.setValue(150)
+    dialog._run.click()
+    assert dialog._table.rowCount() == 0 and "длина пружины в статике" in dialog._status.text()
+    dialog._spring_length.setValue(230)
+    dialog._show_damper.setChecked(True)
+    dialog._damper_min.setValue(350)
+    dialog._run.click()
+    assert dialog._table.rowCount() == 0 and "оба предела" in dialog._status.text()
+    dialog._damper_max.setValue(450)
+    dialog._coil_bind.setValue(250)
+    dialog._run.click()
+    assert dialog._table.rowCount() == 0 and "меньше" in dialog._status.text()
+    dialog._show_spring.setChecked(False)
+    dialog._run.click()
+    assert dialog._table.rowCount() == 1
+    assert "не включено" in dialog._table.item(0, 14).text()

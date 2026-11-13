@@ -26,8 +26,10 @@ from PySide6.QtWidgets import (
 )
 
 from ..core.antiroll import AntiRollPoint, AntiRollScenario, AntiRollStudy
+from ..core.combined_checks import ComponentCheckOptions, ComponentChecks, check_components
 from ..core.double_wishbone import DoubleWishbone
 from ..core.pose_view import PoseView, pose_view
+from ..core.stroke import StrokeLimits
 from ..core.sweep import travel_grid
 from ..i18n import tr
 from .analysis_dialog import AnalysisDialog
@@ -60,6 +62,10 @@ class AntiRollDialog(QDialog):
             edit.setPlaceholderText(tr("analysis.explicit_required"))
         self._show_spring = QCheckBox(tr("antiroll_ui.spring_overlay"), self)
         self._show_damper = QCheckBox(tr("antiroll_ui.damper_overlay"), self)
+        self._spring_length = self._number(0, 2000, 0, 1)
+        self._coil_bind = self._number(0, 2000, 0, 1)
+        self._damper_min = self._number(0, 2000, 0, 1)
+        self._damper_max = self._number(0, 2000, 0, 1)
 
         fields = QHBoxLayout()
         sweep = QFormLayout()
@@ -71,15 +77,21 @@ class AntiRollDialog(QDialog):
             params.addRow(tr(f"antiroll_ui.{key}"), edit)
         params.addRow(self._show_spring)
         params.addRow(self._show_damper)
+        checks = QFormLayout()
+        for key, number in (("spring_length", self._spring_length), ("coil_bind", self._coil_bind),
+                            ("damper_min", self._damper_min), ("damper_max", self._damper_max)):
+            checks.addRow(tr(f"analysis.{key}"), number)
         fields.addLayout(sweep)
         fields.addLayout(params)
+        fields.addLayout(checks)
 
         notice = QLabel(tr("antiroll_ui.notice"), self)
         notice.setWordWrap(True)
         self._status = QLabel(self)
         self._status.setWordWrap(True)
         columns = ("left_travel", "right_travel", "left_lower", "left_upper", "right_lower", "right_upper",
-                   "left_angle", "right_angle", "twist", "torque", "left_force", "right_force", "state")
+                   "left_angle", "right_angle", "twist", "torque", "left_force", "right_force", "state",
+                   "spring_lengths", "spring_status", "damper_lengths", "damper_status")
         self._table = QTableWidget(0, len(columns), self)
         self._table.setHorizontalHeaderLabels([tr(f"antiroll_ui.column.{key}") for key in columns])
         self._table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
@@ -89,6 +101,7 @@ class AntiRollDialog(QDialog):
         self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._points: tuple[AntiRollPoint, ...] = ()
         self._suspensions: list[tuple[PoseView, PoseView] | None] = []
+        self._checks: list[tuple[ComponentChecks, ComponentChecks] | None] = []
         self._preview = AntiRollPreview(self)
         self._preview_status = QLabel(tr("analysis.preview_empty"), self)
         self._preview_status.setWordWrap(True)
@@ -139,7 +152,8 @@ class AntiRollDialog(QDialog):
 
         for combo in (self._role, self._mode):
             combo.currentIndexChanged.connect(self._invalidate)
-        for field in (self._from, self._to, self._step):
+        for field in (self._from, self._to, self._step, self._spring_length, self._coil_bind,
+                      self._damper_min, self._damper_max):
             field.valueChanged.connect(self._invalidate)
         for edit in (self._axis_x, self._axis_z, self._rate):
             edit.textChanged.connect(self._invalidate)
@@ -160,6 +174,7 @@ class AntiRollDialog(QDialog):
     def _clear_results(self) -> None:
         self._points = ()
         self._suspensions = []
+        self._checks = []
         self._preview.clear()
         self._preview_status.setText(tr("analysis.preview_empty"))
         self._slider.setEnabled(False)
@@ -169,6 +184,10 @@ class AntiRollDialog(QDialog):
 
     def _invalidate(self, *_args: object) -> None:
         self._clear_results()
+        self._spring_length.setEnabled(self._show_spring.isChecked())
+        self._coil_bind.setEnabled(self._show_spring.isChecked())
+        self._damper_min.setEnabled(self._show_damper.isChecked())
+        self._damper_max.setEnabled(self._show_damper.isChecked())
         supported = self.controller.project.axle(str(self._role.currentData())).type_code == "double_wishbone"
         self._run.setEnabled(supported)
         self._status.setText(tr("analysis.ready" if supported else "analysis.unsupported"))
@@ -190,6 +209,15 @@ class AntiRollDialog(QDialog):
                 rate = AnalysisDialog._explicit_number(self._rate, 0, 10000000)
             except ValueError as error:
                 raise ValueError(tr("antiroll_ui.inputs_required")) from error
+            spring_length = (self._spring_length.value() or None) if self._show_spring.isChecked() else None
+            coil_bind = (self._coil_bind.value() or None) if self._show_spring.isChecked() else None
+            if coil_bind is not None and (not axle.spring.free_len_mm > 0 or coil_bind >= axle.spring.free_len_mm):
+                raise ValueError(tr("antiroll_ui.invalid_coil_bind"))
+            low = self._damper_min.value() if self._show_damper.isChecked() else 0
+            high = self._damper_max.value() if self._show_damper.isChecked() else 0
+            if (low == 0) != (high == 0):
+                raise ValueError(tr("analysis.damper_limits_required"))
+            options = ComponentCheckOptions(spring_length, coil_bind, StrokeLimits(low, high) if low and high else None)
             grid = travel_grid(self._from.value(), self._to.value(), max_spacing_mm=self._step.value())
             if len(grid) > 401:
                 raise ValueError(tr("analysis.too_many_points"))
@@ -201,6 +229,12 @@ class AntiRollDialog(QDialog):
             return
         self._points = result.points
         left_model, right_model = DoubleWishbone(axle, "left"), DoubleWishbone(axle, "right")
+        static_pair: tuple[PoseView, PoseView] | None = None
+        with suppress(ValueError, KeyError, ArithmeticError):
+            static_pair = (pose_view(left_model, left_model.initial_pose(), axle, spring=self._show_spring.isChecked(),
+                                     damper=self._show_damper.isChecked()),
+                           pose_view(right_model, right_model.initial_pose(), axle, spring=self._show_spring.isChecked(),
+                                     damper=self._show_damper.isChecked()))
         for point in result.points:
             pair = None
             if point.state is not None and point.left_pose is not None and point.right_pose is not None:
@@ -210,12 +244,18 @@ class AntiRollDialog(QDialog):
                             pose_view(right_model, point.right_pose, axle, spring=self._show_spring.isChecked(),
                                       damper=self._show_damper.isChecked()))
             self._suspensions.append(pair)
+            checks_pair = None
+            if pair is not None and static_pair is not None:
+                with suppress(ValueError, KeyError, ArithmeticError):
+                    checks_pair = (check_components(pair[0], static_pair[0], options),
+                                   check_components(pair[1], static_pair[1], options))
+            self._checks.append(checks_pair)
         self._preview.configure([point.state for point in result.points if point.state is not None], x, z,
                                 [view for pair in self._suspensions if pair is not None for view in pair])
         self._table.setRowCount(len(result.points))
         failures = 0
         for row, point in enumerate(result.points):
-            values = [f"{point.left_travel_mm:+.2f}", f"{point.right_travel_mm:+.2f}"] + ["—"] * 10 + [""]
+            values = [f"{point.left_travel_mm:+.2f}", f"{point.right_travel_mm:+.2f}"] + ["—"] * 10 + [""] + ["—"] * 4
             if point.state is None:
                 failures += 1
                 values[12] = point.error or tr("analysis.no_result")
@@ -227,6 +267,10 @@ class AntiRollDialog(QDialog):
                                  f"{state.twist_deg:+.2f}", f"{state.torque_nm:+.2f}",
                                  f"{state.left.compression_force_n:+.1f}", f"{state.right.compression_force_n:+.1f}"]
                 values[12] = tr("antiroll_ui.calculated")
+                checks_pair = self._checks[row]
+                if checks_pair is not None:
+                    left, right = (self._component_text(check) for check in checks_pair)
+                    values[13:17] = [f"{left[i]} / {right[i]}" for i in range(4)]
             for column, value in enumerate(values):
                 item = QTableWidgetItem(value)
                 item.setToolTip(value)
@@ -261,4 +305,30 @@ class AntiRollDialog(QDialog):
             self._preview_status.setText(tr("antiroll_ui.overlay_missing"))
         else:
             self._preview.show_frame(point.state, *suspension)
-            self._preview_status.setText(tr("antiroll_ui.preview_warning"))
+            checks = self._checks[row]
+            if checks is None:
+                self._preview_status.setText(tr("antiroll_ui.checks_missing"))
+                return
+            left, right = (self._component_text(check) for check in checks)
+            self._preview_status.setText(tr("antiroll_ui.preview_warning") + "\n" + tr(
+                "antiroll_ui.check_summary", spring_left=left[1], spring_right=right[1],
+                damper_left=left[3], damper_right=right[3]))
+
+    @staticmethod
+    def _component_text(checks: ComponentChecks) -> tuple[str, str, str, str]:
+        spring_length = damper_length = "—"
+        spring_status = damper_status = tr("antiroll_ui.not_enabled")
+        if checks.spring is not None:
+            spring = checks.spring
+            if spring.length_mm is not None:
+                spring_length = f"{spring.length_mm:.2f}"
+            spring_status = tr(f"antiroll_ui.spring_check.{spring.status}")
+        if checks.damper is not None:
+            damper = checks.damper
+            if not damper.invalid:
+                damper_length = f"{damper.length_mm:.2f}"
+            if damper.invalid:
+                damper_status = tr("antiroll_ui.damper_invalid")
+            else:
+                damper_status = tr(f"analysis.damper_status.{damper.stroke.status}" if damper.stroke else "analysis.damper_status.unknown")
+        return spring_length, spring_status, damper_length, damper_status
