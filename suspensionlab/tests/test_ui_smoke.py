@@ -1156,3 +1156,145 @@ def test_snapshot_menu_applies_selected_entry_and_invalidates_results(window, qt
     assert c.project.vehicle.mass_kg == baseline and c.dirty
     assert analysis._table.rowCount() == 0
     assert window._stack.currentWidget() is window._tabs
+
+
+def test_recover_autosave_is_detached_protected_and_resumes_after_save(window, tmp_path, monkeypatch):
+    from suspensionlab.model.project_io import ProjectIOError, load_project
+    from suspensionlab.ui import controller as module
+
+    c = window.controller
+    c.new_project("ring")
+    original = c.save_project(tmp_path / "original")
+    original_bytes = original.read_bytes()
+    c.set_value(c.project.vehicle, "mass_kg", 1725.0)
+    backup = tmp_path / "autosave.susp.json"
+    monkeypatch.setattr(module, "autosave_path", lambda: backup)
+    assert c.autosave()
+    backup_bytes = backup.read_bytes()
+    c.set_value(c.project.vehicle, "mass_kg", 1800.0)
+    recovered, source = c.read_autosave()
+    assert c.project.vehicle.mass_kg == 1800.0
+    c.recover_autosave(recovered, source)
+    assert c.project.vehicle.mass_kg == 1725.0
+    assert c.dirty and c.recovery_pending and c.project.path is None
+    assert "автосохранение приостановлено" in window.windowTitle()
+    assert not c.undo.can_undo
+    c.set_value(c.project.vehicle, "mass_kg", 1900.0)
+    assert not c.autosave() and backup.read_bytes() == backup_bytes
+    with pytest.raises(ProjectIOError) as error:
+        c.save_project(backup)
+    assert error.value.message_key == "autosave.protected"
+    assert c.recovery_pending and c.dirty and c.project.path is None
+    assert backup.read_bytes() == backup_bytes and original.read_bytes() == original_bytes
+    result = c.save_project(tmp_path / "recovered")
+    assert not c.recovery_pending and not c.dirty and c.project.path == str(result)
+    assert load_project(result).vehicle.mass_kg == 1900.0
+    assert backup.read_bytes() == backup_bytes
+    c.set_value(c.project.vehicle, "mass_kg", 2000.0)
+    assert c.autosave()
+    assert load_project(backup).vehicle.mass_kg == 2000.0
+    assert original.read_bytes() == original_bytes
+
+
+def test_recovery_guard_blocks_saving_current_project_over_candidate(window, tmp_path, monkeypatch):
+    from suspensionlab.model.project_io import ProjectIOError
+    from suspensionlab.ui import controller as module
+
+    c = window.controller
+    backup = tmp_path / "autosave.susp.json"
+    monkeypatch.setattr(module, "autosave_path", lambda: backup)
+    c.save_project(backup)
+    initial = backup.read_bytes()
+    recovered, source = c.read_autosave()
+    c.set_value(c.project.vehicle, "mass_kg", 1700.0)
+    with c.guard_autosave(source):
+        with pytest.raises(ProjectIOError) as error:
+            c.save_project()
+        assert error.value.message_key == "autosave.protected"
+        assert not c.autosave()
+        assert backup.read_bytes() == initial
+    assert c.dirty and c.project.path == str(backup)
+    assert recovered.vehicle.mass_kg != c.project.vehicle.mass_kg
+
+
+def test_recovery_ui_cancel_bad_file_and_success(window, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    from suspensionlab.ui import controller as module
+
+    c = window.controller
+    c.new_project("ring")
+    backup = tmp_path / "autosave.susp.json"
+    monkeypatch.setattr(module, "autosave_path", lambda: backup)
+    assert c.autosave()
+    before = c.project.to_dict()
+    monkeypatch.setattr(QMessageBox, "question", lambda *args: QMessageBox.StandardButton.No)
+    window.action_recover_autosave.trigger()
+    assert c.project.to_dict() == before and not c.recovery_pending and window._autosave_timer.isActive()
+    monkeypatch.setattr(QMessageBox, "question", lambda *args: QMessageBox.StandardButton.Yes)
+    backup.write_text("{}", encoding="utf-8")
+    errors = []
+    monkeypatch.setattr(window, "_show_error", errors.append)
+    window.action_recover_autosave.trigger()
+    assert errors and c.project.to_dict() == before and not c.recovery_pending
+    assert window._autosave_timer.isActive()
+    assert c.autosave()
+    monkeypatch.setattr(window, "_confirm_discard_changes", lambda: False)
+    window.action_recover_autosave.trigger()
+    assert c.project.to_dict() == before and not c.recovery_pending and window._autosave_timer.isActive()
+    monkeypatch.setattr(window, "_confirm_discard_changes", lambda: True)
+    window.action_recover_autosave.trigger()
+    assert c.recovery_pending and c.dirty and c.project.path is None
+    assert window._stack.currentWidget() is window._tabs and window._autosave_timer.isActive()
+
+
+def test_recovery_save_failure_remains_protected(window, tmp_path, monkeypatch):
+    from suspensionlab.model import project_io
+    from suspensionlab.model.project_io import ProjectIOError
+    from suspensionlab.ui import controller as module
+
+    c = window.controller
+    backup = tmp_path / "autosave.susp.json"
+    monkeypatch.setattr(module, "autosave_path", lambda: backup)
+    assert c.autosave()
+    contents = backup.read_bytes()
+    project, source = c.read_autosave()
+    c.recover_autosave(project, source)
+
+    def fail(*args):
+        raise OSError("disk failure")
+
+    monkeypatch.setattr(project_io.os, "replace", fail)
+    with pytest.raises(ProjectIOError):
+        c.save_project(tmp_path / "copy")
+    assert c.dirty and c.project.path is None and c.recovery_pending
+    assert not c.autosave() and backup.read_bytes() == contents
+
+
+def test_recovery_rejects_alias_of_autosave_and_releases_on_new_project(window, tmp_path, monkeypatch):
+    import os
+
+    from suspensionlab.model.project_io import ProjectIOError
+    from suspensionlab.ui import controller as module
+
+    c = window.controller
+    backup = tmp_path / "autosave.susp.json"
+    monkeypatch.setattr(module, "autosave_path", lambda: backup)
+    assert c.autosave()
+    data = backup.read_bytes()
+    project, source = c.read_autosave()
+    c.recover_autosave(project, source)
+    with pytest.raises(ProjectIOError):
+        c.save_project(tmp_path / "autosave.json")
+    alias = tmp_path / "alias.susp.json"
+    try:
+        os.link(backup, alias)
+    except OSError:
+        pass  # Файловая система или политика могут запрещать жёсткие ссылки.
+    else:
+        with pytest.raises(ProjectIOError) as error:
+            c.save_project(alias)
+        assert error.value.message_key == "autosave.protected"
+    assert backup.read_bytes() == data
+    c.new_project("ring")
+    assert not c.recovery_pending

@@ -152,6 +152,9 @@ class MainWindow(QMainWindow):
         self.action_open.setShortcut(QKeySequence.StandardKey.Open)
         self.action_open.triggered.connect(self._open_project)
 
+        self.action_recover_autosave = QAction(tr("autosave.recover_menu"), self)
+        self.action_recover_autosave.triggered.connect(self._recover_autosave)
+
         self.action_save = QAction(tr("menu.file.save"), self)
         self.action_save.setShortcut(QKeySequence.StandardKey.Save)
         self.action_save.triggered.connect(self._save_project)
@@ -236,6 +239,7 @@ class MainWindow(QMainWindow):
         menu_file = bar.addMenu(tr("menu.file"))
         menu_file.addAction(self.action_new)
         menu_file.addAction(self.action_open)
+        menu_file.addAction(self.action_recover_autosave)
         menu_file.addAction(self.action_templates)
         menu_file.addSeparator()
         menu_file.addAction(self.action_save)
@@ -439,7 +443,8 @@ class MainWindow(QMainWindow):
         project = self.controller.project
         name = project.meta.name.strip() or tr("status.project_untitled").split(": ", 1)[-1]
         marker = " •" if self.controller.dirty else ""
-        self.setWindowTitle(f"{APP_NAME} — {name}{marker}")
+        recovery = f" — {tr('autosave.paused_title')}" if self.controller.recovery_pending else ""
+        self.setWindowTitle(f"{APP_NAME} — {name}{marker}{recovery}")
         self._status_project.setText(tr("status.project", name=name))
         self._status_project.setToolTip(project.path or "")
 
@@ -540,6 +545,31 @@ class MainWindow(QMainWindow):
             self._show_error(error)
             return
         self._show_workspace()
+
+    def _recover_autosave(self) -> None:
+        """Восстанавливает копию по явному запросу, не записывая исходный файл."""
+        running = self._autosave_timer.isActive()
+        self._autosave_timer.stop()
+        try:
+            answer = QMessageBox.question(
+                self, tr("autosave.recover_title"), tr("autosave.recover_notice"),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+            try:
+                project, source = self.controller.read_autosave()
+            except ProjectIOError as error:
+                self._show_error(error)
+                return
+            with self.controller.guard_autosave(source):
+                if not self._confirm_discard_changes():
+                    return
+                self.controller.recover_autosave(project, source)
+                self._show_workspace()
+        finally:
+            if running:
+                self._autosave_timer.start()
 
     def _save_project(self) -> bool:
         """Сохранить текущий проект."""

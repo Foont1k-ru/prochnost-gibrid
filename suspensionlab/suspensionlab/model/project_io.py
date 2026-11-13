@@ -150,8 +150,8 @@ def save_project(project: Project, path: str | Path) -> Path:
     return target
 
 
-def load_project(path: str | Path) -> Project:
-    """Загружает проект из файла с миграцией и проверками структуры."""
+def load_project(path: str | Path, *, require_complete: bool = False) -> Project:
+    """Загружает проект; для автосохранения можно запретить неявные значения."""
     source = Path(path)
     try:
         raw = source.read_text(encoding="utf-8")
@@ -165,10 +165,18 @@ def load_project(path: str | Path) -> Project:
         raise ProjectIOError("error.project.broken_json", path=str(source), line=error.lineno) from error
     if not isinstance(data, dict):
         raise ProjectIOError("error.project.bad_structure", path=str(source))
+    if require_complete and data.get("schema_version") != SCHEMA_VERSION:
+        raise ProjectIOError("error.project.bad_structure", path=str(source))
     migrated = migrate(data)
     try:
         project = Project.from_dict(migrated)
-    except (TypeError, ValueError, KeyError) as error:
+        if require_complete:
+            # Не считать частичный JSON успешно восстановленным проектом:
+            # from_dict обычно заполняет отсутствующие поля по умолчанию.
+            json.dumps(data, allow_nan=False)
+            if project.to_dict() != data:
+                raise ValueError("Неполное или несовместимое автосохранение")
+    except (TypeError, ValueError, KeyError, OverflowError, RecursionError) as error:
         LOG.error("Несовместимая структура проекта %s: %s", source, error)
         raise ProjectIOError("error.project.bad_structure", path=str(source)) from error
     project.path = str(source)

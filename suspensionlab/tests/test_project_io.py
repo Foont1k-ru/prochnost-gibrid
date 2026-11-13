@@ -189,3 +189,25 @@ def test_partial_write_failure_does_not_replace_previous_file(tmp_path, project,
         save_project(project, target)
     assert target.read_bytes() == b"previous contents"
     assert [p.name for p in tmp_path.iterdir()] == [target.name]
+
+
+def test_strict_autosave_roundtrip_and_rejects_incomplete_or_nonfinite(tmp_path, project):
+    project.add_snapshot("Снимок")
+    path = save_project(project, tmp_path / "auto")
+    assert load_project(path, require_complete=True).to_dict() == project.to_dict()
+    data = json.loads(path.read_text(encoding="utf-8"))
+    del data["front_axle"]["hardpoints"]["ubj"]
+    path.write_text(json.dumps(data), encoding="utf-8")
+    # Обычное открытие исторически дополняет точки; восстановление — нет.
+    assert "ubj" in load_project(path).front.hardpoints
+    with pytest.raises(ProjectIOError) as error:
+        load_project(path, require_complete=True)
+    assert error.value.message_key == "error.project.bad_structure"
+    data = project.to_dict()
+    data["vehicle"]["mass_kg"] = float("inf")
+    path.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(ProjectIOError):
+        load_project(path, require_complete=True)
+    path.write_text("{}", encoding="utf-8")
+    with pytest.raises(ProjectIOError):
+        load_project(path, require_complete=True)

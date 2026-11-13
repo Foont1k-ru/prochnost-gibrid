@@ -9,6 +9,9 @@
 from __future__ import annotations
 
 import logging
+import os
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -24,7 +27,7 @@ from ..model.commands import (
     ValueCommand,
 )
 from ..model.entities import Axle, Hardpoint, Project, Snapshot
-from ..model.project_io import ProjectIOError, load_project, save_project
+from ..model.project_io import ProjectIOError, ensure_suffix, load_project, save_project
 from ..model.snapshot_restore import RestoreSnapshotCommand, prepare_snapshot
 from ..model.templates import load_template
 from ..model.units import UnitSettings
@@ -60,6 +63,8 @@ class AppController(QObject):
         self.units = UnitSettings()
         self.selection: Selection | None = None
         self.dirty = False
+        self._recovery_source: Path | None = None
+        self._recovery_guard: Path | None = None
         self.auto_extend_slider = True
         self._issues: list[Issue] = []
         self.undo.add_listener(self._on_undo_changed)
@@ -78,6 +83,7 @@ class AppController(QObject):
             self.project.meta.name = ""
             LOG.info("Создан пустой проект")
         self.project.path = None
+        self._recovery_source = None
         self.undo.clear()
         self.selection = None
         self._set_dirty(False)
@@ -90,6 +96,7 @@ class AppController(QObject):
         """Открывает проект из файла; ошибки — в виде исключения ProjectIOError."""
         project = load_project(path)
         self.project = project
+        self._recovery_source = None
         self.undo.clear()
         self.selection = None
         self._set_dirty(False)
@@ -103,13 +110,64 @@ class AppController(QObject):
         target = path or self.project.path
         if not target:
             raise ProjectIOError("error.project.write_failed", path="")
+        sources = (self._recovery_source, self._recovery_guard)
+        if any(source is not None for source in sources):
+            try:
+                destination = ensure_suffix(Path(target)).resolve()
+                same_file = any(source is not None and (
+                    destination == source or (destination.exists() and source.exists() and os.path.samefile(destination, source))
+                ) for source in sources)
+            except (OSError, RuntimeError) as error:
+                raise ProjectIOError("error.project.write_failed", path=str(target)) from error
+            if same_file:
+                raise ProjectIOError("autosave.protected", path=str(target))
         saved_path = save_project(self.project, target)
+        self._recovery_source = None
         self._set_dirty(False)
         self.statusMessage.emit("status.saved")
         return saved_path
 
+    @property
+    def recovery_pending(self) -> bool:
+        """Исходный файл автосохранения защищён до сохранения копии."""
+        return self._recovery_source is not None
+
+    def read_autosave(self) -> tuple[Project, Path]:
+        """Читает копию до замены текущего проекта; не изменяет состояние."""
+        try:
+            source = autosave_path().resolve()
+        except (OSError, RuntimeError) as error:
+            raise ProjectIOError("error.project.read_failed", path="autosave.susp.json") from error
+        return load_project(source, require_complete=True), source
+
+    @contextmanager
+    def guard_autosave(self, source: Path) -> Iterator[None]:
+        """Не даёт сохранить текущий проект поверх читаемой копии в диалоге."""
+        previous = self._recovery_guard
+        self._recovery_guard = source
+        try:
+            yield
+        finally:
+            self._recovery_guard = previous
+
+    def recover_autosave(self, project: Project, source: Path) -> None:
+        """Открывает подготовленную копию без привязки к файлу автосохранения."""
+        self.project = project
+        self.project.path = None
+        self._recovery_source = source
+        self.selection = None
+        self.undo.clear()
+        self._set_dirty(True)
+        self._revalidate()
+        self.projectReplaced.emit()
+        self.selectionChanged.emit(None)
+        self.statusMessage.emit("autosave.recovered")
+
     def autosave(self) -> bool:
         """Тихое автосохранение рабочей копии (раз в минуту)."""
+        if self.recovery_pending or self._recovery_guard is not None:
+            self.statusMessage.emit("autosave.paused")
+            return False
         original_path = self.project.path
         try:
             save_project(self.project, autosave_path())
