@@ -1,0 +1,43 @@
+name: Подвеска.Про — тесты Windows
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Python и Qt на Windows
+    runs-on: windows-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: suspensionlab
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: suspensionlab/pyproject.toml
+      - name: Установить приложение и зависимости тестов
+        run: python -m pip install -e ".[dev]"
+      - name: Проверить стиль
+        run: python -m ruff check .
+      - name: Проверить типы
+        run: python -m mypy suspensionlab
+      - name: Запустить тесты, включая Qt
+        run: python -m pytest -q --junitxml=test-results.xml
+      - name: Сохранить отчёт тестов
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: suspensionlab-windows-test-results
+          path: suspensionlab/test-results.xml
+          if-no-files-found: warn

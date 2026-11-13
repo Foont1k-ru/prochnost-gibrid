@@ -1,0 +1,9 @@
+{
+  "note": "Регрессия текущей реализации, не независимый инженерный эталон. Исходный развал и схождение приняты нулевыми.",
+  "template": "ring",
+  "cases": [
+    {"travel_mm": -30, "camber_deg": 0.5236019374, "toe_deg": -0.0545792908, "scrub_radius_mm": 60.37101438, "longitudinal_displacement_mm": -0.9526583671},
+    {"travel_mm": 0, "camber_deg": 0, "toe_deg": 0, "scrub_radius_mm": 54.19298246, "longitudinal_displacement_mm": 0},
+    {"travel_mm": 30, "camber_deg": -0.6519931033, "toe_deg": -0.0297197285, "scrub_radius_mm": 46.70791826, "longitudinal_displacement_mm": 0.6996444042}
+  ]
+}
