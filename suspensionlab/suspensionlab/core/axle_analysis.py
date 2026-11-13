@@ -9,6 +9,8 @@ from .analysis import CornerAnalysis, analyze_corner
 from .double_wishbone import DoubleWishbone, KinematicsError
 from .roll_center import symmetric_roll_center_height
 from .scrub_analysis import ScrubSignAnalysis, check_scrub_signs
+from .spring_characteristics import BumpStopCharacteristic
+from .stroke import StrokeLimits
 
 
 @dataclass(frozen=True)
@@ -39,6 +41,11 @@ def analyze_symmetric_axle(
     travels_mm: list[float],
     *,
     spring_mount: Literal["lower_arm"] | None = None,
+    static_spring_length_mm: float | None = None,
+    coil_bind_length_mm: float | None = None,
+    bump_stop: BumpStopCharacteristic | None = None,
+    damper_mount: Literal["lower_arm"] | None = None,
+    damper_limits: StrokeLimits | None = None,
     zero_tolerance_mm: float = 1e-6,
     max_step_mm: float = 2.0,
 ) -> AxleAnalysis:
@@ -46,10 +53,17 @@ def analyze_symmetric_axle(
 
     Полуоси здесь не рассчитываются: для каждой стороны нужны собственные
     явно заданные оси и границы. Для раздельного хода вызовите расчёт
-    отдельных сторон и `roll_center_from_projected_motion`.
+    отдельных сторон и `roll_center_from_projected_motion`. Указанные параметры
+    пружины, отбойника и амортизатора одинаковы на обеих сторонах.
     """
-    left = analyze_corner(axle, vehicle, travels_mm, side="left", spring_mount=spring_mount, max_step_mm=max_step_mm)
-    right = analyze_corner(axle, vehicle, travels_mm, side="right", spring_mount=spring_mount, max_step_mm=max_step_mm)
+    left = analyze_corner(axle, vehicle, travels_mm, side="left", spring_mount=spring_mount,
+                          static_spring_length_mm=static_spring_length_mm, coil_bind_length_mm=coil_bind_length_mm,
+                          bump_stop=bump_stop, damper_mount=damper_mount, damper_limits=damper_limits,
+                          max_step_mm=max_step_mm)
+    right = analyze_corner(axle, vehicle, travels_mm, side="right", spring_mount=spring_mount,
+                           static_spring_length_mm=static_spring_length_mm, coil_bind_length_mm=coil_bind_length_mm,
+                           bump_stop=bump_stop, damper_mount=damper_mount, damper_limits=damper_limits,
+                           max_step_mm=max_step_mm)
     model = DoubleWishbone(axle, "left")
     static_track = 2.0 * model.center0[1]
     samples: list[AxleSample] = []

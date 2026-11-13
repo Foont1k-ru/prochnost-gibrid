@@ -124,3 +124,45 @@ def test_combined_equilibrium_matches_analytic_forces(planar_axle: Axle) -> None
     assert result.estimate.bump_stop is not None
     assert result.estimate.bump_stop.wheel_force_n == pytest.approx(bump_force, abs=0.01)
     assert result.estimate.total_support_n == pytest.approx(spring_force + bump_force, abs=0.02)
+
+
+@pytest.mark.parametrize("side", ["left", "right"])
+@pytest.mark.parametrize("travel", [-60.0, 0.0, 60.0])
+def test_damper_displacement_against_analytic_geometry(planar_axle: Axle, side: str, travel: float) -> None:
+    from suspensionlab.core.analysis import analyze_corner
+    from suspensionlab.core.stroke import StrokeLimits
+
+    for source, destination in (("spring_lo", "damper_lo"), ("spring_up", "damper_up")):
+        a, b = planar_axle.hardpoints[source], planar_axle.hardpoints[destination]
+        b.x, b.y, b.z = a.x, a.y, a.z
+    expected_length = planar_reference(travel)[1] - 230 + sqrt(50**2 + 300**2)
+    initial = sqrt(50**2 + 300**2)
+    project = load_template("ring")
+    sample = analyze_corner(planar_axle, project.vehicle, [travel], side=side, damper_mount="lower_arm",
+                            damper_limits=StrokeLimits(250, 350)).samples[0]
+    assert sample is not None and sample.damper is not None and sample.damper.stroke is not None
+    assert sample.damper.length_mm == pytest.approx(expected_length, abs=2e-7)
+    assert sample.damper.compression_from_static_mm == pytest.approx(initial - expected_length, abs=2e-7)
+    assert sample.damper.motion_ratio == pytest.approx(planar_reference(travel)[2], abs=1e-8)
+    assert sample.damper.stroke.compression_clearance_mm == pytest.approx(expected_length - 250, abs=2e-7)
+
+
+def test_coincident_damper_mounts_do_not_abort_other_sweep_points(planar_axle: Axle) -> None:
+    from suspensionlab.core.analysis import analyze_corner
+    from suspensionlab.core.spring_characteristics import BumpStopCharacteristic
+    from suspensionlab.core.stroke import StrokeLimits
+
+    a, b = planar_axle.hardpoints["damper_lo"], planar_axle.hardpoints["damper_up"]
+    a.x, a.y, a.z = 0, 500, 150
+    b.x, b.y, b.z = 0, 300 + 200 * sqrt(1 - (20 / 400)**2), 160
+    project = load_template("ring")
+    result = analyze_corner(planar_axle, project.vehicle, [0, 20, 25], spring_mount="lower_arm",
+                            static_spring_length_mm=230, bump_stop=BumpStopCharacteristic(100, 100, 1),
+                            damper_mount="lower_arm", damper_limits=StrokeLimits(1, 100))
+    earlier, singular, later = result.samples
+    assert earlier is not None and earlier.damper is not None and earlier.damper.error is None
+    assert singular is not None and singular.damper is not None and singular.damper.error is not None
+    assert singular.damper.motion_ratio is None and singular.damper.stroke is None
+    assert singular.spring is not None and singular.spring.frequency_hz is None
+    assert singular.total_support_n is None
+    assert later is not None and later.damper is not None and later.damper.error is None
