@@ -23,7 +23,14 @@ from .drivetrain import (
 )
 from .metrics import CornerDerivatives, CornerMetrics, corner_derivatives, corner_metrics
 from .side_view import LongitudinalScenario, SideMetrics, evaluate_side_scenario
-from .spring_characteristics import SpringCharacteristic, SpringState, spring_state
+from .spring_characteristics import (
+    BumpStopCharacteristic,
+    BumpStopState,
+    SpringCharacteristic,
+    SpringState,
+    bump_stop_state,
+    spring_state,
+)
 from .springs import (
     lower_arm_motion_ratio_at_pose,
     lower_arm_spring_length,
@@ -65,6 +72,8 @@ class CornerSample:
     halfshaft_violations: tuple[HalfshaftViolation, ...]
     side_metrics: SideMetrics | None
     side_error: str | None
+    bump_stop: BumpStopState | None = None
+    total_support_n: float | None = None
 
 
 @dataclass(frozen=True)
@@ -85,6 +94,7 @@ def analyze_corner(
     spring_mount: Literal["lower_arm"] | None = None,
     coil_bind_length_mm: float | None = None,
     static_spring_length_mm: float | None = None,
+    bump_stop: BumpStopCharacteristic | None = None,
     halfshaft: HalfshaftGeometry | None = None,
     halfshaft_limits: HalfshaftLimits | None = None,
     longitudinal_scenario: LongitudinalScenario | None = None,
@@ -98,12 +108,20 @@ def analyze_corner(
     указать отдельно: её изменение предполагается равным изменению расстояния
     опор. Без длины доступна лишь условная оценка линейной жёсткости для
     сжатой пружины. Преднатяг из проекта автоматически не применяется.
-    Равновесие не проверяется. Неподвижная рейка не позволяет оценить ход руля.
+    Отбойник рассчитывается только по явно переданным параметрам. При его
+    контакте частота не выдаётся; жёсткости spring относятся только к пружине.
+    Равновесие не проверяется. Рейка неподвижна.
     """
     model = DoubleWishbone(axle, side)
     limits = ["fixed_rack", "contact_patch_approximation", "caster_from_geometry"]
     if longitudinal_scenario is None:
         limits.append("longitudinal_scenario_unspecified")
+    if bump_stop is None:
+        limits.append("bump_stop_not_modeled")
+    else:
+        limits.extend(("bump_stop_constant_motion_ratio", "spring_frequency_excludes_bump_stop"))
+        if bump_stop.max_compression_mm is None:
+            limits.append("bump_stop_max_compression_unspecified")
     if spring_mount not in (None, "lower_arm"):
         raise ValueError("Неизвестный вариант крепления пружины")
     if spring_mount is None:
@@ -167,6 +185,7 @@ def analyze_corner(
         pose = point.pose
         geometry = corner_metrics(model, pose, static_camber_deg=axle.setup.camber_deg, static_toe_deg=axle.setup.toe_deg_total / 2)
         derivatives = corner_derivatives(model, pose, static_camber_deg=axle.setup.camber_deg, static_toe_deg=axle.setup.toe_deg_total / 2)
+        bump = bump_stop_state(bump_stop, pose.travel_mm) if bump_stop is not None else None
         spring = None
         if lower is not None and upper is not None and characteristic is not None:
             ratio = lower_arm_motion_ratio_at_pose(model, pose, lower, upper)
@@ -188,7 +207,7 @@ def analyze_corner(
                 wheel = wheel_rate(rate, ratio)
                 ride = ride_rate(wheel, axle.wheel.k_tire_N_mm)
                 # Нулевая жёсткость не является частотой колебательного равновесия.
-                if ride > 0:
+                if ride > 0 and (bump is None or bump.status == "clear"):
                     frequency = ride_frequency_hz(ride, mass)
             support = spring_wheel_support(state.force_n, ratio) if state is not None and state.force_n is not None else None
             spring = SpringMetrics(ratio, state, wheel, ride, frequency, error, support)
@@ -204,5 +223,11 @@ def analyze_corner(
                 )
             except (KinematicsError, ValueError) as exc:
                 side_error = str(exc)
-        samples.append(CornerSample(pose, geometry, derivatives, spring, drive, violations, side_metrics, side_error))
+        total_support = None
+        if spring is not None and spring.wheel_support_n is not None and bump is not None and bump.wheel_force_n is not None:
+            total_support = spring.wheel_support_n + bump.wheel_force_n
+            if not isfinite(total_support):
+                total_support = None
+        samples.append(CornerSample(pose, geometry, derivatives, spring, drive, violations, side_metrics, side_error,
+                                    bump, total_support))
     return CornerAnalysis(sweep, tuple(samples), tuple(limits))

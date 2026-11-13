@@ -108,3 +108,19 @@ def test_geometric_term_can_make_tangent_negative(planar_axle: Axle) -> None:
     assert fine.total_n_mm < 0  # Не обрезаем знак квадратом MR.
     assert fine.total_n_mm == pytest.approx(fine.direct_difference_n_mm, abs=1e-6)
     assert coarse.total_n_mm == pytest.approx(fine.total_n_mm, abs=1e-4)
+
+
+def test_combined_equilibrium_matches_analytic_forces(planar_axle: Axle) -> None:
+    from suspensionlab.core.spring_characteristics import BumpStopCharacteristic
+
+    # Отбойник: K = 400 Н/мм, MR = 0,5, включение на 5 мм.
+    target_travel = 17.0
+    spring_force = planar_reference(target_travel)[4]
+    bump_force = 400 * 0.5**2 * (target_travel - 5)
+    problem = SpringEquilibrium(planar_axle, 230, coil_bind_length_mm=150,
+                                bump_stop=BumpStopCharacteristic(5, 400, 0.5, 20))
+    result = problem.find(spring_force + bump_force, 0, 30, travel_tolerance_mm=0.0001)
+    assert result.estimate.travel_mm == pytest.approx(target_travel, abs=0.0001)
+    assert result.estimate.bump_stop is not None
+    assert result.estimate.bump_stop.wheel_force_n == pytest.approx(bump_force, abs=0.01)
+    assert result.estimate.total_support_n == pytest.approx(spring_force + bump_force, abs=0.02)

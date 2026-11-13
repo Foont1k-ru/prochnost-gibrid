@@ -1,4 +1,4 @@
-"""Условное равновесие одной пружины при заданной вертикальной нагрузке.
+"""Условное равновесие пружины и заданного отбойника при вертикальной нагрузке.
 
 Одномерная модель не рассчитывает контакт шины, прочие силы и устойчивость.
 """
@@ -12,7 +12,14 @@ import numpy as np
 
 from ..model.entities import Axle
 from .double_wishbone import DoubleWishbone
-from .spring_characteristics import SpringCharacteristic, SpringState, spring_state
+from .spring_characteristics import (
+    BumpStopCharacteristic,
+    BumpStopState,
+    SpringCharacteristic,
+    SpringState,
+    bump_stop_state,
+    spring_state,
+)
 from .springs import lower_arm_motion_ratio_at_pose, lower_arm_spring_length, spring_wheel_support
 
 
@@ -34,6 +41,8 @@ class EquilibriumSample:
     motion_ratio: float
     wheel_support_n: float
     residual_n: float
+    bump_stop: BumpStopState | None = None
+    total_support_n: float | None = None
 
 
 @dataclass(frozen=True)
@@ -61,6 +70,7 @@ class SpringEquilibrium:
         *,
         side: Literal["left", "right"] = "left",
         coil_bind_length_mm: float | None = None,
+        bump_stop: BumpStopCharacteristic | None = None,
         max_step_mm: float = 2.0,
     ) -> None:
         if not isfinite(static_spring_length_mm) or static_spring_length_mm <= 0:
@@ -83,15 +93,22 @@ class SpringEquilibrium:
         if self.initial_mount_length <= 1e-9:
             raise ValueError("Опоры пружины совпадают")
         self.static_spring_length_mm = static_spring_length_mm
+        self.bump_stop = bump_stop
         self.max_step_mm = max_step_mm
         self.limitations = (
             "spring_length_change_equals_mount_distance_change",
             "spring_preload_not_applied",
-            "only_spring_and_vertical_wheel_load",
+            "spring_and_optional_bump_stop_only",
             "tire_contact_and_other_forces_not_modeled",
             "equilibrium_stability_not_checked",
             "continuous_reachable_branch_not_guaranteed",
         ) + (("spring_coil_bind_unspecified",) if coil_bind_length_mm is None else ())
+        if bump_stop is None:
+            self.limitations += ("bump_stop_not_modeled",)
+        else:
+            self.limitations += ("bump_stop_constant_motion_ratio",)
+            if bump_stop.max_compression_mm is None:
+                self.limitations += ("bump_stop_max_compression_unspecified",)
 
     def evaluate(self, travel_mm: float, load_n: float) -> EquilibriumSample:
         """Рассчитывает локальное условие баланса для заданной силы в Н."""
@@ -107,10 +124,14 @@ class SpringEquilibrium:
             raise EquilibriumError(travel_mm, f"неопределённая сила пружины: {state.status}")
         ratio = lower_arm_motion_ratio_at_pose(self.model, pose, self.lower, self.upper)
         support = spring_wheel_support(state.force_n, ratio)
-        residual = support - load_n
-        if not isfinite(residual):
-            raise EquilibriumError(travel_mm, "невязка силы не является конечной")
-        return EquilibriumSample(travel_mm, state, ratio, support, residual)
+        bump = bump_stop_state(self.bump_stop, travel_mm) if self.bump_stop is not None else None
+        if bump is not None and bump.wheel_force_n is None:
+            raise EquilibriumError(travel_mm, f"неопределённая сила отбойника: {bump.status}")
+        total = support + (bump.wheel_force_n if bump is not None and bump.wheel_force_n is not None else 0.0)
+        residual = total - load_n
+        if not isfinite(total) or not isfinite(residual):
+            raise EquilibriumError(travel_mm, "суммарная сила или невязка не является конечной")
+        return EquilibriumSample(travel_mm, state, ratio, support, residual, bump, total)
 
     def find(
         self,
@@ -181,7 +202,8 @@ def estimate_spring_support_tangent(
     """Оценивает d(F_пруж·MR)/dh центральной разностью изменения MR.
 
     Возвращаются упругий и геометрический вклады, а также независимая от
-    разложения конечная разность полной силы для контроля шага. Выявленные
+    разложения конечная разность силы только пружины для контроля шага. Даже
+    при наличии отбойника его вклад здесь не включается. Выявленные
     в трёх точках контактные границы и изломы характеристики не допускаются;
     непрерывность между ними при конечном шаге не доказывается. Другие силы,
     контакт шины и устойчивость автомобиля не оцениваются.

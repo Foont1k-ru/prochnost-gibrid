@@ -122,6 +122,8 @@ def bump_stop_state(characteristic: BumpStopCharacteristic, wheel_travel_mm: flo
     delta = wheel_travel_mm - characteristic.engage_travel_mm
     compression = max(0.0, delta * characteristic.motion_ratio)
     remaining = characteristic.engage_travel_mm - wheel_travel_mm
+    if not all(isfinite(v) for v in (delta, compression, remaining)):
+        raise ValueError("Ход или сжатие отбойника не являются конечными")
     if characteristic.max_compression_mm is not None and compression >= characteristic.max_compression_mm:
         return BumpStopState(remaining, compression, None, None, None, "bottomed")
     if delta < 0:
@@ -129,5 +131,8 @@ def bump_stop_state(characteristic: BumpStopCharacteristic, wheel_travel_mm: flo
     if delta == 0:
         return BumpStopState(remaining, compression, 0.0, 0.0, None, "contact_boundary")
     force = characteristic.rate_n_mm * compression
-    return BumpStopState(remaining, compression, force, force * characteristic.motion_ratio,
-                         characteristic.rate_n_mm * characteristic.motion_ratio**2, "engaged")
+    wheel_force = force * characteristic.motion_ratio
+    wheel_stiffness = characteristic.rate_n_mm * characteristic.motion_ratio * characteristic.motion_ratio
+    if not all(isfinite(v) for v in (force, wheel_force, wheel_stiffness)):
+        raise ValueError("Сила или жёсткость отбойника не являются конечными")
+    return BumpStopState(remaining, compression, force, wheel_force, wheel_stiffness, "engaged")
