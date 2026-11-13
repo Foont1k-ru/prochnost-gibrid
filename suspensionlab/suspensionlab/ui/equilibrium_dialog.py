@@ -20,10 +20,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..core.equilibrium import EquilibriumPathError, EquilibriumResult, SpringEquilibrium
+from ..core.equilibrium import EquilibriumPath, EquilibriumPathError, EquilibriumResult, SpringEquilibrium
 from ..core.stroke import StrokeLimits
 from ..i18n import tr
 from .controller import AppController
+from .equilibrium_path_dialog import EquilibriumPathDialog
 from .table_export import make_report, save_table_dialog
 
 # Порядок и подписи для CSV; значения берутся из того же снимка, что и текст окна.
@@ -75,17 +76,22 @@ class EquilibriumDialog(QDialog):
         self._output.setWordWrap(True)
         self._output.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self._result: EquilibriumResult | None = None
+        self._path: EquilibriumPath | None = None
+        self._path_dialog: EquilibriumPathDialog | None = None
         self._display_values: dict[str, str] | None = None
         self._run = QPushButton(tr("equilibrium_ui.run"), self)
         self._run.clicked.connect(self._calculate)
         self._export_button = QPushButton(tr("equilibrium_ui.export"), self)
         self._export_button.clicked.connect(self._export)
+        self._path_button = QPushButton(tr("equilibrium_path.button"), self)
+        self._path_button.clicked.connect(self._show_path)
         close = QDialogButtonBox(QDialogButtonBox.StandardButton.Close, self)
         close.button(QDialogButtonBox.StandardButton.Close).setText(tr("analysis.close"))
         close.rejected.connect(self.reject)
         buttons = QHBoxLayout()
         buttons.addWidget(self._run)
         buttons.addWidget(self._export_button)
+        buttons.addWidget(self._path_button)
         buttons.addStretch()
         buttons.addWidget(close)
         layout = QVBoxLayout(self)
@@ -113,6 +119,10 @@ class EquilibriumDialog(QDialog):
         return box
 
     def _invalidate(self, *_args: object) -> None:
+        if self._path_dialog is not None:
+            self._path_dialog.reject()
+        self._path = None
+        self._path_button.setEnabled(False)
         self._result = None
         self._display_values = None
         self._export_button.setEnabled(False)
@@ -124,6 +134,10 @@ class EquilibriumDialog(QDialog):
         self._status.setText(tr("equilibrium_ui.ready" if supported else "analysis.unsupported"))
 
     def _calculate(self) -> None:
+        if self._path_dialog is not None:
+            self._path_dialog.reject()
+        self._path = None
+        self._path_button.setEnabled(False)
         self._result = None
         self._display_values = None
         self._export_button.setEnabled(False)
@@ -149,6 +163,8 @@ class EquilibriumDialog(QDialog):
             result = problem.find(self._load.value(), self._from.value(), self._to.value(),
                                   travel_tolerance_mm=0.1, path_step_mm=1.0)
         except EquilibriumPathError as error:
+            self._path = error.path
+            self._path_button.setEnabled(True)
             failure = error.path.failure
             assert failure is not None
             self._status.setText(tr("equilibrium_ui.path_error", requested=f"{failure.requested_travel_mm:.3f}",
@@ -160,6 +176,8 @@ class EquilibriumDialog(QDialog):
         self._result = result
         point = result.estimate
         assert result.path is not None
+        self._path = result.path
+        self._path_button.setEnabled(True)
         self._status.setText(tr("equilibrium_ui.success"))
         self._display_values = {
             "lower": f"{result.lower.travel_mm:.4f}", "upper": f"{result.upper.travel_mm:.4f}",
@@ -173,6 +191,17 @@ class EquilibriumDialog(QDialog):
         }
         self._output.setText(tr("equilibrium_ui.result", **self._display_values))
         self._export_button.setEnabled(True)
+
+    def _show_path(self) -> None:
+        if self._path is None:
+            return
+        dialog = EquilibriumPathDialog(self._path, self)
+        self._path_dialog = dialog
+        try:
+            dialog.exec()
+        finally:
+            self._path_dialog = None
+            dialog.deleteLater()
 
     def _report_parameters(self) -> list[tuple[str, str]]:
         axle = self.controller.project.axle(str(self._role.currentData()))

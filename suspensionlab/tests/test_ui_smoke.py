@@ -1372,6 +1372,8 @@ def test_equilibrium_dialog_rejects_incomplete_inputs_and_conflicts(window, qtbo
     dialog._run.click()
     assert "Проверка пути не пройдена" in dialog._status.text()
     assert "0.000" in dialog._status.text() and dialog._result is None and dialog._output.text() == ""
+    assert dialog._path is not None and dialog._path.failure is not None
+    assert not dialog._path.samples and dialog._path_button.isEnabled() and not dialog._export_button.isEnabled()
 
 
 def test_equilibrium_menu_opens_dialog(window, monkeypatch):
@@ -1517,3 +1519,123 @@ def test_equilibrium_csv_cancel_and_write_failure_preserve_existing_file(window,
     assert len(warnings) == 1 and target.read_bytes() == b"previous"
     assert not list(tmp_path.glob(".suspensionlab-*.tmp"))
     assert c.project.to_dict() == before and dialog._export_button.isEnabled()
+
+
+def test_equilibrium_path_view_shows_exact_computed_samples_and_invalidates(window, qtbot):
+    from suspensionlab.core.equilibrium import SpringEquilibrium
+    from suspensionlab.export.equilibrium_path import PATH_COLUMNS, format_path_sample
+    from suspensionlab.ui.equilibrium_dialog import EquilibriumDialog
+    from suspensionlab.ui.equilibrium_path_dialog import EquilibriumPathDialog
+
+    c = window.controller
+    c.new_project("ring")
+    before = c.project.to_dict()
+    load = SpringEquilibrium(c.project.front, 230).evaluate(-12, 1).wheel_support_n
+    dialog = EquilibriumDialog(c, window)
+    qtbot.addWidget(dialog)
+    assert not dialog._path_button.isEnabled()
+    dialog._length.setValue(230)
+    dialog._load.setValue(load)
+    dialog._run.click()
+    assert dialog._path_button.isEnabled() and dialog._path is not None and dialog._path.completed
+    path = dialog._path
+    view = EquilibriumPathDialog(path, dialog)
+    qtbot.addWidget(view)
+    assert "все запрошенные точки" in view._status.text()
+    assert view._table.rowCount() == len(path.samples) and view._table.columnCount() == len(PATH_COLUMNS)
+    assert path.samples[0].travel_mm == 0 and path.samples[-1].travel_mm < 0
+    for i in (0, len(path.samples) - 1):
+        assert tuple(view._table.item(i, col).text() for col in range(len(PATH_COLUMNS))) == format_path_sample(path.samples[i])
+    assert c.project.to_dict() == before
+    dialog._length.setValue(231)
+    assert dialog._path is None and not dialog._path_button.isEnabled()
+    dialog._run.click()
+    assert dialog._path_button.isEnabled()
+    c.set_value(c.project.vehicle, "mass_kg", c.project.vehicle.mass_kg + 1)
+    assert dialog._path is None and not dialog._path_button.isEnabled()
+
+
+def test_equilibrium_path_failed_prefix_and_zero_samples(window, qtbot):
+    from suspensionlab.core.equilibrium import SpringEquilibrium
+    from suspensionlab.ui.equilibrium_path_dialog import EquilibriumPathDialog
+
+    axle = window.controller.project.front
+    path = SpringEquilibrium(axle, 230, coil_bind_length_mm=225).check_path(30, 1000, step_mm=5)
+    assert path.failure is not None and len(path.samples) > 0
+    view = EquilibriumPathDialog(path, window)
+    qtbot.addWidget(view)
+    assert "ПРОВЕРКА НЕ ПРОЙДЕНА" in view._status.text()
+    assert "Результат баланса не выдан" in view._status.text()
+    assert f"{path.failure.failure_travel_mm:.4f}" in view._status.text()
+    assert view._table.rowCount() == len(path.samples)
+    failed_initial = SpringEquilibrium(axle, 230, coil_bind_length_mm=231).check_path(20, 1000, step_mm=5)
+    assert failed_initial.failure is not None and not failed_initial.samples
+    empty = EquilibriumPathDialog(failed_initial, window)
+    qtbot.addWidget(empty)
+    assert "ПРОВЕРКА НЕ ПРОЙДЕНА" in empty._status.text() and empty._table.rowCount() == 0
+
+
+def test_equilibrium_failure_path_access_and_branch_mismatch(window, qtbot, monkeypatch):
+    from dataclasses import replace
+
+    from suspensionlab.core.equilibrium import EquilibriumPathError, PathFailure, SpringEquilibrium
+    from suspensionlab.ui.equilibrium_dialog import EquilibriumDialog
+    from suspensionlab.ui.equilibrium_path_dialog import EquilibriumPathDialog
+
+    c = window.controller
+    c.new_project("ring")
+    system = SpringEquilibrium(c.project.front, 230)
+    path = system.check_path(5, 1000)
+    mismatch = PathFailure(5, 5, "branch_mismatch", "ветвь решения не совпадает")
+    failed = replace(path, failure=mismatch)
+
+    def fail(*args, **kwargs):
+        raise EquilibriumPathError(failed)
+
+    monkeypatch.setattr(SpringEquilibrium, "find", fail)
+    dialog = EquilibriumDialog(c, window)
+    qtbot.addWidget(dialog)
+    dialog._length.setValue(230)
+    dialog._load.setValue(1000)
+    dialog._run.click()
+    assert dialog._result is None and not dialog._export_button.isEnabled()
+    assert dialog._path is failed and dialog._path_button.isEnabled()
+    view = EquilibriumPathDialog(failed, dialog)
+    qtbot.addWidget(view)
+    assert "ПРОВЕРКА НЕ ПРОЙДЕНА" in view._status.text() and "несовпадение ветвей" in view._status.text()
+    assert view._table.rowCount() == len(failed.samples)
+    dialog._bind.setValue(150)
+    assert dialog._path is None and not dialog._path_button.isEnabled()
+
+
+def test_equilibrium_open_path_closes_when_project_changes(window, qtbot, monkeypatch):
+    from suspensionlab.core.equilibrium import SpringEquilibrium
+    from suspensionlab.ui import equilibrium_dialog
+
+    c = window.controller
+    c.new_project("ring")
+    load = SpringEquilibrium(c.project.front, 230).evaluate(12, 1).wheel_support_n
+    dialog = equilibrium_dialog.EquilibriumDialog(c, window)
+    qtbot.addWidget(dialog)
+    dialog._length.setValue(230)
+    dialog._load.setValue(load)
+    dialog._run.click()
+    events = []
+
+    class FakeView:
+        def __init__(self, path, parent):
+            events.append((path, parent))
+
+        def exec(self):
+            c.set_value(c.project.vehicle, "mass_kg", c.project.vehicle.mass_kg + 1)
+
+        def reject(self):
+            events.append("rejected")
+
+        def deleteLater(self):  # noqa: N802 (Qt API)
+            events.append("deleted")
+
+    monkeypatch.setattr(equilibrium_dialog, "EquilibriumPathDialog", FakeView)
+    dialog._path_button.click()
+    assert events[-2:] == ["rejected", "deleted"]
+    assert dialog._path is None and dialog._path_dialog is None and not dialog._path_button.isEnabled()
