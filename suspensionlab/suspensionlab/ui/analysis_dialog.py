@@ -1,6 +1,7 @@
 """Первый табличный просмотр экспериментального расчёта двухрычажной оси."""
 from __future__ import annotations
 
+from math import isfinite
 from typing import Literal
 
 from PySide6.QtWidgets import (
@@ -14,6 +15,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QLineEdit,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -22,6 +24,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..core.analysis import analyze_corner
+from ..core.damper import LinearDamperCharacteristic, evaluate_linear_damping
 from ..core.stroke import StrokeLimits
 from ..core.sweep import travel_grid
 from ..i18n import tr
@@ -44,13 +47,20 @@ class AnalysisDialog(QDialog):
             self._side.addItem(tr(f"hp.side.{side}"), side)
         self._from = self._number(-100, 100, -30, 1)
         self._to = self._number(-100, 100, 30, 1)
-        self._step = self._number(1, 20, 1, 1)
+        self._step = self._number(0.1, 20, 1, 0.1)
         self._spring = QCheckBox(tr("analysis.spring_enable"), self)
         self._spring_length = self._number(0, 2000, 0, 1)
         self._coil_bind = self._number(0, 2000, 0, 1)
         self._damper = QCheckBox(tr("analysis.damper_enable"), self)
         self._damper_min = self._number(0, 2000, 0, 1)
         self._damper_max = self._number(0, 2000, 0, 1)
+        self._damping = QCheckBox(tr("analysis.damping_enable"), self)
+        self._velocity = QLineEdit(self)
+        self._compression = QLineEdit(self)
+        self._rebound = QLineEdit(self)
+        for field in (self._velocity, self._compression, self._rebound):
+            field.setPlaceholderText(tr("analysis.explicit_required"))
+            field.setMaximumWidth(110)
 
         fields = QHBoxLayout()
         geometry = QFormLayout()
@@ -73,10 +83,10 @@ class AnalysisDialog(QDialog):
         self._notice.setWordWrap(True)
         self._status = QLabel(self)
         self._status.setWordWrap(True)
-        self._table = QTableWidget(0, 9, self)
+        self._table = QTableWidget(0, 12, self)
         self._table.setHorizontalHeaderLabels([tr(f"analysis.column.{key}") for key in (
             "travel", "camber", "toe", "spring_length", "spring_compression", "spring_force",
-            "damper_length", "damper_ratio", "state",
+            "damper_length", "damper_ratio", "state", "damper_speed", "damper_wheel_force", "damper_power",
         )])
         self._table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         self._table.horizontalHeader().setStretchLastSection(True)
@@ -94,6 +104,13 @@ class AnalysisDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.addWidget(self._notice)
         layout.addLayout(fields)
+        dynamics = QHBoxLayout()
+        dynamics.addWidget(self._damping)
+        for key, field in (("velocity", self._velocity), ("compression", self._compression), ("rebound", self._rebound)):
+            dynamics.addWidget(QLabel(tr(f"analysis.{key}"), self))
+            dynamics.addWidget(field)
+        dynamics.addStretch()
+        layout.addLayout(dynamics)
         layout.addWidget(self._status)
         layout.addWidget(self._table, 1)
         layout.addLayout(row)
@@ -105,6 +122,9 @@ class AnalysisDialog(QDialog):
             field.valueChanged.connect(self._invalidate)
         self._spring.toggled.connect(self._invalidate)
         self._damper.toggled.connect(self._invalidate)
+        self._damping.toggled.connect(self._invalidate)
+        for field in (self._velocity, self._compression, self._rebound):
+            field.textChanged.connect(self._invalidate)
         controller.modelChanged.connect(self._invalidate)
         controller.projectReplaced.connect(self._invalidate)
         self._invalidate()
@@ -123,6 +143,11 @@ class AnalysisDialog(QDialog):
         self._coil_bind.setEnabled(self._spring.isChecked())
         self._damper_min.setEnabled(self._damper.isChecked())
         self._damper_max.setEnabled(self._damper.isChecked())
+        if not self._damper.isChecked():
+            self._damping.setChecked(False)
+        self._damping.setEnabled(self._damper.isChecked())
+        for field in (self._velocity, self._compression, self._rebound):
+            field.setEnabled(self._damper.isChecked() and self._damping.isChecked())
         supported = self.controller.project.axle(str(self._role.currentData())).type_code == "double_wishbone"
         self._run.setEnabled(supported)
         self._status.setText(tr("analysis.ready" if supported else "analysis.unsupported"))
@@ -141,7 +166,16 @@ class AnalysisDialog(QDialog):
             if self._damper.isChecked() and ((low == 0) != (high == 0)):
                 raise ValueError(tr("analysis.damper_limits_required"))
             damper_limits = StrokeLimits(low, high) if self._damper.isChecked() and low and high else None
+            characteristic = None
+            velocity = 0.0
+            if self._damping.isChecked():
+                velocity = self._explicit_number(self._velocity, -10000, 10000)
+                compression = self._explicit_number(self._compression, 0, 10000)
+                rebound = self._explicit_number(self._rebound, 0, 10000)
+                characteristic = LinearDamperCharacteristic(compression, rebound)
             travels = travel_grid(self._from.value(), self._to.value(), max_spacing_mm=self._step.value())
+            if len(travels) > 401:
+                raise ValueError(tr("analysis.too_many_points"))
             side: Literal["left", "right"] = "left" if self._side.currentData() == "left" else "right"
             result = analyze_corner(
                 axle, self.controller.project.vehicle, travels, side=side,
@@ -158,7 +192,7 @@ class AnalysisDialog(QDialog):
         self._table.setRowCount(len(travels))
         failures = 0
         for row, (point, sample) in enumerate(zip(result.sweep.points, result.samples, strict=True)):
-            values = [f"{point.travel_mm:+.2f}", "—", "—", "—", "—", "—", "—", "—", ""]
+            values = [f"{point.travel_mm:+.2f}", "—", "—", "—", "—", "—", "—", "—", "", "—", "—", "—"]
             if sample is None:
                 failures += 1
                 values[8] = str(point.error) if point.error is not None else tr("analysis.no_result")
@@ -182,9 +216,27 @@ class AnalysisDialog(QDialog):
                     if damper.motion_ratio is not None:
                         values[7] = f"{damper.motion_ratio:.3f}"
                     statuses.append(damper.error or tr(f"analysis.damper_status.{damper.stroke.status}" if damper.stroke else "analysis.damper_status.unknown"))
+                    if characteristic is not None:
+                        try:
+                            dynamics = evaluate_linear_damping(damper, characteristic, velocity)
+                            values[9] = f"{dynamics.compression_velocity_mm_s:+.2f}"
+                            values[10] = f"{dynamics.wheel_force_n:+.1f}"
+                            values[11] = f"{dynamics.dissipated_power_w:.2f}"
+                        except ValueError as error:
+                            statuses.append(tr("analysis.damping_unavailable", reason=str(error)))
                 values[8] = "; ".join(statuses) or tr("analysis.geometry_only")
             for column, text in enumerate(values):
                 item = QTableWidgetItem(text)
                 item.setToolTip(text)
                 self._table.setItem(row, column, item)
         self._status.setText(tr("analysis.complete", count=len(travels), failures=failures))
+
+    @staticmethod
+    def _explicit_number(field: QLineEdit, minimum: float, maximum: float) -> float:
+        try:
+            value = float(field.text().strip().replace(",", "."))
+        except ValueError as error:
+            raise ValueError(tr("analysis.damping_input_required")) from error
+        if not isfinite(value) or not minimum <= value <= maximum:
+            raise ValueError(tr("analysis.damping_input_required"))
+        return value

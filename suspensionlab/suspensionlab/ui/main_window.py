@@ -30,6 +30,7 @@ from ..model.project_io import ProjectIOError
 from ..model.suspension_types import types_for_role
 from ..model.units import LENGTH_UNITS, RATE_UNITS, UnitKind, UnitSettings
 from .analysis_dialog import AnalysisDialog
+from .antiroll_dialog import AntiRollDialog
 from .canvas.axle_view import AxleCanvas
 from .controller import AppController, Selection
 from .dialogs import SnapshotDialog, TemplateDialog
@@ -212,6 +213,9 @@ class MainWindow(QMainWindow):
         self.action_analysis = QAction(tr("analysis.menu_action"), self)
         self.action_analysis.triggered.connect(self._open_analysis)
 
+        self.action_antiroll = QAction(tr("antiroll_ui.menu_action"), self)
+        self.action_antiroll.triggered.connect(self._open_antiroll)
+
         self.action_log = QAction(tr("menu.help.log"), self)
         self.action_log.triggered.connect(self._open_log)
 
@@ -262,6 +266,7 @@ class MainWindow(QMainWindow):
 
         menu_analysis = bar.addMenu(tr("analysis.menu"))
         menu_analysis.addAction(self.action_analysis)
+        menu_analysis.addAction(self.action_antiroll)
 
         menu_help = bar.addMenu(tr("menu.help"))
         menu_help.addAction(self.action_manual)
@@ -486,6 +491,12 @@ class MainWindow(QMainWindow):
     def _open_analysis(self) -> None:
         """Показывает экспериментальный расчёт выбранной стороны оси."""
         dialog = AnalysisDialog(self.controller, self)
+        dialog.exec()
+        dialog.deleteLater()
+
+    def _open_antiroll(self) -> None:
+        """Показывает отдельную идеализированную модель стабилизатора."""
+        dialog = AntiRollDialog(self.controller, self)
         dialog.exec()
         dialog.deleteLater()
 

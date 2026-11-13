@@ -294,3 +294,172 @@ def test_analysis_dialog_shows_partial_failure_and_mechanical_conflicts(window, 
     assert dialog._table.item(0, 5).text() == "—"
     assert "Смыкание" in dialog._table.item(0, 8).text()
     assert "Превышен упор отбоя" in dialog._table.item(0, 8).text()
+
+
+def test_analysis_dialog_explicit_damper_force_and_stop(window, qtbot):
+    from suspensionlab.core.analysis import analyze_corner
+    from suspensionlab.core.damper import LinearDamperCharacteristic, evaluate_linear_damping
+    from suspensionlab.ui.analysis_dialog import AnalysisDialog
+
+    window.controller.new_project("ring")
+    before = window.controller.project.to_dict()
+    dialog = AnalysisDialog(window.controller, window)
+    qtbot.addWidget(dialog)
+    dialog._from.setValue(0)
+    dialog._to.setValue(0)
+    assert not dialog._damping.isEnabled()
+    dialog._damper.setChecked(True)
+    dialog._damping.setChecked(True)
+    dialog._run.click()
+    assert dialog._table.rowCount() == 0 and "введите скорость" in dialog._status.text()
+    dialog._velocity.setText("-20,0")
+    dialog._compression.setText("2")
+    dialog._rebound.setText("4")
+    dialog._run.click()
+    assert dialog._table.rowCount() == 1
+    sample = analyze_corner(window.controller.project.front, window.controller.project.vehicle, [0],
+                            damper_mount="lower_arm").samples[0]
+    assert sample is not None and sample.damper is not None
+    expected = evaluate_linear_damping(sample.damper, LinearDamperCharacteristic(2, 4), -20)
+    assert float(dialog._table.item(0, 9).text()) == pytest.approx(expected.compression_velocity_mm_s, abs=0.005)
+    assert float(dialog._table.item(0, 10).text()) == pytest.approx(expected.wheel_force_n, abs=0.05)
+    assert float(dialog._table.item(0, 11).text()) == pytest.approx(expected.dissipated_power_w, abs=0.005)
+    assert "не заданы" in dialog._table.item(0, 8).text()
+    dialog._velocity.setText("20")
+    assert dialog._table.rowCount() == 0
+    dialog._run.click()
+    assert float(dialog._table.item(0, 10).text()) < 0
+    dialog._damper_min.setValue(100)
+    dialog._damper_max.setValue(200)
+    dialog._run.click()
+    assert dialog._table.item(0, 10).text() == "—"
+    assert "не определена" in dialog._table.item(0, 8).text()
+    assert window.controller.project.to_dict() == before
+    dialog._damper.setChecked(False)
+    assert not dialog._damping.isChecked() and not dialog._velocity.isEnabled()
+
+
+def test_analysis_damping_missing_invalid_and_fine_grid(window, qtbot):
+    from suspensionlab.ui.analysis_dialog import AnalysisDialog
+
+    window.controller.new_project("ring")
+    dialog = AnalysisDialog(window.controller, window)
+    qtbot.addWidget(dialog)
+    dialog._from.setValue(0)
+    dialog._to.setValue(0.2)
+    dialog._step.setValue(0.1)
+    dialog._damper.setChecked(True)
+    dialog._damping.setChecked(True)
+    dialog._compression.setText("0")
+    dialog._rebound.setText("1")
+    for invalid in ("", "nan", "inf", "10001", "1,2,3"):
+        dialog._velocity.setText(invalid)
+        dialog._run.click()
+        assert dialog._table.rowCount() == 0
+        assert "введите скорость" in dialog._status.text()
+    dialog._velocity.setText("0")
+    dialog._run.click()
+    assert dialog._table.rowCount() == 3
+    assert float(dialog._table.item(0, 10).text()) == 0
+    dialog._from.setValue(-100)
+    dialog._to.setValue(100)
+    dialog._run.click()
+    assert dialog._table.rowCount() == 0
+    assert "401" in dialog._status.text()
+
+
+def test_antiroll_dialog_compares_with_core_and_invalidates(window, qtbot):
+    from suspensionlab.core.antiroll import AntiRollScenario, AntiRollStudy
+    from suspensionlab.ui.antiroll_dialog import AntiRollDialog
+
+    window.controller.new_project("ring")
+    before = window.controller.project.to_dict()
+    dialog = AntiRollDialog(window.controller, window)
+    qtbot.addWidget(dialog)
+    dialog._from.setValue(-1)
+    dialog._to.setValue(1)
+    dialog._run.click()
+    assert dialog._table.rowCount() == 0 and "Введите X и Z" in dialog._status.text()
+    dialog._axis_x.setText("-250")
+    dialog._axis_z.setText("320")
+    dialog._rate.setText("1000")
+    dialog._run.click()
+    assert dialog._table.rowCount() == 3
+    result = AntiRollStudy(window.controller.project.front, AntiRollScenario(-250, 320, 1000)).sweep([(-1, 1), (0, 0), (1, -1)])
+    state = result.points[2].state
+    assert state is not None
+    assert float(dialog._table.item(2, 8).text()) == pytest.approx(state.twist_deg, abs=0.005)
+    assert float(dialog._table.item(2, 9).text()) == pytest.approx(state.torque_nm, abs=0.005)
+    assert float(dialog._table.item(2, 10).text()) == pytest.approx(state.left.compression_force_n, abs=0.05)
+    assert float(dialog._table.item(2, 11).text()) == pytest.approx(state.right.compression_force_n, abs=0.05)
+    assert window.controller.project.to_dict() == before
+    dialog._mode.setCurrentIndex(0)
+    assert dialog._table.rowCount() == 0
+    dialog._run.click()
+    assert float(dialog._table.item(2, 9).text()) == pytest.approx(0, abs=0.01)
+    point = window.controller.project.front.hardpoints["arb_lo"]
+    window.controller.set_value(point, "z", point.z + 1)
+    assert dialog._table.rowCount() == 0
+    dialog._role.setCurrentIndex(1)
+    assert not dialog._run.isEnabled() and "пока не реализован" in dialog._status.text()
+
+
+def test_antiroll_dialog_input_validation_and_failure(window, qtbot, monkeypatch):
+    from suspensionlab.core.antiroll import AntiRollPoint, AntiRollSweep
+    from suspensionlab.ui import antiroll_dialog
+
+    window.controller.new_project("ring")
+    dialog = antiroll_dialog.AntiRollDialog(window.controller, window)
+    qtbot.addWidget(dialog)
+    dialog._from.setValue(0)
+    dialog._to.setValue(0)
+    dialog._axis_x.setText("-250")
+    dialog._axis_z.setText("320")
+    for invalid in ("", "nan", "-1", "10000001"):
+        dialog._rate.setText(invalid)
+        dialog._run.click()
+        assert dialog._table.rowCount() == 0
+        assert "Введите X и Z" in dialog._status.text()
+    dialog._rate.setText("0")
+    dialog._run.click()
+    assert float(dialog._table.item(0, 9).text()) == 0
+    dialog._from.setValue(-100)
+    dialog._to.setValue(100)
+    dialog._step.setValue(0.1)
+    dialog._run.click()
+    assert dialog._table.rowCount() == 0 and "401" in dialog._status.text()
+    dialog._from.setValue(0)
+    dialog._to.setValue(0)
+
+    class FailingStudy:
+        def __init__(self, *args):
+            pass
+
+        def sweep(self, *args, **kwargs):
+            return AntiRollSweep((AntiRollPoint(0, 0, None, "test failure"),), ())
+
+    monkeypatch.setattr(antiroll_dialog, "AntiRollStudy", FailingStudy)
+    dialog._run.click()
+    assert dialog._table.item(0, 9).text() == "—"
+    assert dialog._table.item(0, 12).text() == "test failure"
+    assert "нерешённых: 1" in dialog._status.text()
+
+
+def test_antiroll_action_opens_dialog(window, monkeypatch):
+    from suspensionlab.ui import main_window
+
+    seen = []
+
+    class FakeDialog:
+        def __init__(self, controller, parent):
+            seen.append((controller, parent))
+
+        def exec(self):
+            seen.append("opened")
+
+        def deleteLater(self):  # noqa: N802
+            seen.append("released")
+
+    monkeypatch.setattr(main_window, "AntiRollDialog", FakeDialog)
+    window.action_antiroll.trigger()
+    assert seen == [(window.controller, window), "opened", "released"]
