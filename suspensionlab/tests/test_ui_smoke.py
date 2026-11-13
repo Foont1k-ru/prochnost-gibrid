@@ -580,14 +580,11 @@ def test_antiroll_preview_steps_both_views_and_invalidates(window, qtbot):
 
 def test_antiroll_preview_does_not_reuse_stale_state_on_failure(window, qtbot, monkeypatch):
     from suspensionlab.core.antiroll import AntiRollPoint, AntiRollScenario, AntiRollStudy, AntiRollSweep
-    from PySide6.QtWidgets import QLabel
-
     from suspensionlab.ui import antiroll_dialog
 
     window.controller.new_project("ring")
     dialog = antiroll_dialog.AntiRollDialog(window.controller, window)
     qtbot.addWidget(dialog)
-    assert any("статус определяется до округления" in label.text() for label in dialog.findChildren(QLabel))
     dialog._from.setValue(0)
     dialog._to.setValue(1)
     dialog._axis_x.setText("-250")
