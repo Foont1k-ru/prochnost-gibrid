@@ -531,3 +531,80 @@ def test_pose_preview_handles_unsolved_row_without_stale_image(window, qtbot, mo
     assert dialog._preview.frame is None and "недоступна" in dialog._preview_status.text()
     dialog._previous.click()
     assert dialog._preview.frame is not None
+
+
+def test_antiroll_preview_steps_both_views_and_invalidates(window, qtbot):
+    from suspensionlab.core.antiroll import AntiRollScenario, AntiRollStudy
+    from suspensionlab.ui.antiroll_dialog import AntiRollDialog
+
+    window.controller.new_project("ring")
+    dialog = AntiRollDialog(window.controller, window)
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog._from.setValue(-1)
+    dialog._to.setValue(1)
+    dialog._step.setValue(0.5)
+    dialog._axis_x.setText("-250")
+    dialog._axis_z.setText("320")
+    dialog._rate.setText("1000")
+    dialog._run.click()
+    assert dialog._table.rowCount() == 5
+    assert dialog._preview.frame is not None and dialog._preview.frame.left_travel_mm == 0
+    assert dialog._preview.axis_x == -250 and dialog._preview.axis_z == 320
+    assert "условная ось" in dialog._preview_status.text()
+    bounds = dict(dialog._preview.bounds)
+    dialog._next.click()
+    state = dialog._preview.frame
+    assert state is not None and state.left_travel_mm == pytest.approx(0.5)
+    assert state.right_travel_mm == pytest.approx(-0.5)
+    reference = AntiRollStudy(window.controller.project.front, AntiRollScenario(-250, 320, 1000)).sweep([(0.5, -0.5)])
+    assert reference.points[0].state is not None
+    assert state.left.lower_mm == pytest.approx(reference.points[0].state.left.lower_mm, abs=1e-7)
+    assert state.right.upper_mm == pytest.approx(reference.points[0].state.right.upper_mm, abs=1e-7)
+    assert dialog._preview.bounds == bounds
+    dialog._preview.grab()
+    dialog._view.setCurrentIndex(1)
+    assert dialog._preview.mode == "top" and dialog._preview.frame is state
+    dialog._preview.grab()
+    dialog._previous.click()
+    assert dialog._preview.frame.left_travel_mm == 0
+    dialog._table.setCurrentCell(0, 0)
+    assert dialog._slider.value() == 0 and dialog._preview.frame.left_travel_mm == -1
+    dialog._rate.setText("2000")
+    assert dialog._preview.frame is None and dialog._table.rowCount() == 0 and not dialog._slider.isEnabled()
+    dialog._run.click()
+    assert dialog._preview.frame is not None
+    window.controller.new_project("city")
+    assert dialog._preview.frame is None and dialog._table.rowCount() == 0
+
+
+def test_antiroll_preview_does_not_reuse_stale_state_on_failure(window, qtbot, monkeypatch):
+    from suspensionlab.core.antiroll import AntiRollPoint, AntiRollScenario, AntiRollStudy, AntiRollSweep
+    from suspensionlab.ui import antiroll_dialog
+
+    window.controller.new_project("ring")
+    dialog = antiroll_dialog.AntiRollDialog(window.controller, window)
+    qtbot.addWidget(dialog)
+    dialog._from.setValue(0)
+    dialog._to.setValue(1)
+    dialog._axis_x.setText("-250")
+    dialog._axis_z.setText("320")
+    dialog._rate.setText("1000")
+    good = AntiRollStudy(window.controller.project.front, AntiRollScenario(-250, 320, 1000)).sweep([(0, 0)]).points[0]
+
+    class PartialStudy:
+        def __init__(self, *args):
+            pass
+
+        def sweep(self, *args, **kwargs):
+            return AntiRollSweep((good, AntiRollPoint(1, -1, None, "test failure")), ())
+
+    monkeypatch.setattr(antiroll_dialog, "AntiRollStudy", PartialStudy)
+    dialog._run.click()
+    assert dialog._preview.frame is not None
+    bounds = dict(dialog._preview.bounds)
+    dialog._next.click()
+    assert dialog._preview.frame is None and "недоступна" in dialog._preview_status.text()
+    assert "test failure" in dialog._table.item(1, 12).text()
+    dialog._previous.click()
+    assert dialog._preview.frame is not None and dialog._preview.bounds == bounds
