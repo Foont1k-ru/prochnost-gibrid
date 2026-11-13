@@ -4,6 +4,7 @@ from __future__ import annotations
 from math import isfinite
 from typing import Literal
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -17,6 +18,8 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
+    QSlider,
+    QSplitter,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -25,9 +28,12 @@ from PySide6.QtWidgets import (
 
 from ..core.analysis import analyze_corner
 from ..core.damper import LinearDamperCharacteristic, evaluate_linear_damping
+from ..core.double_wishbone import DoubleWishbone
+from ..core.pose_view import PoseView, pose_view
 from ..core.stroke import StrokeLimits
 from ..core.sweep import travel_grid
 from ..i18n import tr
+from .canvas.pose_preview import PosePreview
 from .controller import AppController
 
 
@@ -92,6 +98,36 @@ class AnalysisDialog(QDialog):
         self._table.horizontalHeader().setStretchLastSection(True)
         self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self._table.setAlternatingRowColors(True)
+        self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self._frames: list[PoseView | None] = []
+        self._cambers: list[float] = []
+        self._preview = PosePreview(self)
+        self._preview_status = QLabel(tr("analysis.preview_empty"), self)
+        self._preview_status.setWordWrap(True)
+        self._slider = QSlider(Qt.Orientation.Horizontal, self)
+        self._slider.setEnabled(False)
+        self._previous = QPushButton(tr("analysis.previous"), self)
+        self._next = QPushButton(tr("analysis.next"), self)
+        self._previous.setEnabled(False)
+        self._next.setEnabled(False)
+        navigation = QHBoxLayout()
+        navigation.addWidget(self._previous)
+        navigation.addWidget(self._slider, 1)
+        navigation.addWidget(self._next)
+        preview_container = QWidget(self)
+        preview_layout = QVBoxLayout(preview_container)
+        preview_layout.setContentsMargins(0, 0, 0, 0)
+        preview_layout.addWidget(self._preview, 1)
+        preview_layout.addWidget(self._preview_status)
+        preview_layout.addLayout(navigation)
+        self._split = QSplitter(Qt.Orientation.Horizontal, self)
+        self._split.addWidget(self._table)
+        self._split.addWidget(preview_container)
+        self._split.setSizes([700, 500])
+        self._table.currentCellChanged.connect(self._show_row)
+        self._slider.valueChanged.connect(lambda row: self._table.setCurrentCell(row, 0))
+        self._previous.clicked.connect(lambda: self._slider.setValue(self._slider.value() - 1))
+        self._next.clicked.connect(lambda: self._slider.setValue(self._slider.value() + 1))
         self._run = QPushButton(tr("analysis.run"), self)
         self._run.clicked.connect(self._calculate)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close, self)
@@ -112,7 +148,7 @@ class AnalysisDialog(QDialog):
         dynamics.addStretch()
         layout.addLayout(dynamics)
         layout.addWidget(self._status)
-        layout.addWidget(self._table, 1)
+        layout.addWidget(self._split, 1)
         layout.addLayout(row)
 
         for combo in (self._role, self._side):
@@ -137,8 +173,18 @@ class AnalysisDialog(QDialog):
         box.setValue(value)
         return box
 
-    def _invalidate(self, *_args: object) -> None:
+    def _clear_results(self) -> None:
+        self._frames = []
+        self._cambers = []
+        self._preview.clear()
+        self._preview_status.setText(tr("analysis.preview_empty"))
+        self._slider.setEnabled(False)
+        self._previous.setEnabled(False)
+        self._next.setEnabled(False)
         self._table.setRowCount(0)
+
+    def _invalidate(self, *_args: object) -> None:
+        self._clear_results()
         self._spring_length.setEnabled(self._spring.isChecked())
         self._coil_bind.setEnabled(self._spring.isChecked())
         self._damper_min.setEnabled(self._damper.isChecked())
@@ -153,7 +199,7 @@ class AnalysisDialog(QDialog):
         self._status.setText(tr("analysis.ready" if supported else "analysis.unsupported"))
 
     def _calculate(self) -> None:
-        self._table.setRowCount(0)
+        self._clear_results()
         role = str(self._role.currentData())
         axle = self.controller.project.axle(role)
         if axle.type_code != "double_wishbone":
@@ -189,6 +235,22 @@ class AnalysisDialog(QDialog):
         except (ValueError, ArithmeticError) as error:
             self._status.setText(tr("analysis.error", reason=str(error)))
             return
+        # Отдельная подготовка проекции: сбой показа не подменяет результаты таблицы.
+        model = DoubleWishbone(axle, side)
+        frames: list[PoseView | None] = []
+        for sample in result.samples:
+            try:
+                frame = pose_view(model, sample.pose, axle, spring=self._spring.isChecked(),
+                                  damper=self._damper.isChecked()) if sample is not None else None
+            except (ValueError, KeyError, ArithmeticError):
+                frame = None
+            frames.append(frame)
+        radius, width = axle.wheel.r_dynamic_mm, axle.wheel.width_mm
+        if not all(isfinite(value) and 0 < value < 100000 for value in (radius, width)):
+            frames = [None] * len(frames)
+        self._frames = frames
+        self._cambers = [sample.geometry.camber_deg if sample is not None else 0 for sample in result.samples]
+        self._preview.configure([frame for frame in frames if frame is not None], radius, width)
         self._table.setRowCount(len(travels))
         failures = 0
         for row, (point, sample) in enumerate(zip(result.sweep.points, result.samples, strict=True)):
@@ -230,6 +292,33 @@ class AnalysisDialog(QDialog):
                 item.setToolTip(text)
                 self._table.setItem(row, column, item)
         self._status.setText(tr("analysis.complete", count=len(travels), failures=failures))
+        if travels:
+            self._slider.setRange(0, len(travels) - 1)
+            self._slider.setEnabled(True)
+            self._previous.setEnabled(True)
+            self._next.setEnabled(True)
+            index = min(range(len(travels)), key=lambda i: abs(travels[i]))
+            self._table.setCurrentCell(index, 0)
+            self._show_row(index)
+
+    def _show_row(self, row: int, *_args: object) -> None:
+        if not 0 <= row < len(self._frames):
+            return
+        self._slider.blockSignals(True)
+        self._slider.setValue(row)
+        self._slider.blockSignals(False)
+        frame = self._frames[row]
+        if frame is None:
+            # Сохраняем общий масштаб для возможного выбора следующей строки.
+            self._preview.frame = None
+            self._preview.message = tr("analysis.preview_no_pose")
+            self._preview.update()
+            self._preview_status.setText(tr("analysis.preview_no_pose"))
+            return
+        self._preview.show_frame(frame, self._cambers[row], 1 if self._side.currentData() == "left" else -1)
+        item = self._table.item(row, 8)
+        state = item.text() if item is not None else ""
+        self._preview_status.setText(tr("analysis.preview_warning", state=state))
 
     @staticmethod
     def _explicit_number(field: QLineEdit, minimum: float, maximum: float) -> float:

@@ -463,3 +463,71 @@ def test_antiroll_action_opens_dialog(window, monkeypatch):
     monkeypatch.setattr(main_window, "AntiRollDialog", FakeDialog)
     window.action_antiroll.trigger()
     assert seen == [(window.controller, window), "opened", "released"]
+
+
+def test_pose_preview_selection_steps_conflict_and_invalidation(window, qtbot):
+    from suspensionlab.ui.analysis_dialog import AnalysisDialog
+
+    window.controller.new_project("ring")
+    dialog = AnalysisDialog(window.controller, window)
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog._from.setValue(-1)
+    dialog._to.setValue(1)
+    dialog._step.setValue(0.5)
+    dialog._spring.setChecked(True)
+    dialog._spring_length.setValue(230)
+    dialog._coil_bind.setValue(230)
+    dialog._damper.setChecked(True)
+    dialog._damper_min.setValue(100)
+    dialog._damper_max.setValue(200)
+    dialog._run.click()
+    assert dialog._table.rowCount() == 5
+    assert dialog._preview.frame is not None
+    assert dialog._preview.frame.travel_mm == 0
+    assert "геометрическ" in dialog._preview_status.text().lower()
+    assert "Смыкание" in dialog._preview_status.text()
+    assert "Превышен упор отбоя" in dialog._preview_status.text()
+    z0 = dialog._preview.frame.center[2]
+    bounds = dialog._preview.bounds
+    dialog._next.click()
+    assert dialog._preview.frame.travel_mm == pytest.approx(0.5)
+    assert dialog._preview.frame.center[2] == pytest.approx(z0 + 0.5, abs=1e-6)
+    assert dialog._preview.bounds == bounds
+    dialog._previous.click()
+    assert dialog._preview.frame.travel_mm == 0
+    dialog._table.setCurrentCell(0, 0)
+    assert dialog._slider.value() == 0 and dialog._preview.frame.travel_mm == -1
+    dialog._preview.grab()
+    dialog._side.setCurrentIndex(1)
+    assert dialog._preview.frame is None and not dialog._slider.isEnabled()
+    dialog._run.click()
+    assert dialog._preview.frame is not None and dialog._preview.frame.center[1] < 0
+    window.controller.new_project("city")
+    assert dialog._preview.frame is None and dialog._table.rowCount() == 0
+
+
+def test_pose_preview_handles_unsolved_row_without_stale_image(window, qtbot, monkeypatch):
+    from dataclasses import replace
+
+    from suspensionlab.core.analysis import analyze_corner
+    from suspensionlab.core.double_wishbone import KinematicsError
+    from suspensionlab.core.sweep import SweepPoint
+    from suspensionlab.ui import analysis_dialog
+
+    window.controller.new_project("ring")
+    dialog = analysis_dialog.AnalysisDialog(window.controller, window)
+    qtbot.addWidget(dialog)
+    dialog._from.setValue(0)
+    dialog._to.setValue(1)
+    original = analyze_corner(window.controller.project.front, window.controller.project.vehicle, [0, 1])
+    failure = KinematicsError(1, "test")
+    partial = replace(original, sweep=replace(original.sweep, points=(original.sweep.points[0], SweepPoint(1, None, failure))),
+                      samples=(original.samples[0], None))
+    monkeypatch.setattr(analysis_dialog, "analyze_corner", lambda *args, **kwargs: partial)
+    dialog._run.click()
+    assert dialog._preview.frame is not None
+    dialog._next.click()
+    assert dialog._preview.frame is None and "недоступна" in dialog._preview_status.text()
+    dialog._previous.click()
+    assert dialog._preview.frame is not None
