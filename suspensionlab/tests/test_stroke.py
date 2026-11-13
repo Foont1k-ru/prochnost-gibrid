@@ -35,3 +35,15 @@ def test_find_length_limit_on_actual_curve() -> None:
     assert (result.from_length_mm - target) * (result.to_length_mm - target) <= 0
     with pytest.raises(ValueError, match="разные стороны"):
         locate_lower_arm_length(model, lower, upper, target - 100, 0, 30)
+
+
+def test_stroke_exact_and_adjacent_floating_point_boundaries() -> None:
+    from math import inf, nextafter
+
+    limits = StrokeLimits(280, 420)
+    assert stroke_state(nextafter(280, -inf), limits).status == "below_compressed"
+    assert stroke_state(280, limits).status == "compressed_limit"
+    assert stroke_state(nextafter(280, inf), limits).status == "inside"
+    assert stroke_state(nextafter(420, -inf), limits).status == "inside"
+    assert stroke_state(420, limits).status == "extended_limit"
+    assert stroke_state(nextafter(420, inf), limits).status == "above_extended"

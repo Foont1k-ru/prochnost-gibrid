@@ -149,3 +149,13 @@ def test_unknown_length_progressive_and_invalid_geometry_are_not_guessed() -> No
     invalid = analyze_corner(project.front, project.vehicle, [0, 30], spring_mount="lower_arm", static_spring_length_mm=0.01)
     assert invalid.samples[1] is not None and invalid.samples[1].spring is not None
     assert invalid.samples[1].spring.state is None and invalid.samples[1].spring.error is not None
+
+
+def test_coil_bind_exact_and_adjacent_floating_point_boundaries() -> None:
+    from math import inf, nextafter
+
+    characteristic = SpringCharacteristic(250, 100, coil_bind_length_mm=150)
+    for length in (nextafter(150, -inf), 150):
+        state = spring_state(characteristic, length)
+        assert state.status == "coil_bind" and state.force_n is None
+    assert spring_state(characteristic, nextafter(150, inf)).status == "loaded"

@@ -31,10 +31,16 @@ def test_component_checks_match_independent_corner_analysis(side, travel):
                             damper_mount="lower_arm", damper_limits=limits).samples[0]
     assert sample is not None and sample.spring is not None and sample.spring.state is not None and sample.damper is not None
     assert result.spring is not None and result.damper is not None
-    assert result.spring.length_mm == pytest.approx(sample.spring.state.length_mm, abs=1e-7)
-    assert result.spring.coil_clearance_mm == pytest.approx(sample.spring.state.coil_clearance_mm, abs=1e-7)
-    assert result.damper.length_mm == pytest.approx(sample.damper.length_mm, abs=1e-7)
-    assert result.damper.stroke == sample.damper.stroke
+    assert result.spring.length_mm == pytest.approx(sample.spring.state.length_mm, abs=1e-7, rel=0)
+    assert result.spring.coil_clearance_mm == pytest.approx(sample.spring.state.coil_clearance_mm, abs=1e-7, rel=0)
+    assert result.damper.length_mm == pytest.approx(sample.damper.length_mm, abs=1e-7, rel=0)
+    assert result.damper.stroke is not None and sample.damper.stroke is not None
+    assert result.damper.stroke.status == sample.damper.stroke.status
+    assert result.damper.stroke.length_mm == pytest.approx(sample.damper.stroke.length_mm, abs=1e-7, rel=0)
+    assert result.damper.stroke.compression_clearance_mm == pytest.approx(
+        sample.damper.stroke.compression_clearance_mm, abs=1e-7, rel=0)
+    assert result.damper.stroke.extension_clearance_mm == pytest.approx(
+        sample.damper.stroke.extension_clearance_mm, abs=1e-7, rel=0)
     assert result.spring.status == "clear"
 
 
@@ -71,3 +77,19 @@ def test_coincident_mounts_are_invalid_not_a_success():
     result = check_components(collapsed, frame, ComponentCheckOptions(230, 150, StrokeLimits(300, 500)))
     assert result.spring is not None and result.spring.status == "invalid"
     assert result.damper is not None and result.damper.invalid
+
+
+def test_combined_spring_boundary_matches_independent_detection():
+    from math import inf, nextafter
+
+    from suspensionlab.core.spring_characteristics import SpringCharacteristic, spring_state
+
+    axle = load_template("ring").front
+    system = AntiRollStudy(axle, AntiRollScenario(-250, 320, 1000))
+    frame = pose_view(system.left.model, system.left.model.initial_pose(), axle, spring=True, damper=True)
+    characteristic = SpringCharacteristic(250, 100, coil_bind_length_mm=230)
+    for length in (nextafter(230, -inf), 230, nextafter(230, inf)):
+        result = check_components(frame, frame, ComponentCheckOptions(length, 230))
+        assert result.spring is not None
+        expected = "coil_bind" if spring_state(characteristic, length).status == "coil_bind" else "clear"
+        assert result.spring.status == expected
