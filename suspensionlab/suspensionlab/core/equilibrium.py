@@ -116,7 +116,7 @@ class SpringEquilibrium:
         bump_stop: BumpStopCharacteristic | None = None,
         damper_mount: Literal["lower_arm"] | None = None,
         damper_limits: StrokeLimits | None = None,
-        max_step_mm: float = 2.0,
+        max_step_mm: float = 1.0,
     ) -> None:
         if not isfinite(static_spring_length_mm) or static_spring_length_mm <= 0:
             raise ValueError("Статическая длина пружины должна быть положительной и конечной")
@@ -197,7 +197,7 @@ class SpringEquilibrium:
             raise EquilibriumError(travel_mm, "суммарная сила или невязка не является конечной")
         return EquilibriumSample(travel_mm, state, ratio, support, residual, bump, total, damper, pose)
 
-    def check_path(self, target_travel_mm: float, load_n: float, *, step_mm: float) -> EquilibriumPath:
+    def check_path(self, target_travel_mm: float, load_n: float, *, step_mm: float = 1.0) -> EquilibriumPath:
         """Выборочно проверяет известные ограничения от 0 до заданного хода.
 
         Шаг относится к точкам контроля, внутренний шаг решения может быть
@@ -241,7 +241,7 @@ class SpringEquilibrium:
         to_travel_mm: float,
         *,
         travel_tolerance_mm: float = 0.01,
-        path_step_mm: float | None = None,
+        path_step_mm: float | None = 1.0,
     ) -> EquilibriumResult:
         """Уточняет один интервал смены знака методом бисекции.
 
@@ -249,8 +249,9 @@ class SpringEquilibrium:
         частей интервала. Численные или физические ошибки в оценённых точках
         прерывают поиск. Упоры амортизатора проверяются только при явном
         указании крепления и границ и лишь в вычисленных точках. Допуск
-        относится к ширине интервала, не силе. При path_step_mm дополнительно
-        проверяются заданные компоненты на выборке от статики до оценки корня.
+        относится к ширине интервала, не силе. По умолчанию компоненты
+        проверяются от статики до корня с шагом до 1 мм. Значение None
+        отключает проверку пути, что отмечается в ограничениях.
         """
         if path_step_mm is not None and (not isfinite(path_step_mm) or path_step_mm <= 0):
             raise ValueError("Шаг проверки пути должен быть положительным и конечным")

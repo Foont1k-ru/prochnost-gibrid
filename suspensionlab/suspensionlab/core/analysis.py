@@ -103,7 +103,7 @@ def analyze_corner(
     halfshaft: HalfshaftGeometry | None = None,
     halfshaft_limits: HalfshaftLimits | None = None,
     longitudinal_scenario: LongitudinalScenario | None = None,
-    max_step_mm: float = 2.0,
+    max_step_mm: float = 1.0,
 ) -> CornerAnalysis:
     """Частичный расчёт хода колеса; неприменимые результаты возвращаются как None.
 

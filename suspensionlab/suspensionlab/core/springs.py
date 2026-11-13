@@ -43,8 +43,8 @@ def ride_frequency_hz(ride_rate_n_mm: float, sprung_mass_kg: float) -> float:
     return sqrt(ride_rate_n_mm * 1000.0 / sprung_mass_kg) / (2.0 * pi)
 
 
-def lower_arm_spring_length(model: DoubleWishbone, pose: Pose, lower: Array, upper: Array) -> float:
-    """Длина пружины с нижней опорой на нижнем рычаге и верхней на кузове."""
+def lower_arm_point(model: DoubleWishbone, pose: Pose, point: Array) -> Array:
+    """Перемещает точку, жёстко закреплённую на нижнем рычаге."""
     import numpy as np
     from scipy.spatial.transform import Rotation
 
@@ -60,8 +60,14 @@ def lower_arm_spring_length(model: DoubleWishbone, pose: Pose, lower: Array, upp
     if np.linalg.norm(a) < 1e-9 or np.linalg.norm(b) < 1e-9:
         raise KinematicsError(pose.travel_mm, "шаровая расположена на оси нижнего рычага")
     angle = np.arctan2(np.dot(axis, np.cross(a, b)), np.dot(a, b))
-    rotated_lower = axis_origin + Rotation.from_rotvec(axis * angle).apply(lower - axis_origin)
-    return float(np.linalg.norm(upper - rotated_lower))
+    return axis_origin + Rotation.from_rotvec(axis * angle).apply(point - axis_origin)
+
+
+def lower_arm_spring_length(model: DoubleWishbone, pose: Pose, lower: Array, upper: Array) -> float:
+    """Расстояние от точки на нижнем рычаге до неподвижной верхней точки."""
+    import numpy as np
+
+    return float(np.linalg.norm(upper - lower_arm_point(model, pose, lower)))
 
 
 def lower_arm_motion_ratio(model: DoubleWishbone, travel_mm: float, lower: Array, upper: Array, step_mm: float = 0.01) -> float:

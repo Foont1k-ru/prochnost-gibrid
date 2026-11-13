@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import ceil
+from math import ceil, isfinite
 
 from .double_wishbone import DoubleWishbone, KinematicsError, Pose, validate_sweep_input
 
@@ -23,6 +23,31 @@ class LimitedSweep:
     points: tuple[SweepPoint, ...]
     reachable_droop_mm: float
     reachable_bump_mm: float
+
+
+def travel_grid(from_mm: float, to_mm: float, *, max_spacing_mm: float = 1.0) -> list[float]:
+    """Равномерная сетка, содержащая границы и ноль при пересечении статики.
+
+    Меньшая сетка не гарантирует обнаружения узких конфликтов между отсчётами.
+    """
+    if not all(isfinite(x) for x in (from_mm, to_mm, max_spacing_mm)) or max_spacing_mm <= 0 or from_mm > to_mm:
+        raise ValueError("Границы должны быть конечными и возрастать, шаг — положительным")
+    boundaries = [from_mm, 0.0, to_mm] if from_mm < 0 < to_mm else [from_mm, to_mm]
+    intervals = []
+    for a, b in zip(boundaries, boundaries[1:], strict=False):
+        steps = (b - a) / max_spacing_mm
+        if not isfinite(steps) or steps > 5000:
+            raise ValueError("Слишком много точек свипа; увеличьте шаг")
+        intervals.append(ceil(steps))
+    if sum(intervals) + 1 > 5000:
+        raise ValueError("Слишком много точек свипа; увеличьте шаг")
+    result = [from_mm]
+    for (a, b), count in zip(zip(boundaries, boundaries[1:], strict=False), intervals, strict=True):
+        for i in range(1, count + 1):
+            result.append(b if i == count else a + (b - a) * i / count)
+    if any(a >= b for a, b in zip(result, result[1:], strict=False)):
+        raise ValueError("Шаг слишком мал для точности чисел на заданном диапазоне")
+    return result
 
 
 def limited_sweep(model: DoubleWishbone, travels_mm: list[float], max_step_mm: float = 2.0) -> LimitedSweep:

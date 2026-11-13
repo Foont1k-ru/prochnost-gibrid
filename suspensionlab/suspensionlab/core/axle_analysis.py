@@ -47,7 +47,7 @@ def analyze_symmetric_axle(
     damper_mount: Literal["lower_arm"] | None = None,
     damper_limits: StrokeLimits | None = None,
     zero_tolerance_mm: float = 1e-6,
-    max_step_mm: float = 2.0,
+    max_step_mm: float = 1.0,
 ) -> AxleAnalysis:
     """Анализирует равный ход обеих сторон; кузов и земля неподвижны.
 

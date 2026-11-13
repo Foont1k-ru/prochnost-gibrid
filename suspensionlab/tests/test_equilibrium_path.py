@@ -33,7 +33,9 @@ def test_find_opt_in_path_and_default_are_distinguishable() -> None:
     problem = SpringEquilibrium(load_template("ring").front, 230)
     load = problem.evaluate(12, 1).wheel_support_n
     default = problem.find(load, 0, 20)
-    assert default.path is None and "equilibrium_path_not_checked" in default.limitations
+    assert default.path is not None and default.path.completed and default.path.actual_step_mm <= 1.0
+    disabled = problem.find(load, 0, 20, path_step_mm=None)
+    assert disabled.path is None and "equilibrium_path_not_checked" in disabled.limitations
     checked = problem.find(load, 0, 20, path_step_mm=3)
     assert checked.path is not None and checked.path.completed
     assert checked.path.samples[-1].travel_mm == checked.estimate.travel_mm

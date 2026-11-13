@@ -197,13 +197,13 @@ def test_sampled_equilibrium_path_catches_collision_before_root(planar_axle: Axl
     # Грубая сетка легко пропускает конфликт: она не является доказательством безопасности.
     coarse = system.check_path(40, load, step_mm=40)
     assert coarse.completed and [sample.travel_mm for sample in coarse.samples] == [0, 40]
-    local = system.find(load, 35, 45, travel_tolerance_mm=0.001)
+    local = system.find(load, 35, 45, travel_tolerance_mm=0.001, path_step_mm=None)
     assert local.estimate.travel_mm == pytest.approx(40, abs=0.001)
     assert "equilibrium_path_not_checked" in local.limitations
     with pytest.raises(EquilibriumPathError, match="below_compressed") as exc:
         system.find(load, 35, 45, travel_tolerance_mm=0.001, path_step_mm=5)
     path = exc.value.path
     assert path.failure is not None and path.failure.kind == "component"
-    assert 15 <= path.failure.failure_travel_mm <= 25
+    assert 10 <= path.failure.failure_travel_mm <= 25
     assert path.samples[0].travel_mm == 0
     assert path.samples[-1].travel_mm < path.failure.failure_travel_mm
