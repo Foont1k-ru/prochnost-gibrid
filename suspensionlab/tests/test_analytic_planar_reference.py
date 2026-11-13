@@ -183,3 +183,27 @@ def test_equilibrium_rejects_intermediate_damper_collision(planar_axle: Axle) ->
     with pytest.raises(EquilibriumError, match="below_compressed") as exc:
         system.find(load, 0, 40)
     assert exc.value.travel_mm == 20
+
+
+def test_sampled_equilibrium_path_catches_collision_before_root(planar_axle: Axle) -> None:
+    from suspensionlab.core.equilibrium import EquilibriumPathError
+    from suspensionlab.core.stroke import StrokeLimits
+
+    lo, up = planar_axle.hardpoints["damper_lo"], planar_axle.hardpoints["damper_up"]
+    lo.x, lo.y, lo.z = 0, 500, 150
+    up.x, up.y, up.z = 3, 300 + 200 * sqrt(1 - (20 / 400)**2), 160
+    system = SpringEquilibrium(planar_axle, 230, damper_mount="lower_arm", damper_limits=StrokeLimits(5, 100))
+    load = planar_reference(40)[4]
+    # Грубая сетка легко пропускает конфликт: она не является доказательством безопасности.
+    coarse = system.check_path(40, load, step_mm=40)
+    assert coarse.completed and [sample.travel_mm for sample in coarse.samples] == [0, 40]
+    local = system.find(load, 35, 45, travel_tolerance_mm=0.001)
+    assert local.estimate.travel_mm == pytest.approx(40, abs=0.001)
+    assert "equilibrium_path_not_checked" in local.limitations
+    with pytest.raises(EquilibriumPathError, match="below_compressed") as exc:
+        system.find(load, 35, 45, travel_tolerance_mm=0.001, path_step_mm=5)
+    path = exc.value.path
+    assert path.failure is not None and path.failure.kind == "component"
+    assert 15 <= path.failure.failure_travel_mm <= 25
+    assert path.samples[0].travel_mm == 0
+    assert path.samples[-1].travel_mm < path.failure.failure_travel_mm
