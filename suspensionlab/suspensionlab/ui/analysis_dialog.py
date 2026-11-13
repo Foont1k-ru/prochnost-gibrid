@@ -58,9 +58,9 @@ class AnalysisDialog(QDialog):
         self._velocity = QLineEdit(self)
         self._compression = QLineEdit(self)
         self._rebound = QLineEdit(self)
-        for field in (self._velocity, self._compression, self._rebound):
-            field.setPlaceholderText(tr("analysis.explicit_required"))
-            field.setMaximumWidth(110)
+        for edit in (self._velocity, self._compression, self._rebound):
+            edit.setPlaceholderText(tr("analysis.explicit_required"))
+            edit.setMaximumWidth(110)
 
         fields = QHBoxLayout()
         geometry = QFormLayout()
@@ -106,9 +106,9 @@ class AnalysisDialog(QDialog):
         layout.addLayout(fields)
         dynamics = QHBoxLayout()
         dynamics.addWidget(self._damping)
-        for key, field in (("velocity", self._velocity), ("compression", self._compression), ("rebound", self._rebound)):
+        for key, edit in (("velocity", self._velocity), ("compression", self._compression), ("rebound", self._rebound)):
             dynamics.addWidget(QLabel(tr(f"analysis.{key}"), self))
-            dynamics.addWidget(field)
+            dynamics.addWidget(edit)
         dynamics.addStretch()
         layout.addLayout(dynamics)
         layout.addWidget(self._status)
@@ -123,8 +123,8 @@ class AnalysisDialog(QDialog):
         self._spring.toggled.connect(self._invalidate)
         self._damper.toggled.connect(self._invalidate)
         self._damping.toggled.connect(self._invalidate)
-        for field in (self._velocity, self._compression, self._rebound):
-            field.textChanged.connect(self._invalidate)
+        for edit in (self._velocity, self._compression, self._rebound):
+            edit.textChanged.connect(self._invalidate)
         controller.modelChanged.connect(self._invalidate)
         controller.projectReplaced.connect(self._invalidate)
         self._invalidate()

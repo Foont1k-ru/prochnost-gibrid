@@ -47,17 +47,17 @@ class AntiRollDialog(QDialog):
         self._axis_x = QLineEdit(self)
         self._axis_z = QLineEdit(self)
         self._rate = QLineEdit(self)
-        for field in (self._axis_x, self._axis_z, self._rate):
-            field.setPlaceholderText(tr("analysis.explicit_required"))
+        for edit in (self._axis_x, self._axis_z, self._rate):
+            edit.setPlaceholderText(tr("analysis.explicit_required"))
 
         fields = QHBoxLayout()
         sweep = QFormLayout()
-        for key, field in (("role", self._role), ("mode", self._mode), ("from", self._from),
-                           ("to", self._to), ("step", self._step)):
-            sweep.addRow(tr(f"antiroll_ui.{key}"), field)
+        for key, control in (("role", self._role), ("mode", self._mode), ("from", self._from),
+                             ("to", self._to), ("step", self._step)):
+            sweep.addRow(tr(f"antiroll_ui.{key}"), control)
         params = QFormLayout()
-        for key, field in (("axis_x", self._axis_x), ("axis_z", self._axis_z), ("rate", self._rate)):
-            params.addRow(tr(f"antiroll_ui.{key}"), field)
+        for key, edit in (("axis_x", self._axis_x), ("axis_z", self._axis_z), ("rate", self._rate)):
+            params.addRow(tr(f"antiroll_ui.{key}"), edit)
         fields.addLayout(sweep)
         fields.addLayout(params)
 
@@ -93,8 +93,8 @@ class AntiRollDialog(QDialog):
             combo.currentIndexChanged.connect(self._invalidate)
         for field in (self._from, self._to, self._step):
             field.valueChanged.connect(self._invalidate)
-        for field in (self._axis_x, self._axis_z, self._rate):
-            field.textChanged.connect(self._invalidate)
+        for edit in (self._axis_x, self._axis_z, self._rate):
+            edit.textChanged.connect(self._invalidate)
         controller.modelChanged.connect(self._invalidate)
         controller.projectReplaced.connect(self._invalidate)
         self._invalidate()
