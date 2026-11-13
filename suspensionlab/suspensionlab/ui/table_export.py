@@ -14,10 +14,11 @@ from ..i18n import tr
 from .controller import AppController
 
 
-def make_table_report(controller: AppController, table: QTableWidget, kind: str,
-                      parameters: list[tuple[str, str]]) -> CSVReport:
-    """Создаёт отчёт с отпечатком проекта и округлённым содержимым таблицы."""
-    if table.rowCount() == 0:
+def make_report(controller: AppController, kind: str, parameters: list[tuple[str, str]],
+                columns: tuple[str, ...], rows: tuple[tuple[str, ...], ...], *,
+                precision_text: str | None = None) -> CSVReport:
+    """Общий контекст проекта и заданные отображённые значения отчёта."""
+    if not columns or not rows or any(len(row) != len(columns) for row in rows):
         raise ValueError(tr("export.no_results"))
     data = json.dumps(controller.project.to_dict(), ensure_ascii=False, sort_keys=True,
                       separators=(",", ":"), allow_nan=False).encode("utf-8")
@@ -25,7 +26,7 @@ def make_table_report(controller: AppController, table: QTableWidget, kind: str,
     meta = [
         (tr("export.kind"), kind),
         (tr("export.warning"), tr("export.warning_text")),
-        (tr("export.precision"), tr("export.precision_text")),
+        (tr("export.precision"), precision_text if precision_text is not None else tr("export.precision_text")),
         (tr("export.project_name"), controller.project.meta.name or tr("export.unsaved")),
         (tr("export.saved_project"), controller.project.path or tr("export.unsaved")),
         (tr("export.project_dirty"), tr("export.yes") if controller.dirty else tr("export.no")),
@@ -35,13 +36,22 @@ def make_table_report(controller: AppController, table: QTableWidget, kind: str,
         (tr("export.timestamp"), datetime.now(UTC).isoformat(timespec="seconds")),
         *parameters,
     ]
+    return CSVReport(tuple(meta), columns, rows)
+
+
+def make_table_report(controller: AppController, table: QTableWidget, kind: str,
+                      parameters: list[tuple[str, str]]) -> CSVReport:
+    """Создаёт отчёт с отпечатком проекта и округлённым содержимым таблицы."""
+    if table.rowCount() == 0:
+        raise ValueError(tr("export.no_results"))
+
     def text(item: QTableWidgetItem | None) -> str:
         return item.text() if item is not None else ""
 
     columns = tuple(text(table.horizontalHeaderItem(i)) for i in range(table.columnCount()))
     rows = tuple(tuple(text(table.item(row, col)) for col in range(table.columnCount()))
                  for row in range(table.rowCount()))
-    return CSVReport(tuple(meta), columns, rows)
+    return make_report(controller, kind, parameters, columns, rows)
 
 
 def save_table_dialog(parent: QWidget, report: CSVReport) -> None:

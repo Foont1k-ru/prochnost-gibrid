@@ -1,6 +1,7 @@
 """Явный экспериментальный поиск условного баланса одной стороны."""
 from __future__ import annotations
 
+import json
 from typing import Literal
 
 from PySide6.QtCore import Qt
@@ -13,6 +14,7 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QPushButton,
     QVBoxLayout,
     QWidget,
@@ -22,6 +24,11 @@ from ..core.equilibrium import EquilibriumPathError, EquilibriumResult, SpringEq
 from ..core.stroke import StrokeLimits
 from ..i18n import tr
 from .controller import AppController
+from .table_export import make_report, save_table_dialog
+
+# Порядок и подписи для CSV; значения берутся из того же снимка, что и текст окна.
+_RESULT_FIELDS = ("lower", "upper", "lower_residual", "upper_residual", "travel", "length", "spring_force",
+                  "ratio", "support", "residual", "samples", "step", "bind", "damper")
 
 
 class EquilibriumDialog(QDialog):
@@ -68,13 +75,17 @@ class EquilibriumDialog(QDialog):
         self._output.setWordWrap(True)
         self._output.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self._result: EquilibriumResult | None = None
+        self._display_values: dict[str, str] | None = None
         self._run = QPushButton(tr("equilibrium_ui.run"), self)
         self._run.clicked.connect(self._calculate)
+        self._export_button = QPushButton(tr("equilibrium_ui.export"), self)
+        self._export_button.clicked.connect(self._export)
         close = QDialogButtonBox(QDialogButtonBox.StandardButton.Close, self)
         close.button(QDialogButtonBox.StandardButton.Close).setText(tr("analysis.close"))
         close.rejected.connect(self.reject)
         buttons = QHBoxLayout()
         buttons.addWidget(self._run)
+        buttons.addWidget(self._export_button)
         buttons.addStretch()
         buttons.addWidget(close)
         layout = QVBoxLayout(self)
@@ -103,6 +114,8 @@ class EquilibriumDialog(QDialog):
 
     def _invalidate(self, *_args: object) -> None:
         self._result = None
+        self._display_values = None
+        self._export_button.setEnabled(False)
         self._output.clear()
         self._damper_min.setEnabled(self._damper.isChecked())
         self._damper_max.setEnabled(self._damper.isChecked())
@@ -112,6 +125,8 @@ class EquilibriumDialog(QDialog):
 
     def _calculate(self) -> None:
         self._result = None
+        self._display_values = None
+        self._export_button.setEnabled(False)
         self._output.clear()
         axle = self.controller.project.axle(str(self._role.currentData()))
         if axle.type_code != "double_wishbone":
@@ -146,13 +161,49 @@ class EquilibriumDialog(QDialog):
         point = result.estimate
         assert result.path is not None
         self._status.setText(tr("equilibrium_ui.success"))
-        self._output.setText(tr(
-            "equilibrium_ui.result", lower=f"{result.lower.travel_mm:.4f}", upper=f"{result.upper.travel_mm:.4f}",
-            lower_residual=f"{result.lower.residual_n:+.4f}", upper_residual=f"{result.upper.residual_n:+.4f}",
-            travel=f"{point.travel_mm:.4f}", length=f"{point.spring.length_mm:.4f}",
-            spring_force=f"{point.spring.force_n:.4f}", ratio=f"{point.motion_ratio:.6f}",
-            support=f"{point.wheel_support_n:.4f}", residual=f"{point.residual_n:+.4f}",
-            samples=len(result.path.samples), step=f"{result.path.actual_step_mm:.4f}",
-            bind=tr("equilibrium_ui.checked" if self._bind.value() else "equilibrium_ui.unchecked"),
-            damper=tr("equilibrium_ui.checked" if self._damper.isChecked() else "equilibrium_ui.unchecked"),
-        ))
+        self._display_values = {
+            "lower": f"{result.lower.travel_mm:.4f}", "upper": f"{result.upper.travel_mm:.4f}",
+            "lower_residual": f"{result.lower.residual_n:+.4f}", "upper_residual": f"{result.upper.residual_n:+.4f}",
+            "travel": f"{point.travel_mm:.4f}", "length": f"{point.spring.length_mm:.4f}",
+            "spring_force": f"{point.spring.force_n:.4f}", "ratio": f"{point.motion_ratio:.6f}",
+            "support": f"{point.wheel_support_n:.4f}", "residual": f"{point.residual_n:+.4f}",
+            "samples": str(len(result.path.samples)), "step": f"{result.path.actual_step_mm:.4f}",
+            "bind": tr("equilibrium_ui.checked" if self._bind.value() else "equilibrium_ui.unchecked"),
+            "damper": tr("equilibrium_ui.checked" if self._damper.isChecked() else "equilibrium_ui.unchecked"),
+        }
+        self._output.setText(tr("equilibrium_ui.result", **self._display_values))
+        self._export_button.setEnabled(True)
+
+    def _report_parameters(self) -> list[tuple[str, str]]:
+        axle = self.controller.project.axle(str(self._role.currentData()))
+        disabled, unknown = tr("export.not_enabled"), tr("export.unknown")
+        return [
+            (tr("equilibrium_ui.role"), self._role.currentText()),
+            (tr("export.axle_type"), tr(axle.spec.name_key)),
+            (tr("equilibrium_ui.side"), self._side.currentText()),
+            (tr("equilibrium_ui.from"), str(self._from.value())),
+            (tr("equilibrium_ui.to"), str(self._to.value())),
+            (tr("equilibrium_ui.load"), str(self._load.value())),
+            (tr("equilibrium_ui.length"), str(self._length.value())),
+            (tr("equilibrium_ui.bind"), str(self._bind.value()) if self._bind.value() else unknown),
+            (tr("equilibrium_ui.damper"), tr("export.yes") if self._damper.isChecked() else tr("export.no")),
+            (tr("equilibrium_ui.damper_min"), str(self._damper_min.value()) if self._damper.isChecked() else disabled),
+            (tr("equilibrium_ui.damper_max"), str(self._damper_max.value()) if self._damper.isChecked() else disabled),
+            (tr("equilibrium_ui.spring_metadata"), json.dumps(axle.spring.to_dict(), ensure_ascii=False,
+                                                               sort_keys=True, allow_nan=False)),
+            (tr("equilibrium_ui.search_metadata"), tr("equilibrium_ui.search_settings")),
+            (tr("equilibrium_ui.model_metadata"), tr("equilibrium_ui.notice")),
+        ]
+
+    def _export(self) -> None:
+        if self._result is None or self._display_values is None:
+            return
+        try:
+            rows = tuple((tr(f"equilibrium_ui.field.{key}"), self._display_values[key]) for key in _RESULT_FIELDS)
+            report = make_report(self.controller, tr("equilibrium_ui.title"), self._report_parameters(),
+                                 (tr("equilibrium_ui.field_name"), tr("equilibrium_ui.field_value")), rows,
+                                 precision_text=tr("equilibrium_ui.export_precision"))
+        except (ValueError, UnicodeError) as error:
+            QMessageBox.warning(self, tr("export.error_title"), tr("export.error", reason=str(error)))
+            return
+        save_table_dialog(self, report)

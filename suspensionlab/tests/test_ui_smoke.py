@@ -1392,3 +1392,128 @@ def test_equilibrium_menu_opens_dialog(window, monkeypatch):
     monkeypatch.setattr(main_window, "EquilibriumDialog", FakeDialog)
     window.action_equilibrium.trigger()
     assert calls == [(window.controller, window), "exec", "delete"]
+
+
+def test_equilibrium_csv_matches_visible_result_and_unknown_limits(window, qtbot, tmp_path, monkeypatch):
+    import csv
+    import json
+
+    from suspensionlab.core.equilibrium import SpringEquilibrium
+    from suspensionlab.export.csv_report import write_csv_report
+    from suspensionlab.ui import equilibrium_dialog
+
+    c = window.controller
+    c.new_project("ring")
+    c.set_value(c.project.meta, "name", "=опасное имя")
+    before = c.project.to_dict()
+    load = SpringEquilibrium(c.project.front, 230).evaluate(12, 1).wheel_support_n
+    dialog = equilibrium_dialog.EquilibriumDialog(c, window)
+    qtbot.addWidget(dialog)
+    assert not dialog._export_button.isEnabled()
+    dialog._length.setValue(230)
+    dialog._load.setValue(load)
+    dialog._run.click()
+    assert dialog._export_button.isEnabled() and dialog._display_values is not None
+    captured = []
+    monkeypatch.setattr(equilibrium_dialog, "save_table_dialog", lambda _parent, report: captured.append(report))
+    dialog._export_button.click()
+    assert len(captured) == 1
+    report = captured[0]
+    meta, rows = dict(report.metadata), dict(report.rows)
+    assert meta["Расчёт"] == "Условный баланс одной стороны"
+    assert meta["Название проекта"] == "=опасное имя"
+    assert meta["Есть несохранённые изменения проекта"] == "да"
+    assert len(meta["SHA-256 сериализуемой модели проекта"]) == 64
+    assert "непрерывная достижимость" in meta["Ограничения условного баланса"].lower()
+    assert "не полная точность" in meta["Точность"]
+    assert meta["Длина смыкания, мм (0 — неизвестна)"] == "не задано — не проверено"
+    assert meta["Проверять упоры амортизатора на нижнем рычаге"] == "нет"
+    assert meta["Длина сжатого амортизатора, мм"] == "не включено"
+    assert json.loads(meta["Параметры пружины проекта (сериализованы, округлены)"]) == c.project.front.spring.to_dict()
+    assert rows["Оценка середины хода, мм"] == dialog._display_values["travel"]
+    assert rows["Невязка в оценке, Н"] == dialog._display_values["residual"]
+    assert rows["Проверка смыкания пружины"] == rows["Проверка упоров амортизатора"] == "не заданы — не проверены"
+    assert all(value in dialog._output.text() for value in dialog._display_values.values())
+    target = write_csv_report(report, tmp_path / "баланс.csv")
+    assert target.read_bytes().startswith(b"\xef\xbb\xbf")
+    with target.open(encoding="utf-8-sig", newline="") as handle:
+        data = list(csv.reader(handle, delimiter=";"))
+    assert ["Название проекта", "'=опасное имя"] in data
+    assert ["Оценка середины хода, мм", dialog._display_values["travel"]] in data
+    assert c.project.to_dict() == before
+    dialog._side.setCurrentIndex(1)
+    assert not dialog._export_button.isEnabled() and dialog._display_values is None
+    dialog._export()
+    assert len(captured) == 1
+
+
+def test_equilibrium_csv_records_active_limits_and_invalidates_on_failure(window, qtbot, monkeypatch):
+    from suspensionlab.core.equilibrium import SpringEquilibrium
+    from suspensionlab.ui import equilibrium_dialog
+
+    c = window.controller
+    c.new_project("ring")
+    load = SpringEquilibrium(c.project.front, 230, coil_bind_length_mm=150).evaluate(12, 1).wheel_support_n
+    dialog = equilibrium_dialog.EquilibriumDialog(c, window)
+    qtbot.addWidget(dialog)
+    dialog._length.setValue(230)
+    dialog._load.setValue(load)
+    dialog._bind.setValue(150)
+    dialog._damper.setChecked(True)
+    dialog._damper_min.setValue(300)
+    dialog._damper_max.setValue(500)
+    dialog._run.click()
+    captured = []
+    monkeypatch.setattr(equilibrium_dialog, "save_table_dialog", lambda _parent, report: captured.append(report))
+    dialog._export_button.click()
+    report = captured[0]
+    params, rows = dict(report.metadata), dict(report.rows)
+    assert params["Длина смыкания, мм (0 — неизвестна)"] == "150.0"
+    assert params["Проверять упоры амортизатора на нижнем рычаге"] == "да"
+    assert params["Длина сжатого амортизатора, мм"] == "300.0"
+    assert params["Длина разжатого амортизатора, мм"] == "500.0"
+    assert rows["Проверка смыкания пружины"] == rows["Проверка упоров амортизатора"] == "проверены в рассчитанных точках"
+    c.set_value(c.project.vehicle, "mass_kg", c.project.vehicle.mass_kg + 1)
+    assert not dialog._export_button.isEnabled() and dialog._display_values is None
+    dialog._run.click()
+    assert dialog._export_button.isEnabled()
+    dialog._from.setValue(30)
+    dialog._to.setValue(-30)
+    dialog._run.click()
+    assert dialog._result is None and not dialog._export_button.isEnabled()
+    dialog._export()
+    assert len(captured) == 1
+
+
+def test_equilibrium_csv_cancel_and_write_failure_preserve_existing_file(window, qtbot, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    from suspensionlab.core.equilibrium import SpringEquilibrium
+    from suspensionlab.export import csv_report
+    from suspensionlab.ui import equilibrium_dialog, table_export
+
+    c = window.controller
+    c.new_project("ring")
+    load = SpringEquilibrium(c.project.front, 230).evaluate(12, 1).wheel_support_n
+    dialog = equilibrium_dialog.EquilibriumDialog(c, window)
+    qtbot.addWidget(dialog)
+    dialog._length.setValue(230)
+    dialog._load.setValue(load)
+    dialog._run.click()
+    assert dialog._export_button.isEnabled()
+    before = c.project.to_dict()
+    target = tmp_path / "result.csv"
+    target.write_bytes(b"previous")
+    monkeypatch.setattr(table_export.QFileDialog, "getSaveFileName", lambda *args: ("", ""))
+    dialog._export_button.click()
+    assert target.read_bytes() == b"previous"
+    monkeypatch.setattr(table_export.QFileDialog, "getSaveFileName", lambda *args: (str(target), ""))
+    def fail(*args):
+        raise OSError("disk failure")
+    monkeypatch.setattr(csv_report.os, "replace", fail)
+    warnings = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda *args: warnings.append(args))
+    dialog._export_button.click()
+    assert len(warnings) == 1 and target.read_bytes() == b"previous"
+    assert not list(tmp_path.glob(".suspensionlab-*.tmp"))
+    assert c.project.to_dict() == before and dialog._export_button.isEnabled()
