@@ -8,6 +8,20 @@ if TYPE_CHECKING:
     from .double_wishbone import Array, DoubleWishbone, Pose
 
 
+def spring_wheel_support(spring_force_n: float, motion_ratio: float) -> float:
+    """Поддерживающая вертикальная сила у колеса из виртуальной работы.
+
+    Знак MR = -dL/dh сохраняется: отрицательное значение означает, что
+    сжимающая пружина действует в противоположном направлении.
+    """
+    if not isfinite(spring_force_n) or spring_force_n < 0 or not isfinite(motion_ratio):
+        raise ValueError("Сила пружины должна быть неотрицательной, значения — конечными")
+    result = spring_force_n * motion_ratio
+    if not isfinite(result):
+        raise ValueError("Сила на колесе не является конечной")
+    return result
+
+
 def wheel_rate(spring_rate_n_mm: float, motion_ratio: float) -> float:
     """Жёсткость на колесе, Н/мм; MR — ход пружины / ход колеса."""
     if not isfinite(spring_rate_n_mm) or spring_rate_n_mm < 0 or not isfinite(motion_ratio):

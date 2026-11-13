@@ -29,6 +29,7 @@ from .springs import (
     lower_arm_spring_length,
     ride_frequency_hz,
     ride_rate,
+    spring_wheel_support,
     sprung_mass_per_corner,
     wheel_rate,
 )
@@ -37,7 +38,11 @@ from .sweep import LimitedSweep, limited_sweep
 
 @dataclass(frozen=True)
 class SpringMetrics:
-    """Пружина на нижнем рычаге; None означает неопределённость жёсткости."""
+    """Сила и локальная жёсткость пружины на нижнем рычаге.
+
+    wheel_support_n — знаковая эквивалентная вертикальная сила на колесе,
+    не измеренная реакция шины. None означает отсутствие данных.
+    """
 
     motion_ratio: float
     state: SpringState | None
@@ -45,6 +50,7 @@ class SpringMetrics:
     ride_rate_n_mm: float | None
     frequency_hz: float | None
     error: str | None = None
+    wheel_support_n: float | None = None
 
 
 @dataclass(frozen=True)
@@ -169,7 +175,7 @@ def analyze_corner(
             error = None
             rate = None
             if static_spring_length_mm is not None:
-                spring_length = static_spring_length_mm + length - initial_mount_length
+                spring_length = static_spring_length_mm + (length - initial_mount_length)
                 if spring_length <= 0:
                     error = "Расчётная длина пружины неположительна; положение физически недопустимо"
                 else:
@@ -184,7 +190,8 @@ def analyze_corner(
                 # Нулевая жёсткость не является частотой колебательного равновесия.
                 if ride > 0:
                     frequency = ride_frequency_hz(ride, mass)
-            spring = SpringMetrics(ratio, state, wheel, ride, frequency, error)
+            support = spring_wheel_support(state.force_n, ratio) if state is not None and state.force_n is not None else None
+            spring = SpringMetrics(ratio, state, wheel, ride, frequency, error, support)
         drive = halfshaft_metrics(model, pose, halfshaft) if halfshaft is not None else None
         violations = check_halfshaft(drive, halfshaft_limits, pose.travel_mm) if drive is not None and halfshaft_limits is not None else ()
         side_metrics = None

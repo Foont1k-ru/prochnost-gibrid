@@ -74,6 +74,7 @@ def test_corner_analysis_does_not_assign_stiffness_to_slack_spring() -> None:
     assert sample is not None and sample.spring is not None and sample.spring.state is not None
     assert sample.spring.state.status == "slack"
     assert sample.spring.wheel_rate_n_mm == 0
+    assert sample.spring.wheel_support_n == 0
     assert sample.spring.frequency_hz is None
     assert "spring_preload_not_applied" in result.limitations
 
@@ -96,6 +97,7 @@ def test_corner_analysis_piecewise_rate_and_coil_bind() -> None:
     bound_sample = bound.samples[0]
     assert bound_sample is not None and bound_sample.spring is not None and bound_sample.spring.state is not None
     assert bound_sample.spring.state.status == "coil_bind"
+    assert bound_sample.spring.wheel_support_n is None
     assert bound_sample.spring.frequency_hz is None
 
 
@@ -135,6 +137,7 @@ def test_unknown_length_progressive_and_invalid_geometry_are_not_guessed() -> No
     sample = result.samples[0]
     assert sample is not None and sample.spring is not None
     assert sample.spring.state is None and sample.spring.wheel_rate_n_mm is None
+    assert sample.spring.wheel_support_n is None
     assert sample.spring.frequency_hz is None
     assert "spring_installed_length_unspecified" in result.limitations
     with pytest.raises(ValueError, match="статическая длина"):
