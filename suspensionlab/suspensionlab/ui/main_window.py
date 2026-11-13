@@ -29,6 +29,7 @@ from ..i18n import tr
 from ..model.project_io import ProjectIOError
 from ..model.suspension_types import types_for_role
 from ..model.units import LENGTH_UNITS, RATE_UNITS, UnitKind, UnitSettings
+from .analysis_dialog import AnalysisDialog
 from .canvas.axle_view import AxleCanvas
 from .controller import AppController, Selection
 from .dialogs import SnapshotDialog, TemplateDialog
@@ -208,6 +209,9 @@ class MainWindow(QMainWindow):
         self.action_zoom_out.setShortcut(QKeySequence("-"))
         self.action_zoom_out.triggered.connect(lambda: self._current_canvas().zoom_by(1 / 1.25))
 
+        self.action_analysis = QAction(tr("analysis.menu_action"), self)
+        self.action_analysis.triggered.connect(self._open_analysis)
+
         self.action_log = QAction(tr("menu.help.log"), self)
         self.action_log.triggered.connect(self._open_log)
 
@@ -255,6 +259,9 @@ class MainWindow(QMainWindow):
 
         self.menu_axle = bar.addMenu(tr("menu.axle"))
         self._rebuild_axle_menu()
+
+        menu_analysis = bar.addMenu(tr("analysis.menu"))
+        menu_analysis.addAction(self.action_analysis)
 
         menu_help = bar.addMenu(tr("menu.help"))
         menu_help.addAction(self.action_manual)
@@ -475,6 +482,12 @@ class MainWindow(QMainWindow):
                 length = units.display(axle.link_length(selection.code), UnitKind.LENGTH)
                 return f"{tr(link_spec.name_key)}: {length} {tr('unit.length.' + units.length)}"
         return ""
+
+    def _open_analysis(self) -> None:
+        """Показывает экспериментальный расчёт выбранной стороны оси."""
+        dialog = AnalysisDialog(self.controller, self)
+        dialog.exec()
+        dialog.deleteLater()
 
     # ------------------------------------------------------------------ файлы
     def _new_project(self) -> None:
