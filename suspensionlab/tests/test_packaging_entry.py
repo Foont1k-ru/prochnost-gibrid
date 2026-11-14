@@ -14,6 +14,7 @@ def test_packaging_check_writes_success(tmp_path: Path, monkeypatch) -> None:
     calls: list[str] = []
     smoke.run_packaging_check = lambda: calls.append("checked")  # type: ignore[attr-defined]
     smoke.run_startup_check = lambda: calls.append("startup")  # type: ignore[attr-defined]
+    smoke.run_cad_check = lambda: calls.append("cad")  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "suspensionlab.packaging_smoke", smoke)
     monkeypatch.setattr(sys, "argv", ["app", "--packaging-check", str(report)])
     assert packaging_entry.main() == 0
@@ -28,6 +29,7 @@ def test_packaging_check_reports_failure(tmp_path: Path, monkeypatch) -> None:
         raise ValueError("expected check failure")
     smoke.run_packaging_check = fail  # type: ignore[attr-defined]
     smoke.run_startup_check = fail  # type: ignore[attr-defined]
+    smoke.run_cad_check = fail  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "suspensionlab.packaging_smoke", smoke)
     monkeypatch.setattr(sys, "argv", ["app", "--packaging-check", str(report)])
     assert packaging_entry.main() == 1
@@ -40,11 +42,25 @@ def test_packaging_startup_check_has_separate_route(tmp_path: Path, monkeypatch)
     calls: list[str] = []
     smoke.run_packaging_check = lambda: calls.append("checked")  # type: ignore[attr-defined]
     smoke.run_startup_check = lambda: calls.append("startup")  # type: ignore[attr-defined]
+    smoke.run_cad_check = lambda: calls.append("cad")  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "suspensionlab.packaging_smoke", smoke)
     monkeypatch.setattr(sys, "argv", ["app", "--packaging-startup-check", str(report)])
     assert packaging_entry.main() == 0 and calls == ["startup"]
     assert report.read_text(encoding="utf-8") == "OK\n"
 
+
+
+def test_packaging_cad_check_has_separate_route(tmp_path: Path, monkeypatch) -> None:
+    report = tmp_path / "cad.txt"
+    smoke = ModuleType("suspensionlab.packaging_smoke")
+    calls: list[str] = []
+    smoke.run_packaging_check = lambda: calls.append("checked")  # type: ignore[attr-defined]
+    smoke.run_startup_check = lambda: calls.append("startup")  # type: ignore[attr-defined]
+    smoke.run_cad_check = lambda: calls.append("cad")  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "suspensionlab.packaging_smoke", smoke)
+    monkeypatch.setattr(sys, "argv", ["app", "--packaging-cad-check", str(report)])
+    assert packaging_entry.main() == 0 and calls == ["cad"]
+    assert report.read_text(encoding="utf-8") == "OK\n"
 
 def test_cad_worker_is_dispatched_before_gui(monkeypatch) -> None:
     worker = ModuleType("suspensionlab.core.cad_worker")

@@ -55,6 +55,33 @@ def run_startup_check() -> None:
         application.create_application = original
 
 
+def run_cad_check() -> None:
+    """Искусственный STEP и отдельный процесс именно собранного приложения."""
+    import numpy as np
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+    from OCP.IFSelect import IFSelect_ReturnStatus
+    from OCP.STEPControl import STEPControl_StepModelType, STEPControl_Writer
+
+    from .core.cad_transport import CadJob
+
+    with TemporaryDirectory(prefix="suspensionlab-cad-check-") as directory:
+        path = Path(directory) / "fixture.step"
+        unicode_path = Path(directory) / "проверка сборки.step"
+        writer = STEPControl_Writer()
+        _require(writer.Transfer(BRepPrimAPI_MakeBox(2., 3., 5.).Shape(),
+                                 STEPControl_StepModelType.STEPControl_AsIs) == IFSelect_ReturnStatus.IFSelect_RetDone,
+                 "Не удалось подготовить тестовый STEP")
+        _require(writer.Write(str(path)) == IFSelect_ReturnStatus.IFSelect_RetDone,
+                 "Не удалось записать тестовый STEP")
+        path.rename(unicode_path)
+        mesh = CadJob().run(unicode_path, 2., timeout=90)
+        vertices = mesh.triangles.reshape(-1, 3)
+        _require(mesh.face_count == 6 and len(mesh.triangles) >= 12 and
+                 np.allclose(vertices.min(axis=0), (0., 0., 0.), atol=1e-6, rtol=0) and
+                 np.allclose(vertices.max(axis=0), (2., 3., 5.), atol=1e-6, rtol=0),
+                 "Неверная сетка тестового STEP")
+
+
 def run_packaging_check() -> None:
     """Проверяет ресурсы, окно, один расчёт и проект во временном каталоге.
 

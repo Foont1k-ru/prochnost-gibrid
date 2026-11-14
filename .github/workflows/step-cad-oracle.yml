@@ -41,7 +41,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Установить независимое CAD-ядро и тестовые зависимости
-        run: python -m pip install numpy==2.4.6 pytest==9.2.0 cadquery-ocp==8.0.1.1.0
+        run: python -m pip install numpy==2.4.6 pytest==9.2.0 cadquery-ocp-novtk==8.0.1.1.0
       - name: Убедиться, что CAD-ядро загружается
         run: python -c "from OCP.gp import gp_Ax3, gp_Pnt, gp_Trsf; print('Open CASCADE ready')"
       - name: Сверить преобразования и искусственную STEP-сборку

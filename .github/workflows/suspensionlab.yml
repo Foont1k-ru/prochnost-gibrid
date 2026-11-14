@@ -80,11 +80,16 @@ jobs:
         with:
           python-version: '3.12'
       - name: Установить зависимости и PyInstaller
-        run: python -m pip install . pyinstaller==6.16.0
-      - name: Собрать приложение с ресурсами
-        run: >-
-          python -m PyInstaller --noconfirm --clean --windowed --name SuspensionLab
-          --add-data "suspensionlab/resources;suspensionlab/resources" packaging_entry.py
+        run: python -m pip install ".[cad]" pyinstaller==6.16.0
+      - name: Собрать приложение с ресурсами и CAD-ядром
+        shell: pwsh
+        run: |
+          $ocpLibs = python -c "from importlib.metadata import distribution; print(distribution('cadquery-ocp-novtk').locate_file('cadquery_ocp_novtk.libs'))"
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path $ocpLibs)) { throw 'Не найдены библиотеки CAD' }
+          python -m PyInstaller --noconfirm --clean --windowed --name SuspensionLab `
+            --collect-all OCP --add-binary "$ocpLibs\*.dll;cadquery_ocp_novtk.libs" `
+            --add-data "suspensionlab/resources;suspensionlab/resources" packaging_entry.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Проверить собранное приложение вне каталога исходников
         shell: pwsh
         env:
@@ -95,7 +100,7 @@ jobs:
           $isolated = Join-Path $env:RUNNER_TEMP 'suspensionlab-package-check'
           New-Item -ItemType Directory -Force -Path $isolated | Out-Null
           $env:APPDATA = $isolated
-          foreach ($check in @('--packaging-check', '--packaging-startup-check')) {
+          foreach ($check in @('--packaging-check', '--packaging-startup-check', '--packaging-cad-check')) {
             $report = Join-Path $isolated "$check.txt"
             Remove-Item $report -ErrorAction SilentlyContinue
             $process = Start-Process -FilePath $exe -ArgumentList @($check, "`"$report`"") -WorkingDirectory $isolated -PassThru
