@@ -17,6 +17,7 @@ from .model.project_io import load_project
 from .model.templates import list_templates
 from .ui.analysis_dialog import AnalysisDialog
 from .ui.antiroll_dialog import AntiRollDialog
+from .ui.damper_conversion_dialog import DamperConversionDialog
 from .ui.equilibrium_dialog import EquilibriumDialog
 from .ui.equilibrium_path_dialog import EquilibriumPathDialog
 from .ui.main_window import MainWindow
@@ -100,6 +101,31 @@ def run_packaging_check() -> None:
         )
         csv_path = write_csv_report(plot_report, temporary / "graph.csv")
         _require(csv_path.read_bytes().startswith(b"\xef\xbb\xbf"), "CSV точек не записан")
+        dialog._spring.setChecked(True)
+        dialog._spring_length.setValue(320)
+        dialog._coil_bind.setValue(115)
+        dialog._damper.setChecked(True)
+        dialog._damper_min.setValue(205)
+        dialog._damper_max.setValue(325)
+        _require(dialog._copy_damper.isEnabled(), "Перенос длин из проекта недоступен")
+        dialog._static_button.click()
+        _require(dialog._static_export.isEnabled() and dialog._static_report is not None,
+                 "Не получен отчёт статики")
+        assert dialog._static_report is not None
+        static_rows = {row[0]: row for row in dialog._static_report.rows}
+        extension = float(static_rows[tr("analysis.static.report.metric.damper_extension_clearance")][1])
+        _require(-70 < extension < -69, "В отчёте статики не обнаружен ожидаемый конфликт отбоя")
+        _require("сжатие 0.00 мм" in dialog._static_explanation.toPlainText(), "Нет пояснения несжатой пружины")
+        write_csv_report(dialog._static_report, temporary / "static.csv")
+        converter = DamperConversionDialog(dialog)
+        converter._compression_force.setText("235")
+        converter._compression_speed.setText("300")
+        points = converter.points()
+        _require(converter._apply.isEnabled() and points[0] is not None and points[1] is None,
+                 "Недоступен пересчёт характеристики амортизатора")
+        assert points[0] is not None
+        _require(abs(points[0].coefficient_n_s_mm - 235 / 300) < 1e-12, "Неверный пересчёт коэффициента")
+        converter.close()
         antiroll = AntiRollDialog(window.controller, window)
         antiroll.show()
         antiroll._from.setValue(0)
