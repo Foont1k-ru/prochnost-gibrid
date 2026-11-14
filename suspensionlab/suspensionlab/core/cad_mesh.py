@@ -68,17 +68,20 @@ class CadMesh:
         return center, max(radius, 1.)
 
 
-def project_triangles(mesh: CadMesh, yaw: float, elevation: float) -> tuple[np.ndarray, np.ndarray]:
-    """Ортографическая проекция и порядок рисования; не точный алгоритм скрытия граней."""
+def project_points(triangles: np.ndarray, center: np.ndarray, yaw: float, elevation: float) -> tuple[np.ndarray, np.ndarray]:
+    """Проекция заранее центрированной камеры без повторного вычисления границ."""
     if not np.isfinite(yaw) or not np.isfinite(elevation):
         raise ValueError("Углы камеры должны быть конечными")
-    center, _ = mesh.bounds()
-    points = mesh.triangles - center
+    points = triangles - center
     sy, cy = sin(yaw), cos(yaw)
     se, ce = sin(elevation), cos(elevation)
-    right = np.array([cy, sy, 0.])
-    up = np.array([-sy * se, cy * se, ce])
-    depth = np.cross(right, up)
-    projected = np.stack((points @ right, points @ up), axis=-1)
-    distance = (points @ depth).mean(axis=1)
+    x, y, z = points[:, :, 0], points[:, :, 1], points[:, :, 2]
+    projected = np.stack((cy * x + sy * y, -sy * se * x + cy * se * y + ce * z), axis=-1)
+    distance = (sy * ce * x - cy * ce * y + se * z).mean(axis=1)
     return projected, np.argsort(distance, kind="stable")
+
+
+def project_triangles(mesh: CadMesh, yaw: float, elevation: float) -> tuple[np.ndarray, np.ndarray]:
+    """Ортографическая проекция и порядок рисования; не точный алгоритм скрытия граней."""
+    center, _ = mesh.bounds()
+    return project_points(mesh.triangles, center, yaw, elevation)

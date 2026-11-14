@@ -120,6 +120,17 @@ def run_packaging_check() -> None:
     _require("ring" in {item.key for item in list_templates()}, "Не загружен шаблон Кольцо")
 
     app = create_application([])
+    # Проверяем именно GUI-отрисовку и наличие растеризатора в упаковке.
+    import numpy as np
+
+    from .core.cad_mesh import CadMesh
+    from .ui.canvas.cad_preview import CadPreview
+
+    preview = CadPreview()
+    preview.resize(320, 280)
+    preview.set_mesh(CadMesh(np.array([[[0, 0, 0], [10, 0, 0], [0, 0, 10]]]), 1))
+    _require(not preview.grab().isNull() and preview._frame is not None, "CAD-просмотр не отрисован")
+    preview.close()
     with TemporaryDirectory(prefix="suspensionlab-package-check-") as directory:
         temporary = Path(directory)
         settings = QSettings(str(temporary / "settings.ini"), QSettings.Format.IniFormat)

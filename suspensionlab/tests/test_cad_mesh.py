@@ -145,3 +145,62 @@ def test_part_isolation_and_group_validation():
     ]:
         with pytest.raises(ValueError):
             CadMesh(triangles, 2, 0, 0, names, groups)
+
+
+def test_projection_matches_camera_basis_and_stable_depth_order():
+    from math import cos, sin
+
+    from suspensionlab.core.cad_mesh import project_points
+
+    rng = np.random.default_rng(42)
+    triangles = rng.normal(size=(30, 3, 3))
+    center = np.array([4., -3., 2.])
+    for yaw, elevation in ((0., 0.), (0.9, -0.4), (-2., 1.1)):
+        sy, cy, se, ce = sin(yaw), cos(yaw), sin(elevation), cos(elevation)
+        right = np.array([cy, sy, 0.])
+        up = np.array([-sy * se, cy * se, ce])
+        points = triangles - center
+        expected = np.stack((points @ right, points @ up), axis=-1)
+        depth = (points @ np.cross(right, up)).mean(axis=1)
+        actual, order = project_points(triangles, center, yaw, elevation)
+        assert actual == pytest.approx(expected, abs=1e-12)
+        assert np.array_equal(order, np.argsort(depth, kind="stable"))
+
+
+def test_interaction_simplification_preserves_full_mesh_and_small_group():
+    from suspensionlab.core.cad_interaction import interaction_triangles
+
+    grid = np.arange(80)
+    x, y = np.meshgrid(grid, grid)
+    points = np.stack((x.ravel(), y.ravel(), np.zeros(x.size)), axis=1).astype(float)
+    a = np.stack((points, points + (1, 0, 0), points + (0, 1, 0)), axis=1)
+    b = np.stack((points + (1, 1, 0), points + (1, 0, 0), points + (0, 1, 0)), axis=1)
+    small = np.array([[[200., 0, 0], [201, 0, 0], [200, 1, 0]]])
+    original = np.concatenate((a, b, small))
+    parts = np.concatenate((np.ones(len(a) + len(b), dtype=int), [2]))
+    mesh = CadMesh(original, 1, 0, 0, ("Прочие", "Плоскость", "Мелкая"), parts)
+    result = interaction_triangles(mesh)
+    assert len(result) < len(original) and len(result) > 1
+    assert np.array_equal(result[-1], small[0])
+    assert np.array_equal(mesh.triangles, original) and not mesh.triangles.flags.writeable
+    assert interaction_triangles(CadMesh(small, 1)) is not None
+
+
+def test_interaction_keeps_fully_degenerate_group_instead_of_dropping_it():
+    from suspensionlab.core.cad_interaction import interaction_triangles
+
+    triangles = np.zeros((12_001, 3, 3))
+    triangles[:, :, 0] = np.arange(len(triangles))[:, None] / 100
+    mesh = CadMesh(triangles, 1)
+    assert np.array_equal(interaction_triangles(mesh), triangles)
+
+
+def test_raster_draws_nearest_triangle_and_honors_background():
+    from suspensionlab.core.cad_raster import rasterize
+
+    triangles = np.array([[[-2, 0, -2], [2, 0, -2], [0, 0, 2]],
+                          [[-2, -1, -2], [2, -1, -2], [0, -1, 2]]], dtype=float)
+    image = rasterize(triangles, np.array([105, 205], dtype=np.uint8), np.zeros(3), 3,
+                      0, 0, 1, 100, 100, (10, 20, 30))
+    assert image.getpixel((0, 0)) == (10, 20, 30)
+    assert image.getpixel((50, 50)) == (205 * 3 // 4, 205 * 9 // 10, 205)

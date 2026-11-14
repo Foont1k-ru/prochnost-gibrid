@@ -3144,3 +3144,60 @@ def test_path_csv_cancel_and_write_failure_preserve_existing_file(window, qtbot,
     view._export_button.click()
     assert len(warnings) == 1 and target.read_bytes() == b"old"
     assert not list(tmp_path.glob(".suspensionlab-*.tmp")) and c.project.to_dict() == before
+
+
+def test_cad_preview_fast_mode_settles_and_caches(qtbot, monkeypatch):
+    import numpy as np
+    from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent, QWheelEvent
+
+    from suspensionlab.core.cad_mesh import CadMesh
+    from suspensionlab.ui.canvas import cad_preview
+
+    x, y = np.meshgrid(np.arange(80), np.arange(80))
+    p = np.stack((x.ravel(), y.ravel(), np.zeros(x.size)), axis=1).astype(float)
+    first = np.stack((p, p + (1, 0, 0), p + (0, 1, 0)), axis=1)
+    second = np.stack((p + (1, 1, 0), p + (1, 0, 0), p + (0, 1, 0)), axis=1)
+    mesh = CadMesh(np.concatenate((first, second)), 1)
+    calls = []
+    original = cad_preview.rasterize
+    def spy(triangles, *args, **kwargs):
+        calls.append(len(triangles))
+        return original(triangles, *args, **kwargs)
+    monkeypatch.setattr(cad_preview, "rasterize", spy)
+    view = cad_preview.CadPreview()
+    qtbot.addWidget(view)
+    view.resize(400, 300)
+    view.set_mesh(mesh)
+    view.show()
+    view.grab()
+    assert calls[-1] == len(mesh.triangles)
+    count = len(calls)
+    view.grab()
+    assert len(calls) == count
+    press = QMouseEvent(QEvent.Type.MouseButtonPress, QPointF(100, 100), Qt.MouseButton.LeftButton,
+                        Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
+    move = QMouseEvent(QEvent.Type.MouseMove, QPointF(130, 110), Qt.MouseButton.NoButton,
+                       Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
+    release = QMouseEvent(QEvent.Type.MouseButtonRelease, QPointF(130, 110), Qt.MouseButton.LeftButton,
+                          Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier)
+    from PySide6.QtWidgets import QApplication
+    QApplication.sendEvent(view, press)
+    QApplication.sendEvent(view, move)
+    view.grab()
+    assert view._moving and calls[-1] < len(mesh.triangles)
+    QApplication.sendEvent(view, release)
+    view.grab()
+    assert not view._moving and calls[-1] == len(mesh.triangles)
+    wheel = QWheelEvent(QPointF(100, 100), QPointF(100, 100), QPoint(0, 0), QPoint(0, 120),
+                        Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier,
+                        Qt.ScrollPhase.NoScrollPhase, False)
+    QApplication.sendEvent(view, wheel)
+    view.grab()
+    assert view._moving and calls[-1] < len(mesh.triangles)
+    qtbot.waitUntil(lambda: not view._moving, timeout=3000)
+    view.grab()
+    assert calls[-1] == len(mesh.triangles)
+    QApplication.sendEvent(view, wheel)
+    view.set_mesh(None)
+    assert not view._moving and not view._settle.isActive() and view._frame is None
