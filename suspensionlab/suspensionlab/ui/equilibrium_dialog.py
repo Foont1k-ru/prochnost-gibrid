@@ -24,8 +24,10 @@ from PySide6.QtWidgets import (
 
 from ..core.equilibrium import EquilibriumPath, EquilibriumPathError, EquilibriumResult, SpringEquilibrium
 from ..core.stroke import StrokeLimits
+from ..core.sweep_plot import PATH_PLOT_METRICS, PlotPoint, equilibrium_path_plot_points
 from ..export.csv_report import CSVReport
 from ..export.equilibrium_path import PATH_COLUMNS
+from ..export.plot_report import plot_report_rows
 from ..i18n import tr
 from .controller import AppController
 from .equilibrium_path_dialog import EquilibriumPathDialog
@@ -205,7 +207,10 @@ class EquilibriumDialog(QDialog):
         if self._path is None:
             return
         path = self._path
-        dialog = EquilibriumPathDialog(path, self, report_factory=lambda table: self._path_report(path, table))
+        dialog = EquilibriumPathDialog(
+            path, self, report_factory=lambda table: self._path_report(path, table),
+            graph_report_factory=lambda table, points, selected: self._path_graph_report(path, table, points, selected),
+        )
         self._path_dialog = dialog
         try:
             dialog.exec()
@@ -249,6 +254,28 @@ class EquilibriumDialog(QDialog):
         return make_report(self.controller, tr("equilibrium_path.title"), params, columns, rows,
                            precision_text=tr("equilibrium_path.report_precision"),
                            allow_empty_rows=failure is not None and not path.samples)
+
+    def _path_graph_report(self, path: EquilibriumPath, table: QTableWidget,
+                           points: tuple[PlotPoint, ...], selected: str) -> CSVReport:
+        """Все точки графика и полный статус пути, включая диагностический пустой результат."""
+        table_report = self._path_report(path, table)  # Проверяет актуальность и наличие всех ячеек.
+        if points != equilibrium_path_plot_points(path):
+            raise ValueError(tr("equilibrium_path.stale"))
+        status_columns = (PATH_COLUMNS.index("spring_status"), PATH_COLUMNS.index("damper_status"))
+        context_labels = tuple(table_report.columns[i] for i in status_columns)
+        context = tuple(tuple(row[i] for i in status_columns) for row in table_report.rows)
+        columns, rows = plot_report_rows(
+            points, tr("equilibrium_path.column.travel"),
+            tuple(tr(f"equilibrium_path.column.{key}") for key in PATH_PLOT_METRICS),
+            context_labels, context, allow_empty=path.failure is not None,
+            conflict_label=tr("equilibrium_path.plot_conflict_column"),
+        )
+        metadata = tuple(
+            (key, tr("export.plot_kind", kind=tr("equilibrium_path.title"))) if key == tr("export.kind") else
+            (key, tr("export.plot_precision")) if key == tr("export.precision") else (key, value)
+            for key, value in table_report.metadata
+        )
+        return CSVReport((*metadata, (tr("export.plot_selected"), selected)), columns, rows)
 
     def _report_parameters(self) -> list[tuple[str, str]]:
         axle = self.controller.project.axle(str(self._role.currentData()))

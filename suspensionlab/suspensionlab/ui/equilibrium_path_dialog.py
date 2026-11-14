@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..core.equilibrium import EquilibriumPath
-from ..core.sweep_plot import PATH_PLOT_METRICS, equilibrium_path_plot_points
+from ..core.sweep_plot import PATH_PLOT_METRICS, PlotPoint, equilibrium_path_plot_points
 from ..export.csv_report import CSVReport
 from ..export.equilibrium_path import PATH_COLUMNS, format_path_sample
 from ..i18n import tr
@@ -34,9 +34,11 @@ class EquilibriumPathDialog(QDialog):
     """Только пройденные точки и отдельно первый отказ, без повторного расчёта."""
 
     def __init__(self, path: EquilibriumPath, parent: QWidget | None = None, *,
-                 report_factory: Callable[[QTableWidget], CSVReport] | None = None) -> None:
+                 report_factory: Callable[[QTableWidget], CSVReport] | None = None,
+                 graph_report_factory: Callable[[QTableWidget, tuple[PlotPoint, ...], str], CSVReport] | None = None) -> None:
         super().__init__(parent)
         self._report_factory = report_factory
+        self._graph_report_factory = graph_report_factory
         self.setWindowTitle(tr("equilibrium_path.title"))
         self.resize(1150, 600)
         notice = QLabel(tr("equilibrium_path.notice"), self)
@@ -85,6 +87,10 @@ class EquilibriumPathDialog(QDialog):
         plot_layout.addWidget(self._plot, 1)
         plot_layout.addWidget(plot_selection)
         plot_layout.addWidget(plot_notice)
+        self._plot_export_button = QPushButton(tr("export.plot_button"), self)
+        self._plot_export_button.setEnabled(graph_report_factory is not None and (bool(path.samples) or path.failure is not None))
+        self._plot_export_button.clicked.connect(self._export_graph)
+        plot_layout.addWidget(self._plot_export_button)
         self._views = QTabWidget(self)
         self._views.addTab(self._table, tr("equilibrium_path.tab_table"))
         self._views.addTab(plot_container, tr("analysis.tab_plot"))
@@ -107,6 +113,16 @@ class EquilibriumPathDialog(QDialog):
         layout.addWidget(self._status)
         layout.addWidget(self._views, 1)
         layout.addLayout(bottom)
+
+    def _export_graph(self) -> None:
+        if self._graph_report_factory is None:
+            return
+        try:
+            report = self._graph_report_factory(self._table, self._plot.points, self._plot_metric.currentText())
+        except (ValueError, UnicodeError) as error:
+            QMessageBox.warning(self, tr("export.error_title"), tr("export.error", reason=str(error)))
+            return
+        save_table_dialog(self, report)
 
     def _export(self) -> None:
         if self._report_factory is None:

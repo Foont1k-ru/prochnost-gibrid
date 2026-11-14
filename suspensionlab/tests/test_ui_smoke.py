@@ -2023,6 +2023,73 @@ def test_equilibrium_path_graph_selects_retained_points_and_handles_failures(win
     assert window.controller.project.to_dict() == before
 
 
+@pytest.mark.parametrize("scenario", ["completed", "partial", "empty", "branch"])
+def test_equilibrium_path_graph_csv_preserves_status_and_raw_points(window, qtbot, tmp_path, monkeypatch, scenario):
+    import csv
+    from dataclasses import replace
+
+    from suspensionlab.core.equilibrium import EquilibriumPathError, PathFailure, SpringEquilibrium
+    from suspensionlab.core.sweep_plot import PATH_PLOT_METRICS
+    from suspensionlab.ui import table_export
+    from suspensionlab.ui.equilibrium_dialog import EquilibriumDialog
+    from suspensionlab.ui.equilibrium_path_dialog import EquilibriumPathDialog
+
+    c = window.controller
+    c.new_project("ring")
+    axle = c.project.front
+    load = SpringEquilibrium(axle, 230).evaluate(12, 1).wheel_support_n
+    dialog = EquilibriumDialog(c, window)
+    qtbot.addWidget(dialog)
+    dialog._length.setValue(230)
+    dialog._load.setValue(load)
+    if scenario != "completed":
+        if scenario == "partial":
+            path = SpringEquilibrium(axle, 230, coil_bind_length_mm=225).check_path(30, 1000, step_mm=5)
+        elif scenario == "empty":
+            path = SpringEquilibrium(axle, 230, coil_bind_length_mm=231).check_path(20, 1000)
+        else:
+            valid = SpringEquilibrium(axle, 230).check_path(3, 1000)
+            path = replace(valid, failure=PathFailure(3, 3, "branch_mismatch", "=подозрительный текст"))
+        def fail(*_args, **_kwargs):
+            raise EquilibriumPathError(path)
+        monkeypatch.setattr(SpringEquilibrium, "find", fail)
+    dialog._run.click()
+    path = dialog._path
+    assert path is not None
+    view = EquilibriumPathDialog(
+        path, dialog, report_factory=lambda table: dialog._path_report(path, table),
+        graph_report_factory=lambda table, points, selected: dialog._path_graph_report(path, table, points, selected),
+    )
+    qtbot.addWidget(view)
+    assert view._plot_export_button.isEnabled()
+    target = tmp_path / f"{scenario}.csv"
+    monkeypatch.setattr(table_export.QFileDialog, "getSaveFileName", lambda *args: (str(target), ""))
+    view._plot_export_button.click()
+    with target.open(encoding="utf-8-sig", newline="") as handle:
+        records = list(csv.reader(handle, delimiter=";"))
+    index = records.index([])
+    metadata, columns, rows = dict(records[:index]), records[index + 1], records[index + 2:]
+    assert len(rows) == len(path.samples)
+    assert "не доказа" in metadata["Ограничения проверки пути"]
+    if scenario == "completed":
+        assert "проверены" in metadata["Итог проверки пути"]
+        assert float(rows[0][1 + PATH_PLOT_METRICS.index("residual")]) == path.samples[0].residual_n
+    else:
+        assert "НЕ ПРОЙДЕНА" in metadata["Итог проверки пути"]
+        assert path.failure is not None
+        assert metadata["Ход отказа, мм"] == f"{path.failure.failure_travel_mm:.4f}"
+    if scenario == "branch":
+        assert metadata["Причина отказа пути"] == "'=подозрительный текст"
+        assert rows[-1][columns.index("Конфликт элемента или несовпадение ветвей")] == "да"
+    if scenario == "empty":
+        assert not rows and len(columns) > 0
+    old = target.read_bytes()
+    dialog._side.setCurrentIndex(1)
+    with pytest.raises(ValueError):
+        dialog._path_graph_report(path, view._table, view._plot.points, view._plot_metric.currentText())
+    assert target.read_bytes() == old
+
+
 def test_equilibrium_open_path_closes_when_project_changes(window, qtbot, monkeypatch):
     from suspensionlab.core.equilibrium import SpringEquilibrium
     from suspensionlab.ui import equilibrium_dialog

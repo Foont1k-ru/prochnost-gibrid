@@ -49,3 +49,9 @@ def test_all_points_conflicts_missing_and_untrusted_context_are_exported(tmp_pat
 def test_mismatched_input_is_rejected(points, labels, context):
     with pytest.raises(ValueError):
         plot_report_rows(points, "Ход", labels, (), context)
+
+
+def test_empty_path_report_can_explicitly_keep_headers():
+    columns, rows = plot_report_rows((), "Ход", ("Невязка",), ("Статус",), (),
+                                     allow_empty=True, conflict_label="Сбой / несовпадение")
+    assert columns == ("Ход", "Невязка", "Сбой / несовпадение", "Статус") and rows == ()
