@@ -25,11 +25,12 @@ from PySide6.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
+    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
 
-from ..core.analysis import analyze_corner
+from ..core.analysis import CornerSample, analyze_corner
 from ..core.damper import LinearDamperCharacteristic, evaluate_linear_damping
 from ..core.double_wishbone import DoubleWishbone
 from ..core.pose_view import PoseView, pose_view
@@ -38,6 +39,7 @@ from ..core.stroke import StrokeLimits
 from ..core.sweep import travel_grid
 from ..core.sweep_plot import PLOT_METRICS, sweep_plot_points
 from ..i18n import tr
+from .analysis_explanation import explain_corner_sample
 from .canvas.pose_preview import PosePreview
 from .canvas.sweep_plot import SweepPlot
 from .controller import AppController
@@ -71,13 +73,19 @@ class AnalysisDialog(QDialog):
         self._damper = QCheckBox(tr("analysis.damper_enable"), self)
         self._damper_min = self._number(0, 2000, 0, 1)
         self._damper_max = self._number(0, 2000, 0, 1)
+        self._spring_length.setToolTip(tr("analysis.spring_length_tip"))
+        for field in (self._damper_min, self._damper_max):
+            field.setToolTip(tr("analysis.damper_length_tip"))
         self._damping = QCheckBox(tr("analysis.damping_enable"), self)
+        self._damping.setToolTip(tr("analysis.damping_tip"))
         self._velocity = QLineEdit(self)
         self._compression = QLineEdit(self)
         self._rebound = QLineEdit(self)
         for edit in (self._velocity, self._compression, self._rebound):
             edit.setPlaceholderText(tr("analysis.explicit_required"))
             edit.setMaximumWidth(110)
+        for edit in (self._compression, self._rebound):
+            edit.setToolTip(tr("analysis.damping_tip"))
 
         fields = QHBoxLayout()
         geometry = QFormLayout()
@@ -111,6 +119,7 @@ class AnalysisDialog(QDialog):
         self._table.setAlternatingRowColors(True)
         self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._frames: list[PoseView | None] = []
+        self._samples: tuple[CornerSample | None, ...] = ()
         self._cambers: list[float] = []
         self._preview = PosePreview(self)
         self._preview_status = QLabel(tr("analysis.preview_empty"), self)
@@ -163,6 +172,9 @@ class AnalysisDialog(QDialog):
         self._summary = SampleSummary(self)
         self._summary.rowSelected.connect(lambda row: self._table.setCurrentCell(row, 0))
         self._view_tabs.addTab(self._summary, tr("summary.tab"))
+        self._explanation = QTextEdit(self)
+        self._explanation.setReadOnly(True)
+        self._view_tabs.addTab(self._explanation, tr("analysis.tab_explain"))
         self._view_tabs.currentChanged.connect(self._playback.pause_for_view_change)
         self._split = QSplitter(Qt.Orientation.Horizontal, self)
         self._split.addWidget(self._table)
@@ -187,6 +199,9 @@ class AnalysisDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.addWidget(self._notice)
         layout.addLayout(fields)
+        self._spring_project_hint = QLabel(self)
+        self._spring_project_hint.setWordWrap(True)
+        layout.addWidget(self._spring_project_hint)
         dynamics = QHBoxLayout()
         dynamics.addWidget(self._damping)
         for key, edit in (("velocity", self._velocity), ("compression", self._compression), ("rebound", self._rebound)):
@@ -225,6 +240,8 @@ class AnalysisDialog(QDialog):
         self._export_button.setEnabled(False)
         self._plot_export_button.setEnabled(False)
         self._frames = []
+        self._samples = ()
+        self._explanation.setPlainText(tr("analysis.explain.empty"))
         self._cambers = []
         self._playback_reasons = []
         self._plot.set_points(())
@@ -247,7 +264,10 @@ class AnalysisDialog(QDialog):
         self._damping.setEnabled(self._damper.isChecked())
         for field in (self._velocity, self._compression, self._rebound):
             field.setEnabled(self._damper.isChecked() and self._damping.isChecked())
-        supported = self.controller.project.axle(str(self._role.currentData())).type_code == "double_wishbone"
+        axle = self.controller.project.axle(str(self._role.currentData()))
+        self._spring_project_hint.setVisible(self._spring.isChecked())
+        self._spring_project_hint.setText(tr("analysis.spring_project_hint", free=f"{axle.spring.free_len_mm:.2f}"))
+        supported = axle.type_code == "double_wishbone"
         self._run.setEnabled(supported)
         self._status.setText(tr("analysis.ready" if supported else "analysis.unsupported"))
 
@@ -303,6 +323,7 @@ class AnalysisDialog(QDialog):
         if not all(isfinite(value) and 0 < value < 100000 for value in (radius, width)):
             frames = [None] * len(frames)
         self._frames = frames
+        self._samples = result.samples
         self._plot.set_points(sweep_plot_points(result, characteristic, velocity))
         self._playback_reasons = []
         for frame, sample in zip(frames, result.samples, strict=True):
@@ -376,6 +397,11 @@ class AnalysisDialog(QDialog):
 
     def _show_row(self, row: int, *_args: object) -> None:
         self._plot.set_row(row)
+        if not 0 <= row < len(self._samples):
+            self._explanation.setPlainText(tr("analysis.explain.empty"))
+        else:
+            spring = self.controller.project.axle(str(self._role.currentData())).spring
+            self._explanation.setPlainText(explain_corner_sample(self._samples[row], spring))
         if not 0 <= row < len(self._frames):
             self._playback.observe_row(row)
             return
@@ -414,6 +440,14 @@ class AnalysisDialog(QDialog):
             (tr("analysis.damper_max"), optional(self._damper.isChecked(), self._damper_max.value())),
             (tr("analysis.damping_enable"), tr("export.yes") if self._damping.isChecked() else tr("export.no")),
         ]
+        if self._spring.isChecked():
+            curve = "; ".join(f"({x!r}, {force!r})" for x, force in axle.spring.progressive)
+            params.extend((
+                (tr("analysis.report_free"), str(axle.spring.free_len_mm)),
+                (tr("analysis.report_rate"), str(axle.spring.rate_N_mm)),
+                (tr("analysis.report_curve"), curve or tr("analysis.report_linear")),
+                (tr("analysis.report_preload"), tr("analysis.report_not_applied")),
+            ))
         for label, field in (("velocity", self._velocity), ("compression", self._compression), ("rebound", self._rebound)):
             params.append((tr(f"analysis.{label}"), field.text() if self._damping.isChecked() else disabled))
         return params

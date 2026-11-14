@@ -323,6 +323,93 @@ def test_analysis_dialog_results_and_invalidation(window, qtbot):
     assert "пока не реализован" in dialog._status.text()
 
 
+def test_analysis_explains_selected_sample_and_exports_spring_parameters(window, qtbot):
+    from suspensionlab.core.sweep_plot import PLOT_METRICS
+    from suspensionlab.i18n import tr
+    from suspensionlab.ui.analysis_dialog import AnalysisDialog
+    from suspensionlab.ui.table_export import make_plot_report, make_table_report
+
+    controller = window.controller
+    controller.new_project("ring")
+    dialog = AnalysisDialog(controller, window)
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog._from.setValue(-16)
+    dialog._to.setValue(0)
+    dialog._step.setValue(16)
+    dialog._spring.setChecked(True)
+    dialog._spring_length.setValue(320)
+    dialog._coil_bind.setValue(115)
+    dialog._damper.setChecked(True)
+    dialog._damper_min.setValue(205)
+    dialog._damper_max.setValue(325)
+    assert "250.00 мм" in dialog._spring_project_hint.text()
+    assert "1000 Н·с/м = 1 Н·с/мм" in dialog._compression.toolTip()
+    before = controller.project.to_dict()
+    dialog._run.click()
+    assert "394.27 мм" in dialog._explanation.toPlainText()
+    assert "-69.27 мм" in dialog._explanation.toPlainText()
+    dialog._view_tabs.setCurrentIndex(3)
+    dialog._table.setCurrentCell(0, 0)
+    text = dialog._explanation.toPlainText()
+    assert "-16.00" in text and "402.97 мм" in text
+    assert "длина больше свободной" in text
+    params = dialog._report_parameters()
+    report = make_table_report(controller, dialog._table, "test", params)
+    plot = make_plot_report(controller, dialog._table, "test", params, dialog._plot.points,
+                            tuple(tr(f"analysis.column.{key}") for key in PLOT_METRICS),
+                            tr("analysis.column.travel"), (8,))
+    for data in (dict(report.metadata), dict(plot.metadata)):
+        assert data[tr("analysis.report_free")] == "250.0"
+        assert data[tr("analysis.report_rate")] == "95.0"
+        assert data[tr("analysis.report_curve")] == tr("analysis.report_linear")
+        assert data[tr("analysis.report_preload")] == tr("analysis.report_not_applied")
+    assert controller.project.to_dict() == before
+    controller.set_value(controller.project.front.spring, "free_len_mm", 340)
+    assert dialog._table.rowCount() == 0 and "выберите строку" in dialog._explanation.toPlainText()
+    assert "340.00 мм" in dialog._spring_project_hint.text()
+    dialog._run.click()
+    assert "Пружина сжата" in dialog._explanation.toPlainText()
+    dialog._spring.setChecked(False)
+    dialog._run.click()
+    assert "Пружина не включена" in dialog._explanation.toPlainText()
+    assert tr("analysis.report_free") not in dict(dialog._report_parameters())
+
+
+def test_analysis_explanation_unsolved_and_progressive_metadata(window, qtbot, monkeypatch):
+    from dataclasses import replace
+
+    from suspensionlab.core.analysis import analyze_corner
+    from suspensionlab.core.double_wishbone import KinematicsError
+    from suspensionlab.core.sweep import SweepPoint
+    from suspensionlab.i18n import tr
+    from suspensionlab.ui import analysis_dialog
+
+    controller = window.controller
+    controller.new_project("ring")
+    spring = controller.project.front.spring
+    controller.set_value(spring, "progressive", [(0.0, 0.0), (10.0, 400.0), (20.0, 1000.0)])
+    dialog = analysis_dialog.AnalysisDialog(controller, window)
+    qtbot.addWidget(dialog)
+    dialog._spring.setChecked(True)
+    dialog._spring_length.setValue(235)
+    dialog._from.setValue(0)
+    dialog._to.setValue(1)
+    actual = analyze_corner(controller.project.front, controller.project.vehicle, [0, 1], spring_mount="lower_arm",
+                            static_spring_length_mm=235)
+    failed = SweepPoint(1, None, KinematicsError(1, "test"))
+    partial = replace(actual, sweep=replace(actual.sweep, points=(actual.sweep.points[0], failed)),
+                      samples=(actual.samples[0], None))
+    monkeypatch.setattr(analysis_dialog, "analyze_corner", lambda *args, **kwargs: partial)
+    dialog._run.click()
+    assert "Пружина сжата" in dialog._explanation.toPlainText()
+    assert dict(dialog._report_parameters())[tr("analysis.report_curve")] == "(0.0, 0.0); (10.0, 400.0); (20.0, 1000.0)"
+    dialog._table.setCurrentCell(1, 0)
+    assert "нет решения кинематики" in dialog._explanation.toPlainText()
+    dialog._role.setCurrentIndex(1)
+    assert "выберите строку" in dialog._explanation.toPlainText() and not dialog._run.isEnabled()
+
+
 def test_analysis_plot_uses_samples_and_tracks_table_selection(window, qtbot):
     from PySide6.QtCore import QPoint, Qt
 
