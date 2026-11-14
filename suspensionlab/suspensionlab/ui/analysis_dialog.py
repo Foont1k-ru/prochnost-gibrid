@@ -31,7 +31,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..core.analysis import CornerSample, analyze_corner
-from ..core.damper import LinearDamperCharacteristic, evaluate_linear_damping
+from ..core.damper import DamperForcePoint, LinearDamperCharacteristic, evaluate_linear_damping
 from ..core.double_wishbone import DoubleWishbone
 from ..core.pose_view import PoseView, pose_view
 from ..core.sample_summary import corner_summary
@@ -84,6 +84,11 @@ class AnalysisDialog(QDialog):
         self._velocity = QLineEdit(self)
         self._compression = QLineEdit(self)
         self._rebound = QLineEdit(self)
+        self._compression_source: DamperForcePoint | None = None
+        self._rebound_source: DamperForcePoint | None = None
+        self._setting_damping_sources = False
+        self._compression.textChanged.connect(lambda _text: self._forget_damping_source("compression"))
+        self._rebound.textChanged.connect(lambda _text: self._forget_damping_source("rebound"))
         for edit in (self._velocity, self._compression, self._rebound):
             edit.setPlaceholderText(tr("analysis.explicit_required"))
             edit.setMaximumWidth(110)
@@ -232,6 +237,9 @@ class AnalysisDialog(QDialog):
         dynamics.addWidget(self._convert_damping)
         dynamics.addStretch()
         layout.addLayout(dynamics)
+        self._damping_source_hint = QLabel(self)
+        self._damping_source_hint.setWordWrap(True)
+        layout.addWidget(self._damping_source_hint)
         layout.addWidget(self._status)
         layout.addWidget(self._split, 1)
         layout.addLayout(row)
@@ -291,6 +299,7 @@ class AnalysisDialog(QDialog):
         self._convert_damping.setEnabled(self._damper.isChecked() and self._damping.isChecked())
         for field in (self._velocity, self._compression, self._rebound):
             field.setEnabled(self._damper.isChecked() and self._damping.isChecked())
+        self._update_damping_source_hint()
         axle = self.controller.project.axle(str(self._role.currentData()))
         self._spring_project_hint.setVisible(self._spring.isChecked())
         self._spring_project_hint.setText(tr("analysis.spring_project_hint", free=f"{axle.spring.free_len_mm:.2f}"))
@@ -299,15 +308,53 @@ class AnalysisDialog(QDialog):
         self._static_button.setEnabled(supported)
         self._status.setText(tr("analysis.ready" if supported else "analysis.unsupported"))
 
+    def _forget_damping_source(self, direction: str) -> None:
+        if not self._setting_damping_sources:
+            if direction == "compression":
+                self._compression_source = None
+            else:
+                self._rebound_source = None
+
+    def _damping_source(self, direction: str) -> DamperForcePoint | None:
+        point, field = ((self._compression_source, self._compression) if direction == "compression"
+                        else (self._rebound_source, self._rebound))
+        if point is None:
+            return None
+        try:
+            return point if float(field.text().strip().replace(",", ".")) == point.coefficient_n_s_mm else None
+        except ValueError:
+            return None
+
+    def _update_damping_source_hint(self) -> None:
+        self._damping_source_hint.setVisible(self._damping.isChecked())
+        def describe(direction: str, field: QLineEdit) -> str:
+            point = self._damping_source(direction)
+            if point is not None:
+                return tr("damper_conversion.source_point_inline", force=repr(point.force_n), speed=repr(point.speed_mm_s))
+            return tr("damper_conversion.source_unknown" if field.text().strip() else "damper_conversion.source_empty")
+        self._damping_source_hint.setText(tr("damper_conversion.source_hint",
+                                             compression=describe("compression", self._compression),
+                                             rebound=describe("rebound", self._rebound)))
+
     def _open_damper_conversion(self) -> None:
         dialog = DamperConversionDialog(self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
-        compression, rebound = dialog.coefficients()
-        if compression is not None:
-            self._compression.setText(repr(compression))
-        if rebound is not None:
-            self._rebound.setText(repr(rebound))
+        compression, rebound = dialog.points()
+        if compression is None and rebound is None:
+            return
+        self._setting_damping_sources = True
+        try:
+            if compression is not None:
+                self._compression_source = compression
+                self._compression.setText(repr(compression.coefficient_n_s_mm))
+            if rebound is not None:
+                self._rebound_source = rebound
+                self._rebound.setText(repr(rebound.coefficient_n_s_mm))
+        finally:
+            self._setting_damping_sources = False
+        # Даже та же цифра могла получиться из другой исходной точки.
+        self._invalidate()
 
     def _component_inputs(self) -> tuple[float | None, float | None, StrokeLimits | None]:
         if self._spring.isChecked() and self._spring_length.value() <= 0:
@@ -349,7 +396,8 @@ class AnalysisDialog(QDialog):
                 columns, rows = static_report_rows(sample, axle, side)
                 omitted = {tr(f"analysis.{key}") for key in (
                     "from", "to", "step", "damping_enable", "velocity", "compression", "rebound")}
-                parameters = [(key, value) for key, value in self._report_parameters() if key not in omitted]
+                parameters = [(key, value) for key, value in self._report_parameters(include_damping_sources=False)
+                              if key not in omitted]
                 parameters.extend(((tr("analysis.static.report.scope_label"), tr("analysis.static.scope")),
                                    (tr("analysis.static.report.coordinates_label"), tr("analysis.static.report.coordinates"))))
                 self._static_report = make_report(self.controller, tr("analysis.static.report.kind"), parameters,
@@ -510,7 +558,7 @@ class AnalysisDialog(QDialog):
         state = item.text() if item is not None else ""
         self._preview_status.setText(tr("analysis.preview_warning", state=state))
 
-    def _report_parameters(self) -> list[tuple[str, str]]:
+    def _report_parameters(self, *, include_damping_sources: bool = True) -> list[tuple[str, str]]:
         axle = self.controller.project.axle(str(self._role.currentData()))
         unknown, disabled = tr("export.unknown"), tr("export.not_enabled")
         def optional(enabled: bool, value: float) -> str:
@@ -538,6 +586,16 @@ class AnalysisDialog(QDialog):
             ))
         for label, field in (("velocity", self._velocity), ("compression", self._compression), ("rebound", self._rebound)):
             params.append((tr(f"analysis.{label}"), field.text() if self._damping.isChecked() else disabled))
+        if self._damping.isChecked() and include_damping_sources:
+            for direction, field in (("compression", self._compression), ("rebound", self._rebound)):
+                point = self._damping_source(direction)
+                source = (tr("damper_conversion.source_point") if point is not None else
+                          tr("damper_conversion.source_unknown" if field.text().strip() else "damper_conversion.source_empty"))
+                params.extend((
+                    (tr(f"damper_conversion.report.{direction}_source"), source),
+                    (tr(f"damper_conversion.report.{direction}_force"), repr(point.force_n) if point is not None else unknown),
+                    (tr(f"damper_conversion.report.{direction}_speed"), repr(point.speed_mm_s) if point is not None else unknown),
+                ))
         return params
 
     def _export(self) -> None:

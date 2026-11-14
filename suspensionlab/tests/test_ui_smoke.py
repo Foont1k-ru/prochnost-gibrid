@@ -552,6 +552,7 @@ def test_damper_conversion_dialog_explicit_inputs_and_preview(window, qtbot):
     assert not dialog._apply.isEnabled() and dialog.coefficients() == (None, None)
     dialog._rebound_speed.setText("300")
     assert dialog.coefficients() == (235 / 300, 1342 / 300)
+    assert dialog.points()[0].force_n == 235 and dialog.points()[1].speed_mm_s == 300
     assert repr(1342 / 300) in dialog._result.text()
     dialog._rebound_speed.setText("0")
     assert not dialog._apply.isEnabled() and "больше нуля" in dialog._result.text()
@@ -568,6 +569,7 @@ def test_damper_conversion_dialog_explicit_inputs_and_preview(window, qtbot):
 def test_analysis_damper_conversion_is_opt_in_and_invalidates_results(window, qtbot, monkeypatch):
     from PySide6.QtWidgets import QDialog
 
+    from suspensionlab.core.damper import DamperForcePoint
     from suspensionlab.ui import analysis_dialog
 
     controller = window.controller
@@ -598,8 +600,8 @@ def test_analysis_damper_conversion_is_opt_in_and_invalidates_results(window, qt
     class Accepted(Cancelled):
         def exec(self):
             return QDialog.DialogCode.Accepted
-        def coefficients(self):
-            return 235 / 300, None
+        def points(self):
+            return DamperForcePoint(235, 300), None
     monkeypatch.setattr(analysis_dialog, "DamperConversionDialog", Accepted)
     dialog._convert_damping.click()
     assert float(dialog._compression.text()) == 235 / 300 and dialog._rebound.text() == "8"
@@ -607,6 +609,76 @@ def test_analysis_damper_conversion_is_opt_in_and_invalidates_results(window, qt
     assert controller.project.to_dict() == before
     dialog._damping.setChecked(False)
     assert not dialog._convert_damping.isEnabled()
+
+
+def test_damper_source_provenance_csv_and_independent_edits(window, qtbot, monkeypatch):
+    from PySide6.QtWidgets import QDialog
+
+    from suspensionlab.core.damper import DamperForcePoint
+    from suspensionlab.core.sweep_plot import PLOT_METRICS
+    from suspensionlab.i18n import tr
+    from suspensionlab.ui import analysis_dialog
+    from suspensionlab.ui.table_export import make_plot_report, make_table_report
+
+    controller = window.controller
+    controller.new_project("ring")
+    dialog = analysis_dialog.AnalysisDialog(controller, window)
+    qtbot.addWidget(dialog)
+    dialog._damper.setChecked(True)
+    dialog._damping.setChecked(True)
+    dialog._velocity.setText("100")
+    dialog._from.setValue(0)
+    dialog._to.setValue(0)
+    selection = [DamperForcePoint(235.0, 300.0), DamperForcePoint(1342.0, 300.0)]
+    class Conversion:
+        def __init__(self, parent):
+            pass
+        def exec(self):
+            return QDialog.DialogCode.Accepted
+        def points(self):
+            return tuple(selection)
+    monkeypatch.setattr(analysis_dialog, "DamperConversionDialog", Conversion)
+    dialog._convert_damping.click()
+    assert "F=235.0 Н, скорость штока=300.0 мм/с" in dialog._damping_source_hint.text()
+    assert "F=1342.0 Н" in dialog._damping_source_hint.text()
+    dialog._run.click()
+    params = dialog._report_parameters()
+    table = make_table_report(controller, dialog._table, "test", params)
+    plot = make_plot_report(controller, dialog._table, "test", params, dialog._plot.points,
+                            tuple(tr(f"analysis.column.{key}") for key in PLOT_METRICS),
+                            tr("analysis.column.travel"), (8,))
+    for report in (table, plot):
+        meta = dict(report.metadata)
+        assert meta[tr("damper_conversion.report.compression_source")] == tr("damper_conversion.source_point")
+        assert float(meta[tr("damper_conversion.report.compression_force")]) == 235
+        assert float(meta[tr("damper_conversion.report.compression_speed")]) == 300
+        assert float(meta[tr("damper_conversion.report.rebound_force")]) == 1342
+        assert float(meta[tr("analysis.compression")]) == 235 / 300
+    dialog._static_button.click()
+    assert dialog._static_report is not None
+    assert tr("damper_conversion.report.compression_force") not in dict(dialog._static_report.metadata)
+    dialog._compression.setText("1.25")
+    assert dialog._table.rowCount() == 0 and dialog._static_report is None
+    meta = dict(dialog._report_parameters())
+    assert meta[tr("damper_conversion.report.compression_source")] == tr("damper_conversion.source_unknown")
+    assert meta[tr("damper_conversion.report.compression_force")] == tr("export.unknown")
+    assert float(meta[tr("damper_conversion.report.rebound_force")]) == 1342
+    # Повторное применение той же величины с другими исходными точками обновляет источник и очищает расчёт.
+    selection[:] = [DamperForcePoint(250, 200), None]
+    dialog._run.click()
+    assert dialog._table.rowCount() == 1
+    dialog._convert_damping.click()
+    assert dialog._table.rowCount() == 0
+    meta = dict(dialog._report_parameters())
+    assert float(meta[tr("damper_conversion.report.compression_force")]) == 250
+    assert float(meta[tr("damper_conversion.report.compression_speed")]) == 200
+    assert float(meta[tr("damper_conversion.report.rebound_force")]) == 1342
+    dialog._rebound.clear()
+    meta = dict(dialog._report_parameters())
+    assert meta[tr("damper_conversion.report.rebound_source")] == tr("damper_conversion.source_empty")
+    assert meta[tr("damper_conversion.report.rebound_speed")] == tr("export.unknown")
+    dialog._damping.setChecked(False)
+    assert tr("damper_conversion.report.compression_force") not in dict(dialog._report_parameters())
 
 
 def test_analysis_plot_uses_samples_and_tracks_table_selection(window, qtbot):

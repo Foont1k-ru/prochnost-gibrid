@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..core.damper import linear_coefficient_from_point
+from ..core.damper import DamperForcePoint
 from ..i18n import tr
 
 MAX_DAMPING_COEFFICIENT = 10000.0
@@ -51,10 +51,10 @@ class DamperConversionDialog(QDialog):
         layout.addWidget(self._result)
         layout.addStretch()
         layout.addWidget(self._buttons)
-        self._values: tuple[float | None, float | None] = (None, None)
+        self._values: tuple[DamperForcePoint | None, DamperForcePoint | None] = (None, None)
         self._update()
 
-    def _pair(self, force: QLineEdit, speed: QLineEdit) -> float | None:
+    def _pair(self, force: QLineEdit, speed: QLineEdit) -> DamperForcePoint | None:
         force_text, speed_text = force.text().strip(), speed.text().strip()
         if not force_text and not speed_text:
             return None
@@ -63,12 +63,12 @@ class DamperConversionDialog(QDialog):
         try:
             force_n = float(force_text.replace(",", "."))
             speed_mm_s = float(speed_text.replace(",", "."))
-            coefficient = linear_coefficient_from_point(force_n, speed_mm_s)
+            point = DamperForcePoint(force_n, speed_mm_s)
         except (ValueError, OverflowError) as error:
             raise ValueError(tr("damper_conversion.invalid")) from error
-        if coefficient > MAX_DAMPING_COEFFICIENT:
+        if point.coefficient_n_s_mm > MAX_DAMPING_COEFFICIENT:
             raise ValueError(tr("damper_conversion.too_large", maximum=MAX_DAMPING_COEFFICIENT))
-        return coefficient
+        return point
 
     def _update(self, *_args: object) -> None:
         self._values = (None, None)
@@ -83,11 +83,17 @@ class DamperConversionDialog(QDialog):
             self._result.setText(tr("damper_conversion.empty"))
             return
         self._values = (compression, rebound)
-        def display(value: float | None) -> str:
-            return repr(value) if value is not None else tr("damper_conversion.unchanged")
+        def display(value: DamperForcePoint | None) -> str:
+            return repr(value.coefficient_n_s_mm) if value is not None else tr("damper_conversion.unchanged")
         self._result.setText(tr("damper_conversion.preview", compression=display(compression), rebound=display(rebound)))
         self._apply.setEnabled(True)
 
+    def points(self) -> tuple[DamperForcePoint | None, DamperForcePoint | None]:
+        """Исходные пары; отсутствующую пару не заменяет нулём."""
+        return self._values
+
     def coefficients(self) -> tuple[float | None, float | None]:
         """Значения float без округления, отсутствующую пару не заменяет нулём."""
-        return self._values
+        compression, rebound = self._values
+        return (compression.coefficient_n_s_mm if compression is not None else None,
+                rebound.coefficient_n_s_mm if rebound is not None else None)

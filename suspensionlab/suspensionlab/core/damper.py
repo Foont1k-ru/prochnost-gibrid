@@ -72,6 +72,21 @@ def linear_coefficient_from_point(force_n: float, speed_mm_s: float) -> float:
 
 
 @dataclass(frozen=True)
+class DamperForcePoint:
+    """Исходная пара для условной линейной оценки, а не полная характеристика."""
+
+    force_n: float
+    speed_mm_s: float
+
+    def __post_init__(self) -> None:
+        linear_coefficient_from_point(self.force_n, self.speed_mm_s)
+
+    @property
+    def coefficient_n_s_mm(self) -> float:
+        return linear_coefficient_from_point(self.force_n, self.speed_mm_s)
+
+
+@dataclass(frozen=True)
 class LinearDamperCharacteristic:
     """Условные коэффициенты сжатия и отбоя, Н·с/мм; задаются явно.
 
