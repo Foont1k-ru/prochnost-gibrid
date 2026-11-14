@@ -17,12 +17,13 @@ class SweepPlot(QWidget):
 
     def __init__(self, parent: QWidget | None = None, *, metrics: tuple[str, ...] = PLOT_METRICS,
                  label_prefix: str = "analysis.column", x_label: str = "analysis.column.travel",
-                 empty_text: str = "analysis.plot_empty") -> None:
+                 empty_text: str = "analysis.plot_empty", zero_reference_metrics: tuple[str, ...] = ()) -> None:
         super().__init__(parent)
         if not metrics:
             raise ValueError("Графику нужна хотя бы одна величина")
         self._metrics, self._label_prefix = metrics, label_prefix
         self._x_label, self._empty_text = x_label, empty_text
+        self._zero_reference_metrics = frozenset(zero_reference_metrics)
         self.setMinimumSize(300, 230)
         self.points: tuple[PlotPoint, ...] = ()
         self._metric = 0
@@ -67,6 +68,8 @@ class SweepPlot(QWidget):
             return None
         xs = [p.travel_mm for p in self.points if isfinite(p.travel_mm) and abs(p.travel_mm) < 1e100]
         ys = [float(y) for _, y in valid if y is not None]
+        if self._metrics[self._metric] in self._zero_reference_metrics:
+            ys.append(0.0)
         if not xs or not ys:
             return None
         xmin, xmax, ymin, ymax = min(xs), max(xs), min(ys), max(ys)
@@ -101,6 +104,10 @@ class SweepPlot(QWidget):
                              int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter), f"{y:.4g}")
         painter.drawText(QRectF(rect.left(), self.height() - 22, rect.width(), 18),
                          int(Qt.AlignmentFlag.AlignCenter), tr(self._x_label))
+        if self._metrics[self._metric] in self._zero_reference_metrics:
+            y_zero = self._screen(xmin, 0.0, geometry).y()
+            painter.setPen(QPen(QColor("#969696"), 1, Qt.PenStyle.DashLine))
+            painter.drawLine(QPointF(rect.left(), y_zero), QPointF(rect.right(), y_zero))
         if (0 <= self.row < len(self.points) and isfinite(self.points[self.row].travel_mm)
                 and abs(self.points[self.row].travel_mm) < 1e100):
             selected_x = self._screen(self.points[self.row].travel_mm, ymin, geometry).x()

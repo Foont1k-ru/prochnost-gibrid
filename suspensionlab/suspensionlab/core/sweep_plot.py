@@ -9,6 +9,7 @@ from .analysis import CornerAnalysis
 from .antiroll import AntiRollPoint
 from .combined_checks import ComponentChecks
 from .damper import LinearDamperCharacteristic, evaluate_linear_damping
+from .equilibrium import EquilibriumPath
 
 # Порядок и имена совпадают с числовыми колонками таблицы; состояние остаётся в таблице.
 PLOT_METRICS = (
@@ -22,6 +23,8 @@ ANTIROLL_METRICS = (
     "left_damper_length", "right_damper_length", "left_compression_clearance", "right_compression_clearance",
     "left_extension_clearance", "right_extension_clearance",
 )
+PATH_PLOT_METRICS = ("length", "coil_clearance", "force", "ratio", "support", "residual",
+                     "damper_length", "compression_clearance", "extension_clearance")
 
 
 @dataclass(frozen=True)
@@ -111,6 +114,28 @@ def antiroll_plot_points(
                       lv[0], rv[0], lv[1], rv[1], lv[2], rv[2], lv[3], rv[3], lv[4], rv[4])
         result.append(PlotPoint(point.left_travel_mm, tuple(_finite(v) for v in values), conflict))
     return tuple(result)
+
+
+def equilibrium_path_plot_points(path: EquilibriumPath) -> tuple[PlotPoint, ...]:
+    """Только сохранённые точки проверки, в порядке от статики к цели.
+
+    Не повторяет расчёт и не добавляет отсутствующие точки или оценку баланса.
+    При несовпадении ветвей последняя сохранённая точка отмечается конфликтом;
+    причина отказа остаётся отдельно в статусе.
+    """
+    points = []
+    for index, sample in enumerate(path.samples):
+        damper = sample.damper
+        stroke = damper.stroke if damper is not None else None
+        values = (sample.spring.length_mm, sample.spring.coil_clearance_mm, sample.spring.force_n,
+                  sample.motion_ratio, sample.wheel_support_n, sample.residual_n,
+                  damper.length_mm if damper is not None else None,
+                  stroke.compression_clearance_mm if stroke is not None else None,
+                  stroke.extension_clearance_mm if stroke is not None else None)
+        mismatch = path.failure is not None and path.failure.kind == "branch_mismatch" and index == len(path.samples) - 1
+        conflict = mismatch or sample.spring.status == "coil_bind" or (damper is not None and damper.has_detected_conflict)
+        points.append(PlotPoint(sample.travel_mm, tuple(_finite(v) for v in values), conflict))
+    return tuple(points)
 
 
 def plot_segments(points: tuple[PlotPoint, ...], metric: int, metric_count: int = len(PLOT_METRICS)) -> tuple[tuple[int, int], ...]:

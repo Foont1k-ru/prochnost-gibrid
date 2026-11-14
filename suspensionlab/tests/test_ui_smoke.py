@@ -1978,6 +1978,51 @@ def test_equilibrium_failure_path_access_and_branch_mismatch(window, qtbot, monk
     assert dialog._path is None and not dialog._path_button.isEnabled()
 
 
+def test_equilibrium_path_graph_selects_retained_points_and_handles_failures(window, qtbot):
+    from dataclasses import replace
+
+    from PySide6.QtCore import QPoint, Qt
+
+    from suspensionlab.core.equilibrium import PathFailure, SpringEquilibrium
+    from suspensionlab.core.sweep_plot import PATH_PLOT_METRICS
+    from suspensionlab.ui.equilibrium_path_dialog import EquilibriumPathDialog
+
+    window.controller.new_project("ring")
+    axle = window.controller.project.front
+    path = SpringEquilibrium(axle, 230).check_path(-3, 1000)
+    before = window.controller.project.to_dict()
+    view = EquilibriumPathDialog(path, window)
+    qtbot.addWidget(view)
+    view.show()
+    view._views.setCurrentIndex(1)
+    qtbot.wait(50)
+    assert view._plot_metric.currentData() == "residual"
+    assert view._plot.points[0].values[5] == path.samples[0].residual_n
+    geometry = view._plot._geometry()
+    assert geometry is not None and geometry[3] < 0 < geometry[4]  # Линия нуля невязки видна всегда.
+    last = view._plot.points[-1]
+    target = view._plot._screen(last.travel_mm, last.values[5], geometry)
+    qtbot.mouseClick(view._plot, Qt.MouseButton.LeftButton, pos=QPoint(round(target.x()), round(target.y())))
+    assert view._plot.row == len(path.samples) - 1 and view._table.currentRow() == len(path.samples) - 1
+    assert not view._plot.grab().isNull()
+    view._plot_metric.setCurrentIndex(PATH_PLOT_METRICS.index("damper_length"))
+    assert view._plot._geometry() is None and not view._plot.grab().isNull()
+    partial = SpringEquilibrium(axle, 230, coil_bind_length_mm=225).check_path(30, 1000, step_mm=5)
+    failed = EquilibriumPathDialog(partial, window)
+    qtbot.addWidget(failed)
+    assert "НЕ ПРОЙДЕНА" in failed._status.text()
+    assert len(failed._plot.points) == len(partial.samples)
+    mismatch = replace(path, failure=PathFailure(-3, -3, "branch_mismatch", "ветви различаются"))
+    branch = EquilibriumPathDialog(mismatch, window)
+    qtbot.addWidget(branch)
+    assert branch._plot.points[-1].conflict and "НЕ ПРОЙДЕНА" in branch._status.text()
+    empty_path = SpringEquilibrium(axle, 230, coil_bind_length_mm=231).check_path(20, 1000)
+    empty = EquilibriumPathDialog(empty_path, window)
+    qtbot.addWidget(empty)
+    assert not empty._plot.points and empty._plot._geometry() is None
+    assert window.controller.project.to_dict() == before
+
+
 def test_equilibrium_open_path_closes_when_project_changes(window, qtbot, monkeypatch):
     from suspensionlab.core.equilibrium import SpringEquilibrium
     from suspensionlab.ui import equilibrium_dialog

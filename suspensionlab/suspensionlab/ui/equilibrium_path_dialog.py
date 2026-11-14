@@ -6,6 +6,7 @@ from collections.abc import Callable
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QHBoxLayout,
@@ -15,14 +16,17 @@ from PySide6.QtWidgets import (
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
 from ..core.equilibrium import EquilibriumPath
+from ..core.sweep_plot import PATH_PLOT_METRICS, equilibrium_path_plot_points
 from ..export.csv_report import CSVReport
 from ..export.equilibrium_path import PATH_COLUMNS, format_path_sample
 from ..i18n import tr
+from .canvas.sweep_plot import SweepPlot
 from .table_export import save_table_dialog
 
 
@@ -58,6 +62,36 @@ class EquilibriumPathDialog(QDialog):
         for index, sample in enumerate(path.samples):
             for column, text in enumerate(format_path_sample(sample)):
                 self._table.setItem(index, column, QTableWidgetItem(text))
+        self._plot = SweepPlot(self, metrics=PATH_PLOT_METRICS, label_prefix="equilibrium_path.column",
+                               x_label="equilibrium_path.column.travel", empty_text="equilibrium_path.plot_empty",
+                               zero_reference_metrics=("residual",))
+        self._plot_metric = QComboBox(self)
+        for key in PATH_PLOT_METRICS:
+            self._plot_metric.addItem(tr(f"equilibrium_path.column.{key}"), key)
+        self._plot_metric.setCurrentIndex(PATH_PLOT_METRICS.index("residual"))
+        self._plot.set_metric(self._plot_metric.currentIndex())
+        self._plot_metric.currentIndexChanged.connect(self._plot.set_metric)
+        self._plot.rowSelected.connect(lambda row: self._table.setCurrentCell(row, 0))
+        self._table.currentCellChanged.connect(lambda row, *_args: self._plot.set_row(row))
+        plot_selection = QLabel(tr("analysis.plot_no_selection"), self)
+        plot_selection.setWordWrap(True)
+        self._plot.selectionTextChanged.connect(plot_selection.setText)
+        plot_notice = QLabel(tr("equilibrium_path.plot_notice"), self)
+        plot_notice.setWordWrap(True)
+        plot_container = QWidget(self)
+        plot_layout = QVBoxLayout(plot_container)
+        plot_layout.setContentsMargins(0, 0, 0, 0)
+        plot_layout.addWidget(self._plot_metric)
+        plot_layout.addWidget(self._plot, 1)
+        plot_layout.addWidget(plot_selection)
+        plot_layout.addWidget(plot_notice)
+        self._views = QTabWidget(self)
+        self._views.addTab(self._table, tr("equilibrium_path.tab_table"))
+        self._views.addTab(plot_container, tr("analysis.tab_plot"))
+        self._plot.set_points(equilibrium_path_plot_points(path))
+        if path.samples:
+            self._table.setCurrentCell(0, 0)
+            self._plot.set_row(0)
         self._export_button = QPushButton(tr("equilibrium_path.export"), self)
         self._export_button.setEnabled(report_factory is not None)
         self._export_button.clicked.connect(self._export)
@@ -71,7 +105,7 @@ class EquilibriumPathDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.addWidget(notice)
         layout.addWidget(self._status)
-        layout.addWidget(self._table, 1)
+        layout.addWidget(self._views, 1)
         layout.addLayout(bottom)
 
     def _export(self) -> None:
