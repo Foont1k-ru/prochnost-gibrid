@@ -45,6 +45,23 @@ def test_candidate_has_expected_active_alignment_and_unit_conversion(tmp_path):
     assert metres.placement_frames[0].second.origin == (10, 20, 30)
 
 
+def test_distinct_contexts_require_matching_known_units(tmp_path):
+    result = sample(tmp_path)
+    frame = result.placement_frames[0]
+    info = frame.representation_match
+    assert info is not None
+    other_frame = replace(frame, representation_match=replace(info, context_2=300))
+    original = result.context_units[0]
+    other_unit = replace(original, context=300)
+    mixed = replace(result, placement_frames=(other_frame,), context_units=(original, other_unit))
+    assert candidate_transforms(mixed)[0].status == "ready"
+    different = replace(mixed, context_units=(original, replace(other_unit, mm_per_unit=1000)))
+    candidate = candidate_transforms(different)[0]
+    assert candidate.status == "unit_mismatch" and candidate.transform is None
+    unknown = replace(mixed, context_units=(original, replace(other_unit, status="unsupported", mm_per_unit=None)))
+    assert candidate_transforms(unknown)[0].status == "unit"
+
+
 def test_no_implicit_guess_for_missing_or_ambiguous_data(tmp_path):
     result = sample(tmp_path)
     frame = result.placement_frames[0]
@@ -59,7 +76,8 @@ def test_no_implicit_guess_for_missing_or_ambiguous_data(tmp_path):
         (replace(result, placement_frames=(replace(frame, representation_match=replace(info, status="ambiguous")),)), "association"),
         (replace(result, placement_frames=(replace(frame, representation_match=replace(info, frame_1_membership=(None, True))),)), "membership"),
         (replace(result, placement_frames=(replace(frame, representation_match=replace(info, frame_2_membership=(True, False))),)), "membership"),
-        (replace(result, placement_frames=(replace(frame, representation_match=replace(info, context_2=201)),)), "context"),
+        (replace(result, placement_frames=(replace(frame, representation_match=replace(info, context_2=None)),)), "context"),
+        (replace(result, placement_frames=(replace(frame, representation_match=replace(info, context_2=201)),)), "unit"),
         (replace(result, context_units=()), "unit"),
         (replace(result, context_units=(replace(result.context_units[0], status="ambiguous", mm_per_unit=None),)), "unit"),
         (replace(result, context_units=(replace(result.context_units[0], mm_per_unit=float("nan")),)), "unit"),

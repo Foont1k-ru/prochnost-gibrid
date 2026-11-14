@@ -14,7 +14,7 @@ from .spatial_transform import RigidTransform, SpatialFrame
 from .step_inventory import StepInventory
 from .step_placements import Frame
 
-CandidateStatus = Literal["ready", "frames", "definitions", "association", "membership", "context", "unit", "invalid"]
+CandidateStatus = Literal["ready", "frames", "definitions", "association", "membership", "context", "unit", "unit_mismatch", "invalid"]
 
 
 @dataclass(frozen=True)
@@ -33,8 +33,8 @@ def candidate_transforms(inventory: StepInventory) -> tuple[CandidateTransform, 
     """Диагностические относительные кандидаты, без объединения дерева сборки.
 
     Поддерживается только отношение дочернее→родительское, с прямыми
-    упоминаниями соответствующих систем, общим контекстом и распознанной
-    SI-длиной. Это условия отбора, а не доказательство правильности STEP.
+    упоминаниями соответствующих систем и одинаковой распознанной SI-длиной
+    обоих контекстов. Это условия отбора, а не доказательство правильности STEP.
     """
     frames = {frame.occurrence: frame for frame in inventory.placement_frames}
     units = {unit.context: unit for unit in inventory.context_units}
@@ -53,17 +53,22 @@ def candidate_transforms(inventory: StepInventory) -> tuple[CandidateTransform, 
             match = frame.representation_match
             if match.frame_1_membership[0] is not True or match.frame_2_membership[1] is not True:
                 status = "membership"
-            elif match.context_1 is None or match.context_1 != match.context_2:
+            elif match.context_1 is None or match.context_2 is None:
                 status = "context"
             else:
-                unit = units.get(match.context_1)
-                if (unit is None or unit.status != "known" or unit.mm_per_unit is None or
-                        not isfinite(unit.mm_per_unit) or unit.mm_per_unit <= 0):
+                first_unit, second_unit = units.get(match.context_1), units.get(match.context_2)
+                if (first_unit is None or second_unit is None or first_unit.status != "known" or
+                        second_unit.status != "known" or first_unit.mm_per_unit is None or
+                        second_unit.mm_per_unit is None or not isfinite(first_unit.mm_per_unit) or
+                        not isfinite(second_unit.mm_per_unit) or first_unit.mm_per_unit <= 0 or
+                        second_unit.mm_per_unit <= 0):
                     status = "unit"
+                elif first_unit.mm_per_unit != second_unit.mm_per_unit:
+                    status = "unit_mismatch"
                 else:
                     try:
                         transform = RigidTransform.align_frames_same_units(
-                            _spatial(frame.first, unit.mm_per_unit), _spatial(frame.second, unit.mm_per_unit))
+                            _spatial(frame.first, first_unit.mm_per_unit), _spatial(frame.second, second_unit.mm_per_unit))
                         status = "ready"
                     except (ValueError, ArithmeticError, OverflowError):
                         status = "invalid"
