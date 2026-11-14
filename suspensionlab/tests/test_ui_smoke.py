@@ -36,6 +36,47 @@ def test_packaging_smoke_from_isolated_directory(tmp_path):
     assert result.returncode == 0 and contents.strip() == "OK", f"{contents}\n{result.stdout}\n{result.stderr}"
 
 
+def test_step_inventory_async_is_read_only_and_clears_after_error(window, qtbot, tmp_path, monkeypatch):
+    from threading import Event
+
+    from suspensionlab.core.step_inventory import read_step_inventory
+    from suspensionlab.ui import step_inventory_dialog
+
+    window.controller.new_project("ring")
+    before = window.controller.project.to_dict()
+    path = tmp_path / "sample.stp"
+    data = b"ISO-10303-21;HEADER;FILE_SCHEMA(('AP242'));ENDSEC;DATA;#1=PRODUCT('part','Test','',());ENDSEC;END-ISO-10303-21;"
+    path.write_bytes(data)
+    started, release = Event(), Event()
+    def slow_read(p):
+        started.set()
+        assert release.wait(5)
+        return read_step_inventory(p)
+    monkeypatch.setattr(step_inventory_dialog, "read_step_inventory", slow_read)
+    dialog = step_inventory_dialog.StepInventoryDialog(window)
+    qtbot.addWidget(dialog)
+    dialog.show()
+    assert window.action_step_inventory.isEnabled()
+    dialog.load_file(path)
+    assert started.wait(3)
+    try:
+        assert not dialog._choose.isEnabled()
+        dialog.reject()
+        assert dialog.isVisible()
+        assert dialog.close() is False
+    finally:
+        release.set()
+    qtbot.waitUntil(lambda: dialog._reader is None, timeout=10000)
+    assert dialog._choose.isEnabled() and "Обзор завершён" in dialog._status.text()
+    assert "Test" in dialog._text.toPlainText() and "AP242" in dialog._text.toPlainText()
+    assert path.read_bytes() == data and window.controller.project.to_dict() == before
+    dialog.load_file(tmp_path / "missing.stp")
+    qtbot.waitUntil(lambda: dialog._reader is None, timeout=10000)
+    assert dialog._text.toPlainText() == "" and "не выполнен" in dialog._status.text()
+    assert window.controller.project.to_dict() == before
+    dialog.close()
+
+
 def test_window_and_theme(window, qtbot):
     assert window._tabs.count() == 3
     assert "Подвеска" in window.windowTitle()

@@ -38,6 +38,7 @@ from .docks.diagnostics import DiagnosticsPanel
 from .docks.inspector import Inspector
 from .docks.project_tree import ProjectTree
 from .equilibrium_dialog import EquilibriumDialog
+from .step_inventory_dialog import StepInventoryDialog
 from .theme import THEMES, apply_theme
 from .widgets.empty_state import EmptyState
 
@@ -117,6 +118,9 @@ class MainWindow(QMainWindow):
         """Показывает рабочую область вместо стартового экрана."""
         self._stack.setCurrentWidget(self._tabs)
 
+    def _open_step_inventory(self) -> None:
+        StepInventoryDialog(self).exec()
+
     # ------------------------------------------------------------------ панели
     def _build_docks(self) -> None:
         """Создаёт док-панели: проект, инспектор, диагностика."""
@@ -166,6 +170,9 @@ class MainWindow(QMainWindow):
 
         self.action_templates = QAction(tr("menu.file.templates"), self)
         self.action_templates.triggered.connect(self._new_from_template)
+
+        self.action_step_inventory = QAction(tr("step_inventory.menu"), self)
+        self.action_step_inventory.triggered.connect(self._open_step_inventory)
 
         self.action_exit = QAction(tr("menu.file.exit"), self)
         self.action_exit.setShortcut(QKeySequence.StandardKey.Quit)
@@ -243,6 +250,7 @@ class MainWindow(QMainWindow):
         menu_file = bar.addMenu(tr("menu.file"))
         menu_file.addAction(self.action_new)
         menu_file.addAction(self.action_open)
+        menu_file.addAction(self.action_step_inventory)
         menu_file.addAction(self.action_recover_autosave)
         menu_file.addAction(self.action_templates)
         menu_file.addSeparator()
