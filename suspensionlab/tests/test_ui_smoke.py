@@ -848,6 +848,82 @@ def test_plot_pair_handles_missing_values_and_shared_conflict(window, qtbot):
     assert plot._geometry() is None
 
 
+@pytest.mark.parametrize("kind", ["analysis", "antiroll"])
+def test_sample_summary_navigates_and_distinguishes_incomplete_checks(window, qtbot, kind):
+    from suspensionlab.ui.analysis_dialog import AnalysisDialog
+    from suspensionlab.ui.antiroll_dialog import AntiRollDialog
+
+    window.controller.new_project("ring")
+    before = window.controller.project.to_dict()
+    dialog = AnalysisDialog(window.controller, window) if kind == "analysis" else AntiRollDialog(window.controller, window)
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog._from.setValue(-3)
+    dialog._to.setValue(3)
+    if kind == "antiroll":
+        dialog._axis_x.setText("-250")
+        dialog._axis_z.setText("320")
+        dialog._rate.setText("1000")
+        dialog._mode.setCurrentIndex(0)
+    dialog._run.click()
+    assert len(dialog._summary.groups) == 1 and dialog._summary.groups[0].first.status == "incomplete"
+    if kind == "analysis":
+        dialog._spring.setChecked(True)
+        dialog._damper.setChecked(True)
+    else:
+        dialog._show_spring.setChecked(True)
+        dialog._show_damper.setChecked(True)
+    dialog._spring_length.setValue(230)
+    dialog._coil_bind.setValue(230)
+    dialog._damper_min.setValue(350)
+    dialog._damper_max.setValue(450)
+    assert not dialog._summary.groups
+    dialog._run.click()
+    groups = dialog._summary.groups
+    assert len(groups) == 2 and groups[0].first.status == "checked" and groups[1].first.status == "conflict"
+    dialog._table.setCurrentCell(0, 0)
+    dialog._playback.toggle()
+    assert dialog._playback._timer.isActive()
+    dialog._view_tabs.setCurrentIndex(2)
+    assert not dialog._playback._timer.isActive()
+    dialog._summary._table.setCurrentCell(1, 0)
+    dialog._summary._first.click()
+    assert dialog._table.currentRow() == groups[1].first_row
+    dialog._summary._last.click()
+    assert dialog._table.currentRow() == groups[1].last_row and dialog._plot.row == groups[1].last_row
+    if kind == "antiroll":
+        assert groups[1].first.right_travel_mm is not None
+        assert dialog._summary._table.columnCount() == 6
+    assert window.controller.project.to_dict() == before
+    dialog._from.setValue(-2)
+    assert not dialog._summary.groups and dialog._summary._table.rowCount() == 0
+    assert not dialog._summary._first.isEnabled()
+
+
+def test_summary_widget_handles_empty_unavailable_and_incomplete(window, qtbot):
+    from suspensionlab.core.sample_summary import SampleCheck
+    from suspensionlab.ui.widgets.sample_summary import SampleSummary
+
+    view = SampleSummary(window, two_sides=True)
+    qtbot.addWidget(view)
+    points = (SampleCheck(-1, "incomplete", 1), SampleCheck(0, "unavailable", 0),
+              SampleCheck(1, "unavailable", -1))
+    view.set_samples(points)
+    assert len(view.groups) == 2 and view.groups[1].count == 2
+    assert "Нет решения" in view._table.item(1, 0).text()
+    assert view._table.item(1, 3).text() == "+0.00" and view._table.item(1, 4).text() == "-1.00"
+    selected = []
+    view.rowSelected.connect(selected.append)
+    view._table.setCurrentCell(1, 0)
+    view._first.click()
+    view._last.click()
+    assert selected == [1, 2]
+    view.set_samples(())
+    assert not view._first.isEnabled() and view._table.rowCount() == 0
+    with pytest.raises(ValueError):
+        view.set_samples((SampleCheck(0, "checked"),))
+
+
 def test_antiroll_dialog_input_validation_and_failure(window, qtbot, monkeypatch, caplog):
     from suspensionlab.core.antiroll import AntiRollPoint, AntiRollSweep
     from suspensionlab.ui import antiroll_dialog

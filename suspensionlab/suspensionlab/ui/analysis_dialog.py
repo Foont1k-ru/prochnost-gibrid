@@ -33,6 +33,7 @@ from ..core.analysis import analyze_corner
 from ..core.damper import LinearDamperCharacteristic, evaluate_linear_damping
 from ..core.double_wishbone import DoubleWishbone
 from ..core.pose_view import PoseView, pose_view
+from ..core.sample_summary import corner_summary
 from ..core.stroke import StrokeLimits
 from ..core.sweep import travel_grid
 from ..core.sweep_plot import PLOT_METRICS, sweep_plot_points
@@ -42,6 +43,7 @@ from .canvas.sweep_plot import SweepPlot
 from .controller import AppController
 from .table_export import make_plot_report, make_table_report, save_table_dialog
 from .widgets.playback import PlaybackControls
+from .widgets.sample_summary import SampleSummary
 
 LOG = logging.getLogger(__name__)
 
@@ -158,6 +160,9 @@ class AnalysisDialog(QDialog):
         self._view_tabs = QTabWidget(self)
         self._view_tabs.addTab(preview_container, tr("analysis.tab_pose"))
         self._view_tabs.addTab(plot_container, tr("analysis.tab_plot"))
+        self._summary = SampleSummary(self)
+        self._summary.rowSelected.connect(lambda row: self._table.setCurrentCell(row, 0))
+        self._view_tabs.addTab(self._summary, tr("summary.tab"))
         self._view_tabs.currentChanged.connect(self._playback.pause_for_view_change)
         self._split = QSplitter(Qt.Orientation.Horizontal, self)
         self._split.addWidget(self._table)
@@ -223,6 +228,7 @@ class AnalysisDialog(QDialog):
         self._cambers = []
         self._playback_reasons = []
         self._plot.set_points(())
+        self._summary.set_samples(())
         self._preview.clear()
         self._preview_status.setText(tr("analysis.preview_empty"))
         self._slider.setEnabled(False)
@@ -351,6 +357,7 @@ class AnalysisDialog(QDialog):
                 item = QTableWidgetItem(text)
                 item.setToolTip(text)
                 self._table.setItem(row, column, item)
+        self._summary.set_samples(corner_summary(result))
         if failures:
             first_error = next((point.error for point in result.sweep.points if point.error is not None), None)
             LOG.warning("Расчёт хода: нерешённых строк %d; первый отказ: %s", failures, first_error or "не указан")

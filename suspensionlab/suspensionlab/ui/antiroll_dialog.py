@@ -32,6 +32,7 @@ from ..core.antiroll import AntiRollPoint, AntiRollScenario, AntiRollStudy
 from ..core.combined_checks import ComponentCheckOptions, ComponentChecks, check_components
 from ..core.double_wishbone import DoubleWishbone
 from ..core.pose_view import PoseView, pose_view
+from ..core.sample_summary import antiroll_summary
 from ..core.stroke import StrokeLimits
 from ..core.sweep import travel_grid
 from ..core.sweep_plot import ANTIROLL_METRICS, antiroll_partner, antiroll_plot_points
@@ -43,6 +44,7 @@ from .canvas.sweep_plot import SweepPlot
 from .controller import AppController
 from .table_export import make_plot_report, make_table_report, save_table_dialog
 from .widgets.playback import PlaybackControls
+from .widgets.sample_summary import SampleSummary
 
 LOG = logging.getLogger(__name__)
 
@@ -173,6 +175,9 @@ class AntiRollDialog(QDialog):
         self._view_tabs = QTabWidget(self)
         self._view_tabs.addTab(preview_container, tr("analysis.tab_pose"))
         self._view_tabs.addTab(plot_container, tr("analysis.tab_plot"))
+        self._summary = SampleSummary(self, two_sides=True)
+        self._summary.rowSelected.connect(lambda row: self._table.setCurrentCell(row, 0))
+        self._view_tabs.addTab(self._summary, tr("summary.tab"))
         self._view_tabs.currentChanged.connect(self._playback.pause_for_view_change)
         self._split = QSplitter(Qt.Orientation.Horizontal, self)
         self._split.addWidget(self._table)
@@ -230,6 +235,7 @@ class AntiRollDialog(QDialog):
         self._suspensions = []
         self._checks = []
         self._plot.set_points(())
+        self._summary.set_samples(())
         self._preview.clear()
         self._preview_status.setText(tr("analysis.preview_empty"))
         self._slider.setEnabled(False)
@@ -332,6 +338,7 @@ class AntiRollDialog(QDialog):
                 item = QTableWidgetItem(value)
                 item.setToolTip(value)
                 self._table.setItem(row, column, item)
+        self._summary.set_samples(antiroll_summary(result.points, self._checks))
         if failures:
             first_error = next((point.error for point in result.points if point.error), None)
             LOG.warning("Расчёт стабилизатора: нерешённых строк %d; первый отказ: %s", failures, first_error or "не указан")
