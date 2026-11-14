@@ -22,6 +22,7 @@ from OCP.XCAFApp import XCAFApp_Application  # noqa: E402
 from OCP.XCAFDoc import XCAFDoc_DocumentTool  # noqa: E402
 
 from suspensionlab.core.cad_transport import CadJob  # noqa: E402
+from suspensionlab.core.cad_worker import create_mesh  # noqa: E402
 from suspensionlab.core.step_candidate import candidate_transforms  # noqa: E402
 from suspensionlab.core.step_inventory import read_step_inventory  # noqa: E402
 
@@ -67,6 +68,7 @@ def test_generated_step_nested_and_repeated_occurrences_against_cad(tmp_path):
     unicode_path = tmp_path / "испытание сборки.step"
     path.rename(unicode_path)
     path = unicode_path
+    create_mesh(path, 2.)  # Synthetic data: expose exceptions directly in CAD CI.
     mesh = CadJob().run(path, 2., timeout=90)
     assert mesh.face_count == 12 and len(mesh.triangles) >= 24
     bounds_points = []
