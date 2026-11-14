@@ -82,7 +82,9 @@ def test_generated_step_nested_and_repeated_occurrences_against_cad(tmp_path):
                 if occurrence.parent_definition == parent_occurrence.child_definition]
     assert len(children) == 2 and children[0].child_definition == children[1].child_definition
     candidates = {item.occurrence: item for item in candidate_transforms(result)}
-    assert all(item.status == "ready" and item.transform is not None for item in candidates.values())
+    assert all(item.status == "ready" and item.transform is not None for item in candidates.values()), (
+        f"candidates={candidates}; occurrences={result.occurrences}; frames={result.placement_frames}; units={result.context_units}"
+    )
     parent_candidate = candidates[parent_occurrence.entity].transform
     child_candidates = [candidates[occurrence.entity].transform for occurrence in children]
     assert parent_candidate is not None and all(c is not None for c in child_candidates)
