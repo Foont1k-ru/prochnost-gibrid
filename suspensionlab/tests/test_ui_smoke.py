@@ -681,6 +681,47 @@ def test_damper_source_provenance_csv_and_independent_edits(window, qtbot, monke
     assert tr("damper_conversion.report.compression_force") not in dict(dialog._report_parameters())
 
 
+def test_component_reference_shows_project_data_without_applying_it(window, qtbot):
+    from suspensionlab.ui.analysis_dialog import AnalysisDialog
+
+    controller = window.controller
+    controller.new_project("ring")
+    before = controller.project.to_dict()
+    dialog = AnalysisDialog(controller, window)
+    qtbot.addWidget(dialog)
+    dialog.show()
+    assert dialog._spring_project_hint.isHidden()
+    dialog._spring.setChecked(True)
+    assert "свободная длина 250.00 мм" in dialog._spring_project_hint.text()
+    assert "линейная жёсткость 95.00 Н/мм" in dialog._spring_project_hint.text()
+    assert "преднатяг проекта отдельно не добавляется" in dialog._spring_project_hint.text()
+    dialog._damper.setChecked(True)
+    text = dialog._spring_project_hint.text()
+    assert "сжатый 280.00 мм, разжатый 420.00 мм" in text
+    assert "только введённые выше длины" in text and "Коэффициенты силы также вводятся отдельно" in text
+    assert dialog._damper_min.value() == 0 and dialog._damper_max.value() == 0
+    assert controller.project.to_dict() == before
+    dialog._spring_length.setValue(230)
+    dialog._damper_min.setValue(300)
+    dialog._damper_max.setValue(450)
+    dialog._from.setValue(0)
+    dialog._to.setValue(0)
+    dialog._run.click()
+    assert dialog._table.rowCount() == 1
+    controller.set_value(controller.project.front.damper, "len_compressed_mm", 275)
+    assert dialog._table.rowCount() == 0
+    assert "сжатый 275.00 мм" in dialog._spring_project_hint.text()
+    assert dialog._damper_min.value() == 300 and dialog._damper_max.value() == 450
+    controller.set_value(controller.project.front.spring, "progressive", [(0.0, 0.0), (10.0, 500.0)])
+    assert "прогрессивная характеристика (точек: 2)" in dialog._spring_project_hint.text()
+    assert "линейная жёсткость 95.00 Н/мм не используется" in dialog._spring_project_hint.text()
+    dialog._spring.setChecked(False)
+    assert "Пружина из проекта" not in dialog._spring_project_hint.text()
+    assert "Амортизатор из проекта" in dialog._spring_project_hint.text()
+    dialog._damper.setChecked(False)
+    assert dialog._spring_project_hint.isHidden()
+
+
 def test_analysis_plot_uses_samples_and_tracks_table_selection(window, qtbot):
     from PySide6.QtCore import QPoint, Qt
 

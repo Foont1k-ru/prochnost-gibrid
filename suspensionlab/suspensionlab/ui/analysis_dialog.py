@@ -301,8 +301,19 @@ class AnalysisDialog(QDialog):
             field.setEnabled(self._damper.isChecked() and self._damping.isChecked())
         self._update_damping_source_hint()
         axle = self.controller.project.axle(str(self._role.currentData()))
-        self._spring_project_hint.setVisible(self._spring.isChecked())
-        self._spring_project_hint.setText(tr("analysis.spring_project_hint", free=f"{axle.spring.free_len_mm:.2f}"))
+        component_hints = []
+        if self._spring.isChecked():
+            spring = axle.spring
+            characteristic = (tr("analysis.spring_project_curve", count=len(spring.progressive), rate=f"{spring.rate_N_mm:.2f}")
+                              if spring.progressive else tr("analysis.spring_project_linear", rate=f"{spring.rate_N_mm:.2f}"))
+            component_hints.append(tr("analysis.spring_project_hint", free=f"{spring.free_len_mm:.2f}",
+                                      characteristic=characteristic))
+        if self._damper.isChecked():
+            damper = axle.damper
+            component_hints.append(tr("analysis.damper_project_hint", compressed=f"{damper.len_compressed_mm:.2f}",
+                                      extended=f"{damper.len_extended_mm:.2f}"))
+        self._spring_project_hint.setVisible(bool(component_hints))
+        self._spring_project_hint.setText("\n".join(component_hints))
         supported = axle.type_code == "double_wishbone"
         self._run.setEnabled(supported)
         self._static_button.setEnabled(supported)
