@@ -44,6 +44,7 @@ from ..i18n import tr
 from .analysis_explanation import explain_corner_sample, explain_static_sample
 from .canvas.pose_preview import PosePreview
 from .canvas.sweep_plot import SweepPlot
+from .component_transfer import transferable_damper_lengths
 from .controller import AppController
 from .damper_conversion_dialog import MAX_DAMPING_COEFFICIENT, DamperConversionDialog
 from .table_export import make_plot_report, make_report, make_table_report, save_table_dialog
@@ -111,6 +112,10 @@ class AnalysisDialog(QDialog):
         damper.addRow(self._damper)
         damper.addRow(tr("analysis.damper_min"), self._damper_min)
         damper.addRow(tr("analysis.damper_max"), self._damper_max)
+        self._copy_damper = QPushButton(tr("analysis.copy_damper.button"), self)
+        self._copy_damper.setToolTip(tr("analysis.copy_damper.tip"))
+        self._copy_damper.clicked.connect(self._copy_project_damper)
+        damper.addRow(self._copy_damper)
         fields.addLayout(geometry)
         fields.addLayout(spring)
         fields.addLayout(damper)
@@ -315,9 +320,64 @@ class AnalysisDialog(QDialog):
         self._spring_project_hint.setVisible(bool(component_hints))
         self._spring_project_hint.setText("\n".join(component_hints))
         supported = axle.type_code == "double_wishbone"
+        self._copy_damper.setEnabled(supported and self._damper.isChecked())
         self._run.setEnabled(supported)
         self._static_button.setEnabled(supported)
         self._status.setText(tr("analysis.ready" if supported else "analysis.unsupported"))
+
+    def _copy_project_damper(self) -> None:
+        role = str(self._role.currentData())
+        project = self.controller.project
+        axle = project.axle(role)
+        if not self._damper.isChecked() or axle.type_code != "double_wishbone":
+            return
+        try:
+            compressed, extended = transferable_damper_lengths(
+                axle.damper.len_compressed_mm, axle.damper.len_extended_mm,
+                minimum=max(self._damper_min.minimum(), self._damper_max.minimum()),
+                maximum=min(self._damper_min.maximum(), self._damper_max.maximum()),
+                decimals=min(self._damper_min.decimals(), self._damper_max.decimals()),
+            )
+        except ValueError as error:
+            QMessageBox.warning(self, tr("analysis.copy_damper.title"), str(error))
+            return
+        old = (self._damper_min.value(), self._damper_max.value())
+        changed = [False]
+        def mark_changed(*_args: object) -> None:
+            changed[0] = True
+        signals = (self.controller.modelChanged, self.controller.projectReplaced, self._role.currentIndexChanged,
+                   self._side.currentIndexChanged, self._damper.toggled, self._damper_min.valueChanged,
+                   self._damper_max.valueChanged)
+        for signal in signals:
+            signal.connect(mark_changed)
+        try:
+            answer = QMessageBox.question(
+                self, tr("analysis.copy_damper.title"),
+                tr("analysis.copy_damper.confirm", axis=self._role.currentText(),
+                   compressed=repr(compressed), extended=repr(extended),
+                   old_compressed=repr(old[0]), old_extended=repr(old[1])),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No,
+            )
+        finally:
+            for signal in signals:
+                signal.disconnect(mark_changed)
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        if (changed[0] or self.controller.project is not project or str(self._role.currentData()) != role
+                or not self._damper.isChecked() or axle.type_code != "double_wishbone"
+                or (axle.damper.len_compressed_mm, axle.damper.len_extended_mm) != (compressed, extended)
+                or (self._damper_min.value(), self._damper_max.value()) != old):
+            QMessageBox.warning(self, tr("analysis.copy_damper.title"), tr("analysis.copy_damper.changed"))
+            return
+        fields = (self._damper_min, self._damper_max)
+        blocked = [field.blockSignals(True) for field in fields]
+        try:
+            self._damper_min.setValue(compressed)
+            self._damper_max.setValue(extended)
+        finally:
+            for field, previous in zip(fields, blocked, strict=True):
+                field.blockSignals(previous)
+        self._invalidate()
 
     def _forget_damping_source(self, direction: str) -> None:
         if not self._setting_damping_sources:

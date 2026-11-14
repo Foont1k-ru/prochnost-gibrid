@@ -722,6 +722,83 @@ def test_component_reference_shows_project_data_without_applying_it(window, qtbo
     assert dialog._spring_project_hint.isHidden()
 
 
+def test_copy_damper_limits_requires_confirmation_and_invalidates_results(window, qtbot, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    from suspensionlab.ui.analysis_dialog import AnalysisDialog
+
+    controller = window.controller
+    controller.new_project("ring")
+    before = controller.project.to_dict()
+    dialog = AnalysisDialog(controller, window)
+    qtbot.addWidget(dialog)
+    assert not dialog._copy_damper.isEnabled()
+    dialog._damper.setChecked(True)
+    assert dialog._copy_damper.isEnabled()
+    dialog._damper_min.setValue(200)
+    dialog._damper_max.setValue(350)
+    dialog._from.setValue(0)
+    dialog._to.setValue(0)
+    dialog._run.click()
+    dialog._static_button.click()
+    assert dialog._table.rowCount() == 1 and dialog._static_export.isEnabled()
+    seen = []
+    def answer_no(*args):
+        seen.append(args)
+        return QMessageBox.StandardButton.No
+    monkeypatch.setattr(QMessageBox, "question", answer_no)
+    dialog._copy_damper.click()
+    assert (dialog._damper_min.value(), dialog._damper_max.value()) == (200, 350)
+    assert dialog._table.rowCount() == 1 and dialog._static_export.isEnabled()
+    assert seen[0][-1] == QMessageBox.StandardButton.No
+    assert "280.0 мм" in seen[0][2] and "420.0 мм" in seen[0][2]
+    monkeypatch.setattr(QMessageBox, "question", lambda *args: QMessageBox.StandardButton.Yes)
+    dialog._copy_damper.click()
+    assert (dialog._damper_min.value(), dialog._damper_max.value()) == (280, 420)
+    assert dialog._table.rowCount() == 0 and not dialog._static_export.isEnabled()
+    assert controller.project.to_dict() == before
+    dialog._run.click()
+    assert dialog._table.rowCount() == 1 and "Между заданными упорами" in dialog._table.item(0, 8).text()
+    assert dict(dialog._report_parameters())["Длина разжатого, мм (0 — неизвестна)"] == "420.0"
+    dialog._role.setCurrentIndex(1)
+    assert not dialog._copy_damper.isEnabled()
+
+
+def test_copy_damper_rejects_bad_data_and_changes_during_confirmation(window, qtbot, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    from suspensionlab.ui.analysis_dialog import AnalysisDialog
+
+    controller = window.controller
+    controller.new_project("ring")
+    dialog = AnalysisDialog(controller, window)
+    qtbot.addWidget(dialog)
+    dialog._damper.setChecked(True)
+    dialog._damper_min.setValue(205)
+    dialog._damper_max.setValue(325)
+    errors = []
+    questions = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda *args: errors.append(args[2]))
+    monkeypatch.setattr(QMessageBox, "question", lambda *args: questions.append(args))
+    damper = controller.project.front.damper
+    for a, b in ((0, 420), (500, 420), (280, 2000.1), (280.04, 420)):
+        controller.set_value(damper, "len_compressed_mm", a)
+        controller.set_value(damper, "len_extended_mm", b)
+        dialog._copy_damper.click()
+        assert (dialog._damper_min.value(), dialog._damper_max.value()) == (205, 325)
+    assert len(errors) == 4 and not questions
+    assert "округления" in errors[-1]
+    controller.set_value(damper, "len_compressed_mm", 280)
+    controller.set_value(damper, "len_extended_mm", 420)
+    def changed_during_confirm(*args):
+        controller.set_value(damper, "len_compressed_mm", 290)
+        return QMessageBox.StandardButton.Yes
+    monkeypatch.setattr(QMessageBox, "question", changed_during_confirm)
+    dialog._copy_damper.click()
+    assert (dialog._damper_min.value(), dialog._damper_max.value()) == (205, 325)
+    assert "изменились во время подтверждения" in errors[-1]
+
+
 def test_analysis_plot_uses_samples_and_tracks_table_selection(window, qtbot):
     from PySide6.QtCore import QPoint, Qt
 
