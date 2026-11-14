@@ -26,7 +26,7 @@ def spreadsheet_safe(value: str) -> str:
 
 @dataclass(frozen=True)
 class CSVReport:
-    """Заголовки и значения в той же округлённой форме, что видит пользователь."""
+    """Заголовки, метаданные и подготовленные текстовые значения отчёта."""
 
     metadata: tuple[tuple[str, str], ...]
     columns: tuple[str, ...]

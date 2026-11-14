@@ -9,7 +9,9 @@ from pathlib import Path
 from PySide6.QtWidgets import QFileDialog, QMessageBox, QTableWidget, QTableWidgetItem, QWidget
 
 from .. import __version__
+from ..core.sweep_plot import PlotPoint
 from ..export.csv_report import CSVReport, write_csv_report
+from ..export.plot_report import plot_report_rows
 from ..i18n import tr
 from .controller import AppController
 
@@ -52,6 +54,36 @@ def make_table_report(controller: AppController, table: QTableWidget, kind: str,
     rows = tuple(tuple(text(table.item(row, col)) for col in range(table.columnCount()))
                  for row in range(table.rowCount()))
     return make_report(controller, kind, parameters, columns, rows)
+
+
+def make_plot_report(
+    controller: AppController,
+    table: QTableWidget,
+    kind: str,
+    parameters: list[tuple[str, str]],
+    points: tuple[PlotPoint, ...],
+    metric_labels: tuple[str, ...],
+    travel_label: str,
+    state_columns: tuple[int, ...],
+    extra: tuple[tuple[str, tuple[str, ...]], ...] = (),
+) -> CSVReport:
+    """Неокруглённые данные всех графиков и соответствующие состояния таблицы."""
+    count = table.rowCount()
+    if (len(points) != count or any(len(values) != count for _, values in extra)
+            or any(col < 0 or col >= table.columnCount() for col in state_columns)):
+        raise ValueError(tr("export.no_results"))
+    headers = [table.horizontalHeaderItem(col) for col in state_columns]
+    if any(header is None for header in headers):
+        raise ValueError(tr("export.no_results"))
+    context_labels = tuple(label for label, _ in extra) + tuple(header.text() for header in headers if header is not None)
+    contexts = []
+    for row in range(count):
+        states = [table.item(row, col) for col in state_columns]
+        if any(state is None for state in states):
+            raise ValueError(tr("export.no_results"))
+        contexts.append(tuple(values[row] for _, values in extra) + tuple(state.text() for state in states if state is not None))
+    columns, rows = plot_report_rows(points, travel_label, metric_labels, context_labels, tuple(contexts))
+    return make_report(controller, kind, parameters, columns, rows, precision_text=tr("export.plot_precision"))
 
 
 def save_table_dialog(parent: QWidget, report: CSVReport) -> None:

@@ -40,7 +40,7 @@ from ..i18n import tr
 from .canvas.pose_preview import PosePreview
 from .canvas.sweep_plot import SweepPlot
 from .controller import AppController
-from .table_export import make_table_report, save_table_dialog
+from .table_export import make_plot_report, make_table_report, save_table_dialog
 from .widgets.playback import PlaybackControls
 
 LOG = logging.getLogger(__name__)
@@ -152,6 +152,9 @@ class AnalysisDialog(QDialog):
         plot_layout.addWidget(self._plot, 1)
         plot_layout.addWidget(plot_selection)
         plot_layout.addWidget(plot_notice)
+        self._plot_export_button = QPushButton(tr("export.plot_button"), self)
+        self._plot_export_button.clicked.connect(self._export_plot)
+        plot_layout.addWidget(self._plot_export_button)
         self._view_tabs = QTabWidget(self)
         self._view_tabs.addTab(preview_container, tr("analysis.tab_pose"))
         self._view_tabs.addTab(plot_container, tr("analysis.tab_plot"))
@@ -215,6 +218,7 @@ class AnalysisDialog(QDialog):
     def _clear_results(self) -> None:
         self._playback.set_count(0)
         self._export_button.setEnabled(False)
+        self._plot_export_button.setEnabled(False)
         self._frames = []
         self._cambers = []
         self._playback_reasons = []
@@ -352,6 +356,7 @@ class AnalysisDialog(QDialog):
             LOG.warning("Расчёт хода: нерешённых строк %d; первый отказ: %s", failures, first_error or "не указан")
         self._status.setText(tr("analysis.complete", count=len(travels), failures=failures))
         self._export_button.setEnabled(bool(travels))
+        self._plot_export_button.setEnabled(bool(travels))
         if travels:
             self._playback.set_count(len(travels))
             self._slider.setRange(0, len(travels) - 1)
@@ -410,6 +415,20 @@ class AnalysisDialog(QDialog):
         self._playback.stop(tr("playback.paused"))
         try:
             report = make_table_report(self.controller, self._table, tr("analysis.title"), self._report_parameters())
+        except (ValueError, UnicodeError) as error:
+            QMessageBox.warning(self, tr("export.error_title"), tr("export.error", reason=str(error)))
+            return
+        save_table_dialog(self, report)
+
+    def _export_plot(self) -> None:
+        self._playback.stop(tr("playback.paused"))
+        try:
+            report = make_plot_report(
+                self.controller, self._table, tr("export.plot_kind", kind=tr("analysis.title")),
+                [*self._report_parameters(), (tr("export.plot_selected"), self._plot_metric.currentText())],
+                self._plot.points, tuple(tr(f"analysis.column.{key}") for key in PLOT_METRICS),
+                tr("analysis.column.travel"), (8,),
+            )
         except (ValueError, UnicodeError) as error:
             QMessageBox.warning(self, tr("export.error_title"), tr("export.error", reason=str(error)))
             return

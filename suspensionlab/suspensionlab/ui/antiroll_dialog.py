@@ -35,12 +35,13 @@ from ..core.pose_view import PoseView, pose_view
 from ..core.stroke import StrokeLimits
 from ..core.sweep import travel_grid
 from ..core.sweep_plot import ANTIROLL_METRICS, antiroll_plot_points
+from ..export.plot_report import plot_number
 from ..i18n import tr
 from .analysis_dialog import AnalysisDialog
 from .canvas.antiroll_preview import AntiRollPreview
 from .canvas.sweep_plot import SweepPlot
 from .controller import AppController
-from .table_export import make_table_report, save_table_dialog
+from .table_export import make_plot_report, make_table_report, save_table_dialog
 from .widgets.playback import PlaybackControls
 
 LOG = logging.getLogger(__name__)
@@ -158,6 +159,9 @@ class AntiRollDialog(QDialog):
         plot_layout.addWidget(self._plot, 1)
         plot_layout.addWidget(plot_selection)
         plot_layout.addWidget(plot_notice)
+        self._plot_export_button = QPushButton(tr("export.plot_button"), self)
+        self._plot_export_button.clicked.connect(self._export_plot)
+        plot_layout.addWidget(self._plot_export_button)
         self._view_tabs = QTabWidget(self)
         self._view_tabs.addTab(preview_container, tr("analysis.tab_pose"))
         self._view_tabs.addTab(plot_container, tr("analysis.tab_plot"))
@@ -213,6 +217,7 @@ class AntiRollDialog(QDialog):
     def _clear_results(self) -> None:
         self._playback.set_count(0)
         self._export_button.setEnabled(False)
+        self._plot_export_button.setEnabled(False)
         self._points = ()
         self._suspensions = []
         self._checks = []
@@ -324,6 +329,7 @@ class AntiRollDialog(QDialog):
             LOG.warning("Расчёт стабилизатора: нерешённых строк %d; первый отказ: %s", failures, first_error or "не указан")
         self._status.setText(tr("analysis.complete", count=len(result.points), failures=failures))
         self._export_button.setEnabled(bool(result.points))
+        self._plot_export_button.setEnabled(bool(result.points))
         if result.points:
             self._playback.set_count(len(result.points))
             self._slider.setRange(0, len(result.points) - 1)
@@ -409,6 +415,22 @@ class AntiRollDialog(QDialog):
         self._playback.stop(tr("playback.paused"))
         try:
             report = make_table_report(self.controller, self._table, tr("antiroll_ui.title"), self._report_parameters())
+        except (ValueError, UnicodeError) as error:
+            QMessageBox.warning(self, tr("export.error_title"), tr("export.error", reason=str(error)))
+            return
+        save_table_dialog(self, report)
+
+    def _export_plot(self) -> None:
+        self._playback.stop(tr("playback.paused"))
+        try:
+            right_travels = tuple(plot_number(point.right_travel_mm) for point in self._points)
+            report = make_plot_report(
+                self.controller, self._table, tr("export.plot_kind", kind=tr("antiroll_ui.title")),
+                [*self._report_parameters(), (tr("export.plot_selected"), self._plot_metric.currentText())],
+                self._plot.points, tuple(tr(f"antiroll_ui.column.{key}") for key in ANTIROLL_METRICS),
+                tr("antiroll_ui.column.left_travel"), (12, 14, 16),
+                ((tr("antiroll_ui.column.right_travel"), right_travels),),
+            )
         except (ValueError, UnicodeError) as error:
             QMessageBox.warning(self, tr("export.error_title"), tr("export.error", reason=str(error)))
             return

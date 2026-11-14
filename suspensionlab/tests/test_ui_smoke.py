@@ -383,6 +383,88 @@ def test_sweep_plot_with_gap_conflict_and_unreachable_row(window, qtbot):
     assert not plot.grab().isNull()
 
 
+@pytest.mark.parametrize("kind", ["analysis", "antiroll"])
+def test_graph_csv_exports_all_raw_values_states_and_invalidates(window, qtbot, tmp_path, monkeypatch, kind):
+    import csv
+
+    from suspensionlab.ui import table_export
+    from suspensionlab.ui.analysis_dialog import AnalysisDialog
+    from suspensionlab.ui.antiroll_dialog import AntiRollDialog
+
+    window.controller.new_project("ring")
+    before = window.controller.project.to_dict()
+    dialog = AnalysisDialog(window.controller, window) if kind == "analysis" else AntiRollDialog(window.controller, window)
+    qtbot.addWidget(dialog)
+    dialog._from.setValue(-1)
+    dialog._to.setValue(1)
+    if kind == "analysis":
+        dialog._spring.setChecked(True)
+        dialog._spring_length.setValue(230)
+        dialog._coil_bind.setValue(231)
+    else:
+        dialog._axis_x.setText("-250")
+        dialog._axis_z.setText("320")
+        dialog._rate.setText("1000")
+        dialog._show_spring.setChecked(True)
+        dialog._spring_length.setValue(230)
+        dialog._coil_bind.setValue(231)
+    assert not dialog._plot_export_button.isEnabled()
+    dialog._run.click()
+    assert dialog._plot_export_button.isEnabled() and dialog._plot.points[1].conflict
+    dialog._plot_metric.setCurrentIndex(0)
+    target = tmp_path / kind
+    monkeypatch.setattr(table_export.QFileDialog, "getSaveFileName", lambda *args: (str(target), ""))
+    dialog._plot_export_button.click()
+    with target.with_suffix(".csv").open(encoding="utf-8-sig", newline="") as handle:
+        records = list(csv.reader(handle, delimiter=";"))
+    index = records.index([])
+    columns, rows = records[index + 1], records[index + 2:]
+    assert len(rows) == 3 and len(columns) == len(rows[1])
+    assert float(rows[1][1]) == dialog._plot.points[1].values[0]
+    conflict_col = columns.index("Обнаруженный конфликт элемента")
+    assert rows[1][conflict_col] == "да"
+    if kind == "analysis":
+        clearance = columns.index("Запас до смыкания пружины, мм")
+        assert float(rows[1][clearance]) == pytest.approx(-1)
+    else:
+        clearance = columns.index("Запас до смыкания пружины П, мм")
+        assert float(rows[1][clearance]) == pytest.approx(-1)
+        assert float(rows[0][columns.index("Ход П, мм")]) == 1
+    assert any("не подтверждает безопасность" in field for record in records[:index] for field in record)
+    assert window.controller.project.to_dict() == before
+    dialog._from.setValue(0)
+    assert not dialog._plot_export_button.isEnabled() and not dialog._plot.points
+
+
+@pytest.mark.parametrize("kind", ["analysis", "antiroll"])
+def test_graph_csv_cancel_and_inconsistent_data_do_not_write(window, qtbot, tmp_path, monkeypatch, kind):
+    from suspensionlab.ui import table_export
+    from suspensionlab.ui.analysis_dialog import AnalysisDialog
+    from suspensionlab.ui.antiroll_dialog import AntiRollDialog
+
+    window.controller.new_project("ring")
+    dialog = AnalysisDialog(window.controller, window) if kind == "analysis" else AntiRollDialog(window.controller, window)
+    qtbot.addWidget(dialog)
+    dialog._from.setValue(0)
+    dialog._to.setValue(0)
+    if kind == "antiroll":
+        dialog._axis_x.setText("-250")
+        dialog._axis_z.setText("320")
+        dialog._rate.setText("1000")
+    dialog._run.click()
+    target = tmp_path / "existing.csv"
+    target.write_text("старые данные", encoding="utf-8")
+    monkeypatch.setattr(table_export.QFileDialog, "getSaveFileName", lambda *args: ("", ""))
+    dialog._export_plot()
+    assert target.read_text(encoding="utf-8") == "старые данные"
+    alerts = []
+    monkeypatch.setattr(table_export.QFileDialog, "getSaveFileName", lambda *args: (str(target), ""))
+    monkeypatch.setattr(table_export.QMessageBox, "warning", lambda *args: alerts.append(args))
+    dialog._table.takeItem(0, 8 if kind == "analysis" else 12)
+    dialog._export_plot()
+    assert alerts and target.read_text(encoding="utf-8") == "старые данные"
+
+
 def test_analysis_dialog_rejects_incomplete_inputs_and_clears_old_results(window, qtbot):
     from suspensionlab.ui.analysis_dialog import AnalysisDialog
 
