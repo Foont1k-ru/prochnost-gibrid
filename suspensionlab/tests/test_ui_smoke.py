@@ -429,7 +429,7 @@ def test_analysis_static_check_independent_and_invalidated(window, qtbot):
     before = controller.project.to_dict()
     dialog._static_button.click()
     text = dialog._static_explanation.toPlainText()
-    assert dialog._view_tabs.currentWidget() is dialog._static_explanation
+    assert dialog._view_tabs.currentWidget() is dialog._static_view
     assert "ходе колеса 0 мм" in text
     assert "419.76 мм" in text and "-99.76 мм" in text
     assert "394.27 мм" in text and "-69.27 мм" in text and "превышен упор отбоя" in text
@@ -479,6 +479,61 @@ def test_analysis_static_check_validation_and_no_damping_calculation(window, qtb
     dialog._damper_min.setValue(0)
     dialog._static_button.click()
     assert "Упоры амортизатора не заданы" in dialog._static_explanation.toPlainText()
+
+
+def test_static_csv_export_snapshot_and_invalidation(window, qtbot, monkeypatch, tmp_path):
+    import csv
+
+    from suspensionlab.export.csv_report import write_csv_report
+    from suspensionlab.i18n import tr
+    from suspensionlab.ui import analysis_dialog
+
+    controller = window.controller
+    controller.new_project("ring")
+    controller.set_value(controller.project.meta, "name", "=untrusted")
+    dialog = analysis_dialog.AnalysisDialog(controller, window)
+    qtbot.addWidget(dialog)
+    dialog._spring.setChecked(True)
+    dialog._spring_length.setValue(320)
+    dialog._coil_bind.setValue(115)
+    dialog._damper.setChecked(True)
+    dialog._damper_min.setValue(205)
+    dialog._damper_max.setValue(325)
+    dialog._damping.setChecked(True)  # Сила демпфирования для этого отчёта не считается.
+    assert not dialog._static_export.isEnabled()
+    before = controller.project.to_dict()
+    dialog._static_button.click()
+    assert dialog._static_export.isEnabled()
+    reports = []
+    monkeypatch.setattr(analysis_dialog, "save_table_dialog", lambda parent, report: reports.append(report))
+    dialog._static_export.click()
+    assert len(reports) == 1
+    report = reports[0]
+    meta = dict(report.metadata)
+    assert meta[tr("analysis.report_free")] == "250.0"
+    assert meta[tr("analysis.damper_max")] == "325.0"
+    assert "0 мм" in meta[tr("analysis.static.report.scope_label")]
+    assert tr("analysis.damping_enable") not in meta and tr("analysis.from") not in meta
+    assert "правая сторона зеркальна" in meta[tr("analysis.static.report.coordinates_label")]
+    rows = {row[0]: row for row in report.rows}
+    length = float(rows[tr("analysis.static.report.metric.damper_length")][1])
+    assert length == pytest.approx(394.27, abs=0.005)
+    assert float(rows[tr("analysis.static.report.metric.damper_extension_clearance")][1]) == pytest.approx(325 - length)
+    target = write_csv_report(report, tmp_path / "static.csv")
+    with target.open(encoding="utf-8-sig", newline="") as f:
+        saved = list(csv.reader(f, delimiter=";"))
+    assert any(len(row) > 1 and row[0] == tr("export.project_name") and row[1] == "'=untrusted" for row in saved)
+    assert controller.project.to_dict() == before
+    dialog._spring_length.setValue(230)
+    assert not dialog._static_export.isEnabled() and dialog._static_report is None
+    dialog._static_button.click()
+    assert dialog._static_export.isEnabled()
+    def fail(*args, **kwargs):
+        raise ValueError("failed for test")
+    monkeypatch.setattr(analysis_dialog, "analyze_corner", fail)
+    dialog._static_button.click()
+    assert not dialog._static_export.isEnabled() and dialog._static_report is None
+    assert "failed for test" in dialog._static_explanation.toPlainText()
 
 
 def test_analysis_plot_uses_samples_and_tracks_table_selection(window, qtbot):

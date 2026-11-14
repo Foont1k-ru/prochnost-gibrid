@@ -38,12 +38,14 @@ from ..core.sample_summary import corner_summary
 from ..core.stroke import StrokeLimits
 from ..core.sweep import travel_grid
 from ..core.sweep_plot import PLOT_METRICS, sweep_plot_points
+from ..export.csv_report import CSVReport
+from ..export.static_report import static_report_rows
 from ..i18n import tr
 from .analysis_explanation import explain_corner_sample, explain_static_sample
 from .canvas.pose_preview import PosePreview
 from .canvas.sweep_plot import SweepPlot
 from .controller import AppController
-from .table_export import make_plot_report, make_table_report, save_table_dialog
+from .table_export import make_plot_report, make_report, make_table_report, save_table_dialog
 from .widgets.playback import PlaybackControls
 from .widgets.sample_summary import SampleSummary
 
@@ -177,7 +179,16 @@ class AnalysisDialog(QDialog):
         self._view_tabs.addTab(self._explanation, tr("analysis.tab_explain"))
         self._static_explanation = QTextEdit(self)
         self._static_explanation.setReadOnly(True)
-        self._view_tabs.addTab(self._static_explanation, tr("analysis.static.tab"))
+        self._static_report: CSVReport | None = None
+        self._static_export = QPushButton(tr("analysis.static.report.button"), self)
+        self._static_export.setEnabled(False)
+        self._static_export.clicked.connect(self._export_static)
+        self._static_view = QWidget(self)
+        static_layout = QVBoxLayout(self._static_view)
+        static_layout.setContentsMargins(0, 0, 0, 0)
+        static_layout.addWidget(self._static_explanation, 1)
+        static_layout.addWidget(self._static_export)
+        self._view_tabs.addTab(self._static_view, tr("analysis.static.tab"))
         self._view_tabs.currentChanged.connect(self._playback.pause_for_view_change)
         self._split = QSplitter(Qt.Orientation.Horizontal, self)
         self._split.addWidget(self._table)
@@ -263,6 +274,8 @@ class AnalysisDialog(QDialog):
     def _invalidate(self, *_args: object) -> None:
         self._clear_results()
         self._static_explanation.setPlainText(tr("analysis.static.empty"))
+        self._static_report = None
+        self._static_export.setEnabled(False)
         self._spring_length.setEnabled(self._spring.isChecked())
         self._coil_bind.setEnabled(self._spring.isChecked())
         self._damper_min.setEnabled(self._damper.isChecked())
@@ -292,7 +305,9 @@ class AnalysisDialog(QDialog):
         return static_length, coil_bind, limits
 
     def _check_static(self) -> None:
-        self._view_tabs.setCurrentWidget(self._static_explanation)
+        self._view_tabs.setCurrentWidget(self._static_view)
+        self._static_report = None
+        self._static_export.setEnabled(False)
         axle = self.controller.project.axle(str(self._role.currentData()))
         if axle.type_code != "double_wishbone":
             self._static_explanation.setPlainText(tr("analysis.unsupported"))
@@ -312,7 +327,26 @@ class AnalysisDialog(QDialog):
             self._static_explanation.setPlainText(tr("analysis.static.error", reason=str(error)))
             return
         heading = tr("analysis.static.context", axis=self._role.currentText(), side=self._side.currentText())
+        sample = result.samples[0]
+        if sample is not None:
+            try:
+                columns, rows = static_report_rows(sample, axle, side)
+                omitted = {tr(f"analysis.{key}") for key in (
+                    "from", "to", "step", "damping_enable", "velocity", "compression", "rebound")}
+                parameters = [(key, value) for key, value in self._report_parameters() if key not in omitted]
+                parameters.extend(((tr("analysis.static.report.scope_label"), tr("analysis.static.scope")),
+                                   (tr("analysis.static.report.coordinates_label"), tr("analysis.static.report.coordinates"))))
+                self._static_report = make_report(self.controller, tr("analysis.static.report.kind"), parameters,
+                                                  columns, rows, precision_text=tr("analysis.static.report.precision"))
+                self._static_export.setEnabled(True)
+            except (ValueError, ArithmeticError, UnicodeError) as error:
+                LOG.warning("Отчёт статики недоступен: %s", error)
+                text += "\n\n" + tr("analysis.static.report.unavailable", reason=str(error))
         self._static_explanation.setPlainText(f"{heading}\n\n{text}")
+
+    def _export_static(self) -> None:
+        if self._static_report is not None:
+            save_table_dialog(self, self._static_report)
 
     def _calculate(self) -> None:
         self._clear_results()
