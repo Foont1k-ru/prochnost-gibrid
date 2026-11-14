@@ -410,6 +410,77 @@ def test_analysis_explanation_unsolved_and_progressive_metadata(window, qtbot, m
     assert "выберите строку" in dialog._explanation.toPlainText() and not dialog._run.isEnabled()
 
 
+def test_analysis_static_check_independent_and_invalidated(window, qtbot):
+    from suspensionlab.ui.analysis_dialog import AnalysisDialog
+
+    controller = window.controller
+    controller.new_project("ring")
+    dialog = AnalysisDialog(controller, window)
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog._from.setValue(10)
+    dialog._to.setValue(11)
+    dialog._spring.setChecked(True)
+    dialog._spring_length.setValue(320)
+    dialog._coil_bind.setValue(115)
+    dialog._damper.setChecked(True)
+    dialog._damper_min.setValue(205)
+    dialog._damper_max.setValue(325)
+    before = controller.project.to_dict()
+    dialog._static_button.click()
+    text = dialog._static_explanation.toPlainText()
+    assert dialog._view_tabs.currentWidget() is dialog._static_explanation
+    assert "ходе колеса 0 мм" in text
+    assert "419.76 мм" in text and "-99.76 мм" in text
+    assert "394.27 мм" in text and "-69.27 мм" in text and "превышен упор отбоя" in text
+    assert dialog._table.rowCount() == 0 and not dialog._export_button.isEnabled()
+    assert controller.project.to_dict() == before
+    dialog._run.click()
+    assert dialog._table.rowCount() == 2 and dialog._export_button.isEnabled()
+    assert dialog._static_explanation.toPlainText() == text
+    dialog._static_button.click()
+    assert dialog._table.rowCount() == 2 and dialog._export_button.isEnabled()
+    dialog._side.setCurrentIndex(1)
+    assert dialog._table.rowCount() == 0 and "нажмите «Проверить статику»" in dialog._static_explanation.toPlainText()
+    dialog._static_button.click()
+    assert "сторона: правый" in dialog._static_explanation.toPlainText()
+    controller.set_value(controller.project.front.spring, "free_len_mm", 340)
+    assert "нажмите «Проверить статику»" in dialog._static_explanation.toPlainText()
+    dialog._static_button.click()
+    assert "Пружина сжата" in dialog._static_explanation.toPlainText()
+    dialog._role.setCurrentIndex(1)
+    assert not dialog._static_button.isEnabled()
+
+
+def test_analysis_static_check_validation_and_no_damping_calculation(window, qtbot):
+    from suspensionlab.ui.analysis_dialog import AnalysisDialog
+
+    window.controller.new_project("ring")
+    dialog = AnalysisDialog(window.controller, window)
+    qtbot.addWidget(dialog)
+    dialog._spring.setChecked(True)
+    dialog._static_button.click()
+    assert "Статика не рассчитана" in dialog._static_explanation.toPlainText()
+    assert "длину пружины" in dialog._static_explanation.toPlainText()
+    dialog._spring_length.setValue(230)
+    dialog._damper.setChecked(True)
+    dialog._damper_min.setValue(300)
+    dialog._static_button.click()
+    assert "оба предела" in dialog._static_explanation.toPlainText()
+    dialog._damper_max.setValue(500)
+    dialog._damping.setChecked(True)
+    dialog._static_button.click()
+    assert "демпфирование не рассчитываются" in dialog._static_explanation.toPlainText()
+    assert "Пружина сжата" in dialog._static_explanation.toPlainText()
+    dialog._run.click()
+    assert "введите скорость" in dialog._status.text()
+    assert "Пружина сжата" in dialog._static_explanation.toPlainText()
+    dialog._damper_max.setValue(0)
+    dialog._damper_min.setValue(0)
+    dialog._static_button.click()
+    assert "Упоры амортизатора не заданы" in dialog._static_explanation.toPlainText()
+
+
 def test_analysis_plot_uses_samples_and_tracks_table_selection(window, qtbot):
     from PySide6.QtCore import QPoint, Qt
 

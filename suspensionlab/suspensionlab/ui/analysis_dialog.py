@@ -39,7 +39,7 @@ from ..core.stroke import StrokeLimits
 from ..core.sweep import travel_grid
 from ..core.sweep_plot import PLOT_METRICS, sweep_plot_points
 from ..i18n import tr
-from .analysis_explanation import explain_corner_sample
+from .analysis_explanation import explain_corner_sample, explain_static_sample
 from .canvas.pose_preview import PosePreview
 from .canvas.sweep_plot import SweepPlot
 from .controller import AppController
@@ -175,6 +175,9 @@ class AnalysisDialog(QDialog):
         self._explanation = QTextEdit(self)
         self._explanation.setReadOnly(True)
         self._view_tabs.addTab(self._explanation, tr("analysis.tab_explain"))
+        self._static_explanation = QTextEdit(self)
+        self._static_explanation.setReadOnly(True)
+        self._view_tabs.addTab(self._static_explanation, tr("analysis.static.tab"))
         self._view_tabs.currentChanged.connect(self._playback.pause_for_view_change)
         self._split = QSplitter(Qt.Orientation.Horizontal, self)
         self._split.addWidget(self._table)
@@ -186,6 +189,9 @@ class AnalysisDialog(QDialog):
         self._next.clicked.connect(lambda: self._slider.setValue(self._slider.value() + 1))
         self._run = QPushButton(tr("analysis.run"), self)
         self._run.clicked.connect(self._calculate)
+        self._static_button = QPushButton(tr("analysis.static.button"), self)
+        self._static_button.setToolTip(tr("analysis.static.button_tip"))
+        self._static_button.clicked.connect(self._check_static)
         self._export_button = QPushButton(tr("export.button"), self)
         self._export_button.clicked.connect(self._export)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close, self)
@@ -193,6 +199,7 @@ class AnalysisDialog(QDialog):
         buttons.rejected.connect(self.reject)
         row = QHBoxLayout()
         row.addWidget(self._run)
+        row.addWidget(self._static_button)
         row.addWidget(self._export_button)
         row.addStretch()
         row.addWidget(buttons)
@@ -255,6 +262,7 @@ class AnalysisDialog(QDialog):
 
     def _invalidate(self, *_args: object) -> None:
         self._clear_results()
+        self._static_explanation.setPlainText(tr("analysis.static.empty"))
         self._spring_length.setEnabled(self._spring.isChecked())
         self._coil_bind.setEnabled(self._spring.isChecked())
         self._damper_min.setEnabled(self._damper.isChecked())
@@ -269,7 +277,42 @@ class AnalysisDialog(QDialog):
         self._spring_project_hint.setText(tr("analysis.spring_project_hint", free=f"{axle.spring.free_len_mm:.2f}"))
         supported = axle.type_code == "double_wishbone"
         self._run.setEnabled(supported)
+        self._static_button.setEnabled(supported)
         self._status.setText(tr("analysis.ready" if supported else "analysis.unsupported"))
+
+    def _component_inputs(self) -> tuple[float | None, float | None, StrokeLimits | None]:
+        if self._spring.isChecked() and self._spring_length.value() <= 0:
+            raise ValueError(tr("analysis.spring_length_required"))
+        low, high = self._damper_min.value(), self._damper_max.value()
+        if self._damper.isChecked() and ((low == 0) != (high == 0)):
+            raise ValueError(tr("analysis.damper_limits_required"))
+        limits = StrokeLimits(low, high) if self._damper.isChecked() and low and high else None
+        static_length = self._spring_length.value() if self._spring.isChecked() else None
+        coil_bind = (self._coil_bind.value() or None) if self._spring.isChecked() else None
+        return static_length, coil_bind, limits
+
+    def _check_static(self) -> None:
+        self._view_tabs.setCurrentWidget(self._static_explanation)
+        axle = self.controller.project.axle(str(self._role.currentData()))
+        if axle.type_code != "double_wishbone":
+            self._static_explanation.setPlainText(tr("analysis.unsupported"))
+            return
+        try:
+            static_length, coil_bind, limits = self._component_inputs()
+            side: Literal["left", "right"] = "left" if self._side.currentData() == "left" else "right"
+            result = analyze_corner(
+                axle, self.controller.project.vehicle, [0.0], side=side,
+                spring_mount="lower_arm" if self._spring.isChecked() else None,
+                static_spring_length_mm=static_length, coil_bind_length_mm=coil_bind,
+                damper_mount="lower_arm" if self._damper.isChecked() else None, damper_limits=limits,
+            )
+            text = explain_static_sample(result.samples[0], axle)
+        except (ValueError, ArithmeticError, KeyError) as error:
+            LOG.warning("Проверка статики не выполнена: %s", error)
+            self._static_explanation.setPlainText(tr("analysis.static.error", reason=str(error)))
+            return
+        heading = tr("analysis.static.context", axis=self._role.currentText(), side=self._side.currentText())
+        self._static_explanation.setPlainText(f"{heading}\n\n{text}")
 
     def _calculate(self) -> None:
         self._clear_results()
@@ -279,12 +322,7 @@ class AnalysisDialog(QDialog):
             self._status.setText(tr("analysis.unsupported"))
             return
         try:
-            if self._spring.isChecked() and self._spring_length.value() <= 0:
-                raise ValueError(tr("analysis.spring_length_required"))
-            low, high = self._damper_min.value(), self._damper_max.value()
-            if self._damper.isChecked() and ((low == 0) != (high == 0)):
-                raise ValueError(tr("analysis.damper_limits_required"))
-            damper_limits = StrokeLimits(low, high) if self._damper.isChecked() and low and high else None
+            static_length, coil_bind, damper_limits = self._component_inputs()
             characteristic = None
             velocity = 0.0
             if self._damping.isChecked():
@@ -299,8 +337,8 @@ class AnalysisDialog(QDialog):
             result = analyze_corner(
                 axle, self.controller.project.vehicle, travels, side=side,
                 spring_mount="lower_arm" if self._spring.isChecked() else None,
-                static_spring_length_mm=self._spring_length.value() if self._spring.isChecked() else None,
-                coil_bind_length_mm=(self._coil_bind.value() or None) if self._spring.isChecked() else None,
+                static_spring_length_mm=static_length,
+                coil_bind_length_mm=coil_bind,
                 damper_mount="lower_arm" if self._damper.isChecked() else None,
                 damper_limits=damper_limits,
                 max_step_mm=1.0,
