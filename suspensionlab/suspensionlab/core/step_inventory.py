@@ -214,7 +214,8 @@ def read_step_inventory(path: Path) -> StepInventory:
     from .step_placements import PlacementLimitError, inspect_placement_frames
 
     try:
-        frames = inspect_placement_frames(text, tuple(o.entity for o in occurrences)) if occurrences else ()
+        frames = inspect_placement_frames(text, {o.entity: (o.parent_definition, o.child_definition)
+                                                 for o in occurrences}, set(definitions)) if occurrences else ()
         placement_limit = False
     except PlacementLimitError:
         frames = ()

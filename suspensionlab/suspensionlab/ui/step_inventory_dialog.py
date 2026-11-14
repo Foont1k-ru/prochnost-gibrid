@@ -52,6 +52,7 @@ def inventory_text(result: StepInventory) -> str:
     lines.extend(("", tr("step_inventory.links")))
     frames_by_occurrence = {item.occurrence: item for item in result.placement_frames}
     lines.append(tr("step_inventory.frames_notice"))
+    lines.append(tr("step_inventory.rep_notice"))
     if result.placement_limit:
         lines.append(tr("step_inventory.frames_limit"))
     else:
@@ -65,6 +66,21 @@ def inventory_text(result: StepInventory) -> str:
         placement = frames_by_occurrence.get(occurrence.entity)
         if placement is None:
             continue
+        match = placement.representation_match
+        if match is not None:
+            def label(number):
+                return f"#{number}" if number is not None else tr("step_inventory.unknown")
+            def membership(value):
+                return tr("step_inventory.member." + ("unknown" if value is None else "yes" if value else "no"))
+            lines.append("    " + tr(f"step_inventory.rep_status.{match.status}"))
+            lines.append("    " + tr("step_inventory.rep_detail", rep1=label(match.representation_1),
+                                     rep2=label(match.representation_2), def1=label(match.definition_1),
+                                     def2=label(match.definition_2), context1=label(match.context_1),
+                                     context2=label(match.context_2)))
+            lines.append("    " + tr("step_inventory.rep_members", a1=membership(match.frame_1_membership[0]),
+                                     a2=membership(match.frame_1_membership[1]),
+                                     b1=membership(match.frame_2_membership[0]),
+                                     b2=membership(match.frame_2_membership[1])))
         if placement.issue:
             lines.append("    " + tr(f"step_inventory.frame_issue.{placement.issue}"))
             continue

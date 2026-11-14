@@ -95,6 +95,10 @@ def test_step_frame_report_states_limits_without_modifying_project(window, qtbot
 #23=ITEM_DEFINED_TRANSFORMATION('','',#30,#31);
 #30=AXIS2_PLACEMENT_3D('',#32,$,$);#31=AXIS2_PLACEMENT_3D('',#33,$,$);
 #32=CARTESIAN_POINT('',(0.,0.,0.));#33=CARTESIAN_POINT('',(1.,2.,3.));
+#40=PRODUCT_DEFINITION_SHAPE('','',#6);#41=SHAPE_DEFINITION_REPRESENTATION(#40,#100);
+#42=PRODUCT_DEFINITION_SHAPE('','',#5);#43=SHAPE_DEFINITION_REPRESENTATION(#42,#101);
+#100=SHAPE_REPRESENTATION('',(#30),#200);#101=SHAPE_REPRESENTATION('',(#30,#31),#200);
+#200=GEOMETRIC_REPRESENTATION_CONTEXT(3);
 ENDSEC;END-ISO-10303-21;""", encoding="ascii")
     dialog = StepInventoryDialog(window)
     qtbot.addWidget(dialog)
@@ -104,6 +108,9 @@ ENDSEC;END-ISO-10303-21;""", encoding="ascii")
     assert "ITEM_DEFINED_TRANSFORMATION" in text and "Итоговое положение" in text
     assert "Отношение #22, преобразование #23" in text
     assert "Система 2 (#31): начало (1, 2, 3)" in text
+    assert "представление 1 связано с дочерним определением" in text
+    assert "система 1 — да / да; система 2 — нет / да" in text
+    assert "Номера контекстов не означают проверку единиц" in text
     assert "Пара систем координат не найдена" in text
     assert window.controller.project.to_dict() == before
 

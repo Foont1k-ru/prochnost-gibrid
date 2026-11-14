@@ -87,6 +87,56 @@ def test_transform_component_is_not_guessed_from_quoted_or_nested_text(tmp_path)
     assert read(tmp_path, duplicate).placement_frames[0].issue == "ambiguous"
 
 
+def representations() -> str:
+    return """#40=PRODUCT_DEFINITION_SHAPE('','',#6);
+#41=SHAPE_DEFINITION_REPRESENTATION(#40,#100);
+#42=PRODUCT_DEFINITION_SHAPE('','',#5);
+#43=SHAPE_DEFINITION_REPRESENTATION(#42,#101);
+#100=SHAPE_REPRESENTATION('',(#30),#200);
+#101=SHAPE_REPRESENTATION('',(#30,#31),#200);
+#200=GEOMETRIC_REPRESENTATION_CONTEXT(3);"""
+
+
+def test_direct_representation_mapping_does_not_assume_unique_frame_membership(tmp_path):
+    result = read(tmp_path, step_file(representations()))
+    match = result.placement_frames[0].representation_match
+    assert match is not None and match.status == "child_parent"
+    assert (match.representation_1, match.representation_2) == (100, 101)
+    assert (match.definition_1, match.definition_2) == (6, 5)
+    assert (match.context_1, match.context_2) == (200, 200)
+    assert match.frame_1_membership == (True, True)
+    assert match.frame_2_membership == (False, True)
+    # Reusing a definition in a second occurrence must not share a placement implicitly.
+    assert result.placement_frames[1].issue == "missing"
+    assert result.placement_frames[1].representation_match is None
+
+
+def test_representation_order_and_unresolved_or_conflicting_links(tmp_path):
+    original = step_file(representations())
+    reversed_file = original.replace(b"REPRESENTATION_RELATIONSHIP('','',#100,#101)",
+                                     b"REPRESENTATION_RELATIONSHIP('','',#101,#100)")
+    match = read(tmp_path, reversed_file).placement_frames[0].representation_match
+    assert match and match.status == "parent_child"
+    assert match.frame_1_membership == (True, True) and match.frame_2_membership == (True, False)
+    mismatch = original.replace(b"#42=PRODUCT_DEFINITION_SHAPE('','',#5)", b"#42=PRODUCT_DEFINITION_SHAPE('','',#6)")
+    assert read(tmp_path, mismatch).placement_frames[0].representation_match.status == "mismatch"
+    ambiguous = step_file(representations() + "#44=SHAPE_DEFINITION_REPRESENTATION(#42,#100);")
+    assert read(tmp_path, ambiguous).placement_frames[0].representation_match.status == "ambiguous"
+    unknown_shape = step_file(representations() + "#44=SHAPE_DEFINITION_REPRESENTATION(#999,#100);")
+    assert read(tmp_path, unknown_shape).placement_frames[0].representation_match.status == "unresolved"
+    unknown_rep = original.replace(b"#100=SHAPE_REPRESENTATION", b"#100=OTHER_REPRESENTATION")
+    match = read(tmp_path, unknown_rep).placement_frames[0].representation_match
+    assert match and match.status == "unresolved"
+    assert match.frame_1_membership == (None, True) and match.context_1 is None
+
+
+def test_context_or_item_references_missing_do_not_assert_geometry(tmp_path):
+    file = step_file(representations()).replace(b"(#30,#31),#200", b"(#30,#31),$")
+    match = read(tmp_path, file).placement_frames[0].representation_match
+    assert match and match.status == "unresolved" and match.frame_1_membership == (True, None)
+    assert match.frame_2_membership == (False, None) and match.context_2 is None
+
+
 def test_limit_does_not_destroy_inventory(tmp_path, monkeypatch):
     monkeypatch.setattr(placements, "_LIMIT", 0)
     result = read(tmp_path, step_file(""))

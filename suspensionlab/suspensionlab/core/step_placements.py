@@ -2,13 +2,15 @@
 
 Поддерживается только явная цепочка NAUO → PRODUCT_DEFINITION_SHAPE →
 CONTEXT_DEPENDENT_SHAPE_REPRESENTATION → комплексное отношение →
-ITEM_DEFINED_TRANSFORMATION → два AXIS2_PLACEMENT_3D. Никакого разрешения
-контекстов представлений, единиц, направления преобразования или дерева нет.
+ITEM_DEFINED_TRANSFORMATION → два AXIS2_PLACEMENT_3D. Частично сопоставляются
+прямые ссылки представлений с определениями изделий. Единицы, направление
+преобразования, геометрия и дерево глобальных положений не разрешаются.
 """
 from __future__ import annotations
 
 import re
 from collections import defaultdict
+from collections.abc import Mapping
 from dataclasses import dataclass
 from math import hypot, isfinite
 from typing import Literal
@@ -29,6 +31,22 @@ class Frame:
 
 
 @dataclass(frozen=True)
+class RepresentationMatch:
+    """Только прямые ссылки представлений; это не результат преобразования."""
+
+    representation_1: int | None
+    representation_2: int | None
+    definition_1: int | None
+    definition_2: int | None
+    context_1: int | None
+    context_2: int | None
+    # Для каждой системы — наличие в списках rep1 и rep2; None = список не прочитан.
+    frame_1_membership: tuple[bool | None, bool | None]
+    frame_2_membership: tuple[bool | None, bool | None]
+    status: Literal["child_parent", "parent_child", "mismatch", "ambiguous", "unresolved"]
+
+
+@dataclass(frozen=True)
 class PlacementFrames:
     occurrence: int
     relation: int | None
@@ -36,6 +54,7 @@ class PlacementFrames:
     first: Frame | None
     second: Frame | None
     issue: Issue | None
+    representation_match: RepresentationMatch | None
 
 
 class PlacementLimitError(ValueError):
@@ -92,21 +111,23 @@ def _record(statement: str):
     return _RECORD.fullmatch(statement)
 
 
-def _relationship_components(statement: str, start: int) -> list[int]:
+def _relationship_components(statement: str, start: int) -> tuple[list[int], list[tuple[int, int]]]:
     """Ищем только непосредственные компоненты комплексной записи, не имена внутри строк."""
     tail = statement[start:].strip()
     if not tail.endswith(")"):
-        return []
+        return [], []
     body = tail[:-1]
     pos = 0
     names: set[str] = set()
     refs: list[int] = []
+    representations: list[tuple[int, int]] = []
+    invalid_representation = False
     while pos < len(body):
         if not body[pos:].strip():
             break
         component = _COMPONENT.match(body, pos)
         if not component:
-            return []
+            return [], []
         name = component.group(1).upper()
         names.add(name)
         depth = 1
@@ -122,29 +143,38 @@ def _relationship_components(statement: str, start: int) -> list[int]:
                     pos = bracket.end()
                     break
         if end is None:
-            return []
+            return [], []
         if name == "REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION":
             try:
                 refs.append(_ref(body[component.end():end].strip()))
             except ValueError:
-                return []
+                return [], []
+        elif name == "REPRESENTATION_RELATIONSHIP":
+            try:
+                values = _args(body[component.end():end])
+                representations.append((_ref(values[2]), _ref(values[3])))
+            except (ValueError, IndexError):
+                invalid_representation = True
     required = {"REPRESENTATION_RELATIONSHIP", "REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION",
                 "SHAPE_REPRESENTATION_RELATIONSHIP"}
-    return refs if required <= names else []
+    return (refs, [] if invalid_representation else representations) if required <= names else ([], [])
 
 
-def inspect_placement_frames(text: str, occurrences: tuple[int, ...]) -> tuple[PlacementFrames, ...]:
+def inspect_placement_frames(text: str, occurrences: Mapping[int, tuple[int, int]],
+                             definitions: set[int]) -> tuple[PlacementFrames, ...]:
     """Вернуть две системы записи без предположения, как они переносят тело."""
     wanted = set(occurrences)
     shapes: dict[int, int] = {}
     contexts: list[tuple[int, int]] = []
-    relations: dict[int, list[int]] = {}
+    relations: dict[int, tuple[list[int], list[tuple[int, int]]]] = {}
+    definition_shapes: dict[int, int] = {}
+    shape_representations: list[tuple[int, int]] = []
     transforms: dict[int, tuple[int, int]] = {}
     for statement in _statements(text):
         match = _record(statement)
         if match:
             kind = match.group(2).upper()
-            if kind not in {"PRODUCT_DEFINITION_SHAPE", "CONTEXT_DEPENDENT_SHAPE_REPRESENTATION", "ITEM_DEFINED_TRANSFORMATION"}:
+            if kind not in {"PRODUCT_DEFINITION_SHAPE", "CONTEXT_DEPENDENT_SHAPE_REPRESENTATION", "ITEM_DEFINED_TRANSFORMATION", "SHAPE_DEFINITION_REPRESENTATION"}:
                 continue
             try:
                 number = int(match.group(1))
@@ -153,17 +183,22 @@ def inspect_placement_frames(text: str, occurrences: tuple[int, ...]) -> tuple[P
                     target = _ref(args[2])
                     if target in wanted:
                         shapes[number] = target
+                    if target in definitions:
+                        definition_shapes[number] = target
                 elif kind == "CONTEXT_DEPENDENT_SHAPE_REPRESENTATION":
                     contexts.append((_ref(args[0]), _ref(args[1])))
-                else:
+                elif kind == "ITEM_DEFINED_TRANSFORMATION":
                     transforms[number] = (_ref(args[2]), _ref(args[3]))
+                else:
+                    shape_representations.append((_ref(args[0]), _ref(args[1])))
             except (ValueError, IndexError):
                 continue
         elif "REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION" in statement.upper():
             cm = _COMPLEX.match(statement)
             if cm:
                 relations[int(cm.group(1))] = _relationship_components(statement, cm.end())
-        if max(len(shapes), len(contexts), len(relations), len(transforms)) > _LIMIT:
+        if max(len(shapes), len(contexts), len(relations), len(transforms),
+               len(definition_shapes), len(shape_representations)) > _LIMIT:
             raise PlacementLimitError("too many placement records")
     links: dict[int, list[int]] = defaultdict(list)
     for relation, shape in contexts:
@@ -177,7 +212,7 @@ def inspect_placement_frames(text: str, occurrences: tuple[int, ...]) -> tuple[P
             selection[occurrence] = (None, None, None, "ambiguous" if matches else "missing")
             continue
         relation = matches[0]
-        refs = relations.get(relation, [])
+        refs, _rep_pairs = relations.get(relation, ([], []))
         if len(refs) != 1:
             selection[occurrence] = (relation, None, None, "ambiguous" if len(refs) > 1 else "unsupported")
             continue
@@ -190,17 +225,31 @@ def inspect_placement_frames(text: str, occurrences: tuple[int, ...]) -> tuple[P
         axis_ids.update(pair)
 
     axes: dict[int, tuple[int, int | None, int | None]] = {}
+    rep_ids = {rep for relation, _, _, _ in selection.values() if relation is not None
+               for pair in relations.get(relation, ([], []))[1] for rep in pair}
+    rep_data: dict[int, tuple[frozenset[int], int]] = {}
+    rep_types = {"SHAPE_REPRESENTATION", "ADVANCED_BREP_SHAPE_REPRESENTATION",
+                 "MANIFOLD_SURFACE_SHAPE_REPRESENTATION", "FACETED_BREP_SHAPE_REPRESENTATION",
+                 "GEOMETRICALLY_BOUNDED_SURFACE_SHAPE_REPRESENTATION"}
     for statement in _statements(text):
         match = _record(statement)
-        if not match or match.group(2).upper() != "AXIS2_PLACEMENT_3D":
+        if not match:
             continue
-        number = int(match.group(1))
-        if number not in axis_ids:
-            continue
+        kind, number = match.group(2).upper(), int(match.group(1))
         try:
-            args = _args(match.group(3))
-            axes[number] = (_ref(args[1]), None if args[2] == "$" else _ref(args[2]),
-                            None if args[3] == "$" else _ref(args[3]))
+            if kind == "AXIS2_PLACEMENT_3D" and number in axis_ids:
+                args = _args(match.group(3))
+                axes[number] = (_ref(args[1]), None if args[2] == "$" else _ref(args[2]),
+                                None if args[3] == "$" else _ref(args[3]))
+            elif kind in rep_types and number in rep_ids:
+                args = _args(match.group(3))
+                items = args[1]
+                if not items.startswith("(") or not items.endswith(")") or len(items) > 200_000:
+                    continue
+                item_refs = _args(items[1:-1]) if items[1:-1].strip() else []
+                if len(item_refs) > _LIMIT:
+                    continue
+                rep_data[number] = (frozenset(_ref(ref) for ref in item_refs), _ref(args[2]))
         except (ValueError, IndexError):
             continue
     vector_ids = {r for refs in axes.values() for r in refs if r is not None}
@@ -230,15 +279,58 @@ def inspect_placement_frames(text: str, occurrences: tuple[int, ...]) -> tuple[P
         ref = vector(ref_id, "DIRECTION") if ref_id is not None else None
         return _frame(entity, origin, axis, ref)
 
+    rep_definitions: dict[int, list[int | None]] = defaultdict(list)
+    for shape, representation in shape_representations:
+        rep_definitions[representation].append(definition_shapes.get(shape))
+
+    def match_representations(occurrence: int, relation_id: int, pair: tuple[int, int]) -> RepresentationMatch:
+        rep_pairs = relations.get(relation_id, ([], []))[1]
+        if len(rep_pairs) != 1:
+            status: Literal["child_parent", "parent_child", "mismatch", "ambiguous", "unresolved"] = (
+                "ambiguous" if len(rep_pairs) > 1 else "unresolved")
+            return RepresentationMatch(None, None, None, None, None, None, (None, None), (None, None), status)
+        rep1, rep2 = rep_pairs[0]
+        def definition(rep: int) -> tuple[int | None, bool]:
+            targets = rep_definitions.get(rep, [])
+            concrete = {target for target in targets if target is not None}
+            if len(concrete) > 1:
+                return None, True
+            if not targets or any(target is None for target in targets):
+                return None, False
+            return next(iter(concrete)), False
+        def1, amb1 = definition(rep1)
+        def2, amb2 = definition(rep2)
+        parent, child = occurrences[occurrence]
+        if amb1 or amb2 or parent == child:
+            status = "ambiguous"
+        elif def1 is None or def2 is None or rep1 not in rep_data or rep2 not in rep_data:
+            status = "unresolved"
+        elif (def1, def2) == (child, parent):
+            status = "child_parent"
+        elif (def1, def2) == (parent, child):
+            status = "parent_child"
+        else:
+            status = "mismatch"
+        def member(frame_id: int, rep_id: int) -> bool | None:
+            data = rep_data.get(rep_id)
+            return frame_id in data[0] if data is not None else None
+        data1, data2 = rep_data.get(rep1), rep_data.get(rep2)
+        return RepresentationMatch(rep1, rep2, def1, def2, data1[1] if data1 else None,
+                                   data2[1] if data2 else None,
+                                   (member(pair[0], rep1), member(pair[0], rep2)),
+                                   (member(pair[1], rep1), member(pair[1], rep2)), status)
+
     result = []
     for occurrence in occurrences:
         relation_id, transform_id, pair, issue = selection[occurrence]
         first = second = None
-        if pair is not None:
+        representation_match = None
+        if pair is not None and relation_id is not None:
+            representation_match = match_representations(occurrence, relation_id, pair)
             try:
                 first, second = make_frame(pair[0]), make_frame(pair[1])
             except (KeyError, ValueError, ArithmeticError):
                 first = second = None
                 issue = "invalid"
-        result.append(PlacementFrames(occurrence, relation_id, transform_id, first, second, issue))
+        result.append(PlacementFrames(occurrence, relation_id, transform_id, first, second, issue, representation_match))
     return tuple(result)
