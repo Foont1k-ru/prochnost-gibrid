@@ -50,10 +50,32 @@ def inventory_text(result: StepInventory) -> str:
     for product in result.products:
         lines.append(f"#{product.entity}: {product.name or tr('step_inventory.unnamed')} ({product.identifier})")
     lines.extend(("", tr("step_inventory.links")))
+    frames_by_occurrence = {item.occurrence: item for item in result.placement_frames}
+    lines.append(tr("step_inventory.frames_notice"))
+    if result.placement_limit:
+        lines.append(tr("step_inventory.frames_limit"))
+    else:
+        success = sum(frame.issue is None for frame in result.placement_frames)
+        lines.append(tr("step_inventory.frames_summary", count=success,
+                        total=len(result.placement_frames), unavailable=len(result.placement_frames) - success))
     for occurrence in result.occurrences:
         parent = _product_name(occurrence.parent, occurrence.parent_definition)
         child = _product_name(occurrence.child, occurrence.child_definition)
         lines.append(f"#{occurrence.entity}: {parent} → {child} ({occurrence.name or occurrence.identifier})")
+        placement = frames_by_occurrence.get(occurrence.entity)
+        if placement is None:
+            continue
+        if placement.issue:
+            lines.append("    " + tr(f"step_inventory.frame_issue.{placement.issue}"))
+            continue
+        lines.append("    " + tr("step_inventory.frame_links", relation=placement.relation,
+                                 transformation=placement.transformation))
+        for index, frame in enumerate((placement.first, placement.second), 1):
+            if frame is not None:
+                def fmt(vector):
+                    return ", ".join(f"{value:.6g}" for value in vector)
+                lines.append("    " + tr("step_inventory.frame", index=index, entity=frame.entity,
+                                         origin=fmt(frame.origin), x=fmt(frame.x), y=fmt(frame.y), z=fmt(frame.z)))
     return "\n".join(lines)
 
 

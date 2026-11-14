@@ -9,6 +9,10 @@ import re
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .step_placements import PlacementFrames
 
 MAX_BYTES = 64 * 1024 * 1024
 MAX_STATEMENT = 4 * 1024 * 1024
@@ -54,6 +58,8 @@ class StepInventory:
     unresolved_occurrences: int
     non_ascii_bytes: bool
     unsupported_string_escape: bool
+    placement_frames: tuple[PlacementFrames, ...]
+    placement_limit: bool
 
 
 def _statements(text: str):
@@ -205,7 +211,15 @@ def read_step_inventory(path: Path) -> StepInventory:
         return products.get(formations.get(definitions.get(definition, -1), -1))
     occurrences = tuple(Occurrence(i, ident, name, parent, child, product_for(parent), product_for(child))
                         for i, ident, name, parent, child in links)
+    from .step_placements import PlacementLimitError, inspect_placement_frames
+
+    try:
+        frames = inspect_placement_frames(text, tuple(o.entity for o in occurrences)) if occurrences else ()
+        placement_limit = False
+    except PlacementLimitError:
+        frames = ()
+        placement_limit = True
     return StepInventory(tuple(schema), tuple(products.values()), occurrences, len(definitions),
                          counts["MANIFOLD_SOLID_BREP"], counts["ITEM_DEFINED_TRANSFORMATION"],
                          sum(o.parent is None or o.child is None for o in occurrences),
-                         any(b > 127 for b in data), unsupported)
+                         any(b > 127 for b in data), unsupported, frames, placement_limit)

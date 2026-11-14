@@ -77,6 +77,37 @@ def test_step_inventory_async_is_read_only_and_clears_after_error(window, qtbot,
     dialog.close()
 
 
+def test_step_frame_report_states_limits_without_modifying_project(window, qtbot, tmp_path):
+    from suspensionlab.ui.step_inventory_dialog import StepInventoryDialog
+
+    window.controller.new_project("ring")
+    before = window.controller.project.to_dict()
+    path = tmp_path / "assembly.stp"
+    path.write_text("""ISO-10303-21;HEADER;FILE_SCHEMA(('AP242'));ENDSEC;DATA;
+#1=PRODUCT('','parent','',());#2=PRODUCT('','child','',());
+#3=PRODUCT_DEFINITION_FORMATION('','',#1);#4=PRODUCT_DEFINITION_FORMATION('','',#2);
+#5=PRODUCT_DEFINITION('','',#3,#100);#6=PRODUCT_DEFINITION('','',#4,#100);
+#7=NEXT_ASSEMBLY_USAGE_OCCURRENCE('','child instance','',#5,#6,$);
+#8=NEXT_ASSEMBLY_USAGE_OCCURRENCE('','unlinked','',#5,#6,$);
+#20=PRODUCT_DEFINITION_SHAPE('','',#7);
+#21=CONTEXT_DEPENDENT_SHAPE_REPRESENTATION(#22,#20);
+#22=(REPRESENTATION_RELATIONSHIP('','',#100,#101)REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION(#23)SHAPE_REPRESENTATION_RELATIONSHIP());
+#23=ITEM_DEFINED_TRANSFORMATION('','',#30,#31);
+#30=AXIS2_PLACEMENT_3D('',#32,$,$);#31=AXIS2_PLACEMENT_3D('',#33,$,$);
+#32=CARTESIAN_POINT('',(0.,0.,0.));#33=CARTESIAN_POINT('',(1.,2.,3.));
+ENDSEC;END-ISO-10303-21;""", encoding="ascii")
+    dialog = StepInventoryDialog(window)
+    qtbot.addWidget(dialog)
+    dialog.load_file(path)
+    qtbot.waitUntil(lambda: dialog._reader is None, timeout=10000)
+    text = dialog._text.toPlainText()
+    assert "ITEM_DEFINED_TRANSFORMATION" in text and "Итоговое положение" in text
+    assert "Отношение #22, преобразование #23" in text
+    assert "Система 2 (#31): начало (1, 2, 3)" in text
+    assert "Пара систем координат не найдена" in text
+    assert window.controller.project.to_dict() == before
+
+
 def test_window_and_theme(window, qtbot):
     assert window._tabs.count() == 3
     assert "Подвеска" in window.windowTitle()
