@@ -7,6 +7,8 @@ __pycache__/
 .ruff_cache/
 build/
 dist/
+package/
+SuspensionLab.spec
 
 .coverage
 htmlcov/

@@ -51,6 +51,61 @@ jobs:
           path: suspensionlab/test-results.xml
           if-no-files-found: warn
 
+  package:
+    name: Пробная сборка приложения Windows
+    needs: test
+    if: github.event_name != 'workflow_dispatch' || inputs.diagnostic_run_id == ''
+    runs-on: windows-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: suspensionlab
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Установить зависимости и PyInstaller
+        run: python -m pip install . pyinstaller==6.16.0
+      - name: Собрать приложение с ресурсами
+        run: >-
+          python -m PyInstaller --noconfirm --clean --windowed --name SuspensionLab
+          --add-data "suspensionlab/resources;suspensionlab/resources" packaging_entry.py
+      - name: Проверить собранное приложение вне каталога исходников
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+          PYTHONUTF8: '1'
+        run: |
+          $exe = (Resolve-Path 'dist/SuspensionLab/SuspensionLab.exe').Path
+          $report = Join-Path $env:RUNNER_TEMP 'suspensionlab-package-check.txt'
+          $isolated = Join-Path $env:RUNNER_TEMP 'suspensionlab-package-check'
+          New-Item -ItemType Directory -Force -Path $isolated | Out-Null
+          $env:APPDATA = $isolated
+          $process = Start-Process -FilePath $exe -ArgumentList @('--packaging-check', "`"$report`"") -WorkingDirectory $isolated -PassThru
+          if (-not $process.WaitForExit(90000)) {
+            $process.Kill()
+            throw 'Превышено время проверки собранного приложения'
+          }
+          if (Test-Path $report) { Get-Content -Path $report -Encoding utf8 }
+          if ($process.ExitCode -ne 0 -or -not (Test-Path $report) -or (Get-Content -Raw -Encoding utf8 $report).Trim() -ne 'OK') {
+            throw "Ошибка проверки собранного приложения: $($process.ExitCode)"
+          }
+      - name: Подготовить файлы для ознакомления
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path package | Out-Null
+          Copy-Item -Path dist/SuspensionLab -Destination package/SuspensionLab -Recurse
+          Copy-Item PACKAGE_README_RU.txt package/ПРОЧТИ-МЕНЯ.txt
+          "Commit: $env:GITHUB_SHA`nRun: $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID" | Set-Content package/BUILD-INFO.txt -Encoding utf8
+      - name: Сохранить пробную сборку
+        uses: actions/upload-artifact@v4
+        with:
+          name: suspensionlab-windows-experimental
+          path: suspensionlab/package/
+          if-no-files-found: error
+          retention-days: 14
+
   diagnostic:
     name: Диагностика сохранённого JUnit
     if: github.event_name == 'workflow_dispatch' && inputs.diagnostic_run_id != ''
