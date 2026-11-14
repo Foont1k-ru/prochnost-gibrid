@@ -159,6 +159,15 @@ def test_cad_preview_load_rotate_and_cancel_without_project_changes(window, qtbo
     assert dialog._view.mesh is recovered and "восстановлено для просмотра 2" in dialog._status.text()
     dialog._show_mesh(mesh)
     assert "ПРИБЛИЖЁННОЕ ИЗОБРАЖЕНИЕ" not in dialog._status.text()
+    grouped = CadMesh(np.concatenate([mesh.triangles, mesh.triangles + 20]), 2, 0, 1,
+                      ("Прочие", "Отбойник"), np.array([1, 0]))
+    dialog._show_mesh(grouped)
+    assert dialog._parts.count() == 3 and dialog._parts.isEnabled()
+    dialog._parts.setCurrentIndex(dialog._parts.findData(1))
+    assert len(dialog._view.mesh.triangles) == 1
+    assert "восстановлено для просмотра 1" in dialog._status.text()
+    dialog._parts.setCurrentIndex(0)
+    assert dialog._view.mesh is grouped
     view = dialog._view
     old_yaw = view.yaw
     QApplication.sendEvent(view, QMouseEvent(QEvent.Type.MouseButtonPress, QPointF(100, 100), Qt.MouseButton.LeftButton,

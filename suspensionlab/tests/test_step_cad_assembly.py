@@ -72,6 +72,11 @@ def test_generated_step_nested_and_repeated_occurrences_against_cad(tmp_path):
     create_mesh(path, 2.)  # Synthetic data: expose exceptions directly in CAD CI.
     mesh = CadJob().run(path, 2., timeout=90)
     assert mesh.face_count == 12 and mesh.skipped_faces == 0 and mesh.recovered_faces == 0 and len(mesh.triangles) >= 24
+    # Both instances are grouped by the same product definition, without changing positions.
+    assert mesh.triangle_parts is not None
+    groups = np.unique(mesh.triangle_parts)
+    assert len(groups) == 1 and groups[0] != 0
+    assert len(mesh.isolated(int(groups[0])).triangles) == len(mesh.triangles)
     bounds_points = []
     for placement in (parent.Multiplied(first), parent.Multiplied(second)):
         for x in (0., 2.):
@@ -133,7 +138,7 @@ def test_missing_faces_are_counted_not_silently_accepted(tmp_path, monkeypatch):
 
     monkeypatch.setattr(cad_worker, "_face_triangulation", miss_first)
     monkeypatch.setattr(cad_worker, "_retry_face_triangulation", lambda face, location: None)
-    triangles, faces, skipped, recovered = cad_worker.create_mesh(path, 2.)
+    triangles, faces, skipped, recovered, names, groups = cad_worker.create_mesh(path, 2.)
     assert (faces, skipped, recovered, calls) == (12, 1, 0, 12)
     assert len(triangles) == 22
     monkeypatch.setattr(cad_worker, "_face_triangulation", lambda face, location: None)
@@ -153,6 +158,67 @@ def test_retry_can_recover_missing_face(tmp_path, monkeypatch):
         return None if calls == 1 else original(face, location)
 
     monkeypatch.setattr(cad_worker, "_face_triangulation", miss_first)
-    triangles, faces, skipped, recovered = cad_worker.create_mesh(path, 2.)
+    triangles, faces, skipped, recovered, names, groups = cad_worker.create_mesh(path, 2.)
     assert (faces, skipped, recovered) == (12, 0, 0)
     assert len(triangles) >= 24 and calls == 13
+
+
+def test_grouping_limits_fall_back_to_unidentified_without_losing_geometry(tmp_path, monkeypatch):
+    from suspensionlab.core import cad_parts
+
+    path = tmp_path / "limited.step"
+    write_cad_assembly(path)
+    monkeypatch.setattr(cad_parts, "MAX_GROUP_FACES", 2)
+    triangles, faces, skipped, recovered, names, groups = create_mesh(path, 2.)
+    assert (faces, skipped, recovered) == (12, 0, 0)
+    assert len(triangles) >= 24 and names == ("Без имени / прочие",)
+    assert np.all(groups == 0)
+
+
+def test_ambiguous_and_missing_faces_are_unidentified():
+    from suspensionlab.core.cad_parts import face_group
+
+    class Face:
+        def __init__(self, key):
+            self.key = key
+        def __hash__(self):
+            return 1
+        def IsSame(self, other):  # noqa: N802
+            return self.key == other.key
+    face = Face(1)
+    assert face_group(face, {}) == 0
+    assert face_group(face, {1: [(Face(2), 3)]}) == 0
+    assert face_group(face, {1: [(Face(1), 2), (Face(1), 3)]}) == 0
+    assert face_group(face, {1: [(Face(1), 2), (Face(2), 3)]}) == 2
+
+
+def test_distinct_solids_and_free_face_are_grouped_without_losing_geometry():
+    from OCP.BRep import BRep_Builder
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
+    from OCP.gp import gp_Pln
+    from OCP.TopAbs import TopAbs_ShapeEnum
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS_Compound
+
+    from suspensionlab.core.cad_parts import collect_part_groups, face_group
+
+    document = TDocStd_Document(TCollection_ExtendedString("MDTV-XCAF"))
+    tool = XCAFDoc_DocumentTool.ShapeTool_s(document.Main())
+    first = BRepPrimAPI_MakeBox(2., 3., 5.).Shape()
+    second = BRepPrimAPI_MakeBox(4., 6., 8.).Shape()
+    tool.AddShape(first, False)
+    tool.AddShape(second, False)
+    loose = BRepBuilderAPI_MakeFace(gp_Pln(), 0., 1., 0., 1.).Face()
+    builder = BRep_Builder()
+    compound = TopoDS_Compound()
+    builder.MakeCompound(compound)
+    for item in (first, second, loose):
+        builder.Add(compound, item)
+    names, mapping = collect_part_groups(tool, compound)
+    explorer = TopExp_Explorer(compound, TopAbs_ShapeEnum.TopAbs_FACE)
+    groups = []
+    while explorer.More():
+        groups.append(face_group(explorer.Current(), mapping))
+        explorer.Next()
+    assert len(names) == 3 and len(groups) == 13
+    assert set(groups[:6]) == {1} and set(groups[6:12]) == {2} and groups[12] == 0

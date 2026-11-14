@@ -5,6 +5,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QThread, Signal
 from PySide6.QtWidgets import (
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
@@ -46,6 +47,7 @@ class CadPreviewDialog(QDialog):
         self.resize(960, 750)
         self._reader: _CadReader | None = None
         self._path: Path | None = None
+        self._mesh: CadMesh | None = None
         layout = QVBoxLayout(self)
         notice = QLabel(tr("cad_preview.notice"), self)
         notice.setWordWrap(True)
@@ -73,6 +75,14 @@ class CadPreviewDialog(QDialog):
         row.addWidget(self._cancel)
         row.addWidget(self._reset)
         layout.addLayout(row)
+        parts_row = QHBoxLayout()
+        parts_row.addWidget(QLabel(tr("cad_preview.parts_label"), self))
+        self._parts = QComboBox(self)
+        self._parts.addItem(tr("cad_preview.parts_all"), -1)
+        self._parts.setEnabled(False)
+        self._parts.currentIndexChanged.connect(self._select_part)
+        parts_row.addWidget(self._parts, 1)
+        layout.addLayout(parts_row)
         self._view = CadPreview(self)
         self._reset.clicked.connect(self._view.reset_camera)
         layout.addWidget(self._view, 1)
@@ -96,6 +106,12 @@ class CadPreviewDialog(QDialog):
         if self._reader is not None:
             return
         self._path = path
+        self._mesh = None
+        self._parts.blockSignals(True)
+        self._parts.clear()
+        self._parts.addItem(tr("cad_preview.parts_all"), -1)
+        self._parts.blockSignals(False)
+        self._parts.setEnabled(False)
         self._view.set_mesh(None)
         self._status.setText(tr("cad_preview.loading"))
         self._choose.setEnabled(False)
@@ -111,6 +127,17 @@ class CadPreviewDialog(QDialog):
         reader.start()
 
     def _show_mesh(self, mesh: CadMesh) -> None:
+        self._mesh = mesh
+        self._parts.blockSignals(True)
+        self._parts.clear()
+        self._parts.addItem(tr("cad_preview.parts_all"), -1)
+        if mesh.triangle_parts is not None:
+            for group, name in enumerate(mesh.part_names):
+                if (mesh.triangle_parts == group).any():
+                    self._parts.addItem(f"{name} · {group + 1}", group)
+        self._parts.setCurrentIndex(0)
+        self._parts.blockSignals(False)
+        self._parts.setEnabled(self._parts.count() > 1)
         self._view.set_mesh(mesh)
         if mesh.skipped_faces or mesh.recovered_faces:
             self._status.setText(tr("cad_preview.approximate", faces=mesh.face_count,
@@ -119,7 +146,18 @@ class CadPreviewDialog(QDialog):
         else:
             self._status.setText(tr("cad_preview.loaded", faces=mesh.face_count, triangles=len(mesh.triangles)))
 
+    def _select_part(self) -> None:
+        if self._mesh is None:
+            return
+        group = self._parts.currentData()
+        if group == -1:
+            self._view.set_mesh(self._mesh)
+        elif isinstance(group, int):
+            self._view.set_mesh(self._mesh.isolated(group))
+
     def _show_error(self, code: str) -> None:
+        self._mesh = None
+        self._parts.setEnabled(False)
         self._view.set_mesh(None)
         self._status.setText(tr(f"cad_preview.error.{code}"))
 

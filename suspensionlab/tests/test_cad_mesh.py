@@ -80,7 +80,7 @@ def test_worker_saves_partial_count(monkeypatch, tmp_path):
     from suspensionlab.core import cad_worker
 
     source, output, report = (tmp_path / name for name in ("a.step", "mesh.npz", "status.json"))
-    monkeypatch.setattr(cad_worker, "create_mesh", lambda path, deviation: (np.zeros((1, 3, 3)), 3, 2, 1))
+    monkeypatch.setattr(cad_worker, "create_mesh", lambda path, deviation: (np.zeros((1, 3, 3)), 3, 2, 1, ("неизвестно",), np.array([0])))
     assert cad_worker.main([str(source), str(output), str(report), "2"]) == 0
     with np.load(output, allow_pickle=False) as data:
         assert list(data["faces"]) == [3] and list(data["skipped"]) == [2] and list(data["recovered"]) == [1]
@@ -100,7 +100,8 @@ def test_transport_preserves_and_validates_missing_faces(monkeypatch, tmp_path):
         def run(command, **kwargs):
             output, report = Path(command[-3]), Path(command[-2])
             np.savez_compressed(output, triangles=np.zeros((1, 3, 3)),
-                                faces=np.array([3]), skipped=np.array([skipped]), recovered=np.array([1]))
+                                faces=np.array([3]), skipped=np.array([skipped]), recovered=np.array([1]),
+                                names=np.array(["неизвестно"]), groups=np.array([0]))
             report.write_text(json.dumps({"status": "ok"}), encoding="utf-8")
             return DummyProcess()
         return run
@@ -119,3 +120,28 @@ def test_recovered_faces_must_fit_total():
     for recovered in (-1, 4, 5):
         with pytest.raises(ValueError):
             CadMesh(triangles, 4, 1, recovered)
+
+
+def test_part_isolation_and_group_validation():
+    triangles = np.array([[[0., 0, 0], [1, 0, 0], [0, 1, 0]],
+                          [[10., 0, 0], [11, 0, 0], [10, 1, 0]]])
+    indices = np.array([1, 0], dtype=np.int32)
+    mesh = CadMesh(triangles, 2, 0, 1, ("Прочие", "Отбойник"), indices)
+    indices[0] = 0
+    assert not mesh.triangle_parts.flags.writeable
+    assert mesh.isolated(1).triangles == pytest.approx(triangles[:1])
+    assert mesh.isolated(0).triangles == pytest.approx(triangles[1:])
+    assert mesh.isolated(1).recovered_faces == 1
+    with pytest.raises(ValueError):
+        mesh.isolated(2)
+    for names, groups in [
+        (("",), np.array([0, 0])),
+        (("x\ny",), np.array([0, 0])),
+        (("part",), np.array([0, 1])),
+        (("part",), np.array([-1, 0])),
+        (("part",), np.array([0.])),
+        (("part",), np.array([0., 0.])),
+        ((), np.array([0, 0])),
+    ]:
+        with pytest.raises(ValueError):
+            CadMesh(triangles, 2, 0, 0, names, groups)

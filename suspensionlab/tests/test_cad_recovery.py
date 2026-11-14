@@ -83,7 +83,7 @@ def test_worker_counts_and_draws_recovered_face(tmp_path, monkeypatch):
     monkeypatch.setattr(cad_worker, "_face_triangulation", miss_first)
     monkeypatch.setattr(cad_worker, "_retry_face_triangulation", lambda face, location: None)
     monkeypatch.setattr(cad_worker, "recover_revolution_face", lambda face, deviation: recovered_face)
-    triangles, faces, skipped, recovered = cad_worker.create_mesh(path, 2.)
+    triangles, faces, skipped, recovered, names, groups = cad_worker.create_mesh(path, 2.)
     assert (faces, skipped, recovered) == (12, 0, 1)
     assert len(triangles) > 22
     # The artificial cap is at the origin, while the STEP assembly is elsewhere.

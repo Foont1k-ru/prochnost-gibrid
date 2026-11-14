@@ -100,6 +100,10 @@ def run_cad_check() -> None:
                  np.allclose(vertices.min(axis=0), (0., 0., 0.), atol=1e-6, rtol=0) and
                  np.allclose(vertices.max(axis=0), (2., 3., 5.), atol=1e-6, rtol=0),
                  "Неверная сетка тестового STEP")
+        _require(mesh.triangle_parts is not None and len(mesh.part_names) > 1 and
+                 len(np.unique(mesh.triangle_parts)) == 1 and mesh.triangle_parts[0] != 0 and
+                 len(mesh.isolated(int(mesh.triangle_parts[0])).triangles) == len(mesh.triangles),
+                 "Неверные группы деталей тестового STEP")
 
 
 def run_packaging_check() -> None:

@@ -6,6 +6,8 @@ from math import cos, sin
 
 import numpy as np
 
+from .cad_parts import MAX_PART_GROUPS, MAX_PART_NAME
+
 MAX_TRIANGLES = 100_000
 MAX_COORDINATE = 10_000_000.0  # мм; защитный предел просмотра, не проверка модели
 
@@ -18,6 +20,8 @@ class CadMesh:
     face_count: int
     skipped_faces: int = 0
     recovered_faces: int = 0
+    part_names: tuple[str, ...] = ()
+    triangle_parts: np.ndarray | None = None
 
     def __post_init__(self) -> None:
         try:
@@ -32,6 +36,30 @@ class CadMesh:
             raise ValueError("Сетка пуста, слишком велика или содержит некорректные координаты")
         mesh.flags.writeable = False
         object.__setattr__(self, "triangles", mesh)
+        if self.triangle_parts is None:
+            if self.part_names:
+                raise ValueError("Нет сопоставления деталей")
+        else:
+            parts = np.asarray(self.triangle_parts)
+            if (parts.shape != (len(mesh),) or parts.dtype.kind not in "iu" or
+                    not 0 < len(self.part_names) <= MAX_PART_GROUPS or
+                    any(not isinstance(name, str) or not name or len(name) > MAX_PART_NAME or
+                        not all(c.isprintable() for c in name) for name in self.part_names) or
+                    np.any(parts < 0) or np.any(parts >= len(self.part_names))):
+                raise ValueError("Некорректные группы деталей")
+            parts = np.array(parts, dtype=np.int32, copy=True)
+            parts.flags.writeable = False
+            object.__setattr__(self, "triangle_parts", parts)
+            object.__setattr__(self, "part_names", tuple(self.part_names))
+
+    def isolated(self, group: int) -> CadMesh:
+        """Только отображение группы; счётчики относятся ко всей исходной модели."""
+        if self.triangle_parts is None or not 0 <= group < len(self.part_names):
+            raise ValueError("Группа не найдена")
+        selected = self.triangles[self.triangle_parts == group]
+        if not len(selected):
+            raise ValueError("В группе нет треугольников")
+        return CadMesh(selected, self.face_count, self.skipped_faces, self.recovered_faces)
 
     def bounds(self) -> tuple[np.ndarray, float]:
         vertices = self.triangles.reshape(-1, 3)

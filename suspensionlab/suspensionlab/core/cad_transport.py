@@ -84,7 +84,11 @@ class CadJob:
                     if any(value.shape != (1,) or value.dtype.kind not in "iu"
                            for value in (faces, skipped, recovered)):
                         raise CadPreviewError("output")
-                    return CadMesh(data["triangles"], int(faces[0]), int(skipped[0]), int(recovered[0]))
+                    names = data["names"]
+                    if names.ndim != 1 or names.dtype.kind != "U":
+                        raise CadPreviewError("output")
+                    return CadMesh(data["triangles"], int(faces[0]), int(skipped[0]), int(recovered[0]),
+                                   tuple(names.tolist()), data["groups"])
             except CadPreviewError:
                 raise
             except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as error:
