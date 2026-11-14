@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import atan2, cos, sin
+from math import asin, atan2, cos, degrees, radians, sin, tan
 
 import numpy as np
 import pytest
@@ -16,6 +16,8 @@ from scipy.optimize import least_squares
 
 from suspensionlab.core.double_wishbone import DoubleWishbone
 from suspensionlab.core.equilibrium import SpringEquilibrium
+from suspensionlab.core.metrics import corner_derivatives, corner_metrics
+from suspensionlab.core.screw_axis import instantaneous_motion
 from suspensionlab.model.entities import Axle
 from suspensionlab.model.templates import load_template
 
@@ -172,3 +174,84 @@ def test_reference_rodrigues_identity_and_quarter_turn() -> None:
     np.testing.assert_allclose(turn @ np.array([1.0, 0.0, 0.0]), [0.0, 1.0, 0.0], atol=1e-14, rtol=0)
     np.testing.assert_allclose(turn.T @ turn, np.eye(3), atol=1e-14, rtol=0)
     assert np.linalg.det(turn) == pytest.approx(1.0, abs=1e-14, rel=0)
+
+
+def reference_metrics(reference: ReferenceSolver, pose: ReferencePose, side: str,
+                      camber_deg: float, toe_deg: float) -> dict[str, float]:
+    """Метрики из независимо найденной позы и заданных определений проекций.
+
+    Система координат, знак и проекция пятна на землю те же, что у ядра;
+    это проверка реализации, а не независимое физическое определение.
+    """
+    sign = 1 if side == "left" else -1
+    camber, toe = radians(camber_deg), radians(toe_deg)
+    normal0 = np.array([sin(toe), sign * cos(toe), -tan(camber) * cos(toe)])
+    normal0 /= np.linalg.norm(normal0)
+    forward0 = np.array([cos(toe), -sign * sin(toe), 0])
+    normal, forward = pose.rotation @ normal0, pose.rotation @ forward0
+    lower, upper = reference.point(pose, "lbj"), reference.point(pose, "ubj")
+    axis = upper - lower
+    ground = lower + (-lower[2] / axis[2]) * axis
+    return {
+        "camber_deg": degrees(atan2(-normal[2], sign * normal[1])),
+        "toe_deg": degrees(atan2(-sign * forward[1], forward[0])),
+        "caster_deg": degrees(atan2(-axis[0], axis[2])),
+        "kpi_deg": degrees(atan2(-sign * axis[1], axis[2])),
+        "included_angle_deg": degrees(asin(min(1.0, abs(float(normal @ axis)) / np.linalg.norm(axis)))),
+        "scrub_radius_mm": sign * (pose.center[1] - ground[1]),
+        "mechanical_trail_mm": ground[0] - pose.center[0],
+        "lateral_displacement_mm": sign * (pose.center[1] - reference.center[1]),
+        "longitudinal_displacement_mm": pose.center[0] - reference.center[0],
+    }
+
+
+@pytest.mark.parametrize("case", [0, 1, 2])
+@pytest.mark.parametrize("side", ["left", "right"])
+@pytest.mark.parametrize("travel", [-20.0, 0.0, 20.0])
+@pytest.mark.parametrize("camber,toe", [(0.0, 0.0), (-1.5, 0.8)])
+def test_spatial_metrics_and_derivatives_against_independent_poses(
+    case: int, side: str, travel: float, camber: float, toe: float,
+) -> None:
+    axle = create_axle(case)
+    reference = ReferenceSolver(axle, side)
+    expected_pose = reference.solve(travel)
+    model = DoubleWishbone(axle, side)
+    pose = model.solve(travel, max_step_mm=1)
+    expected = reference_metrics(reference, expected_pose, side, camber, toe)
+    actual = corner_metrics(model, pose, static_camber_deg=camber, static_toe_deg=toe)
+    for name, value in expected.items():
+        assert getattr(actual, name) == pytest.approx(value, abs=2e-6, rel=0), name
+
+    step = 0.01  # мм, точки на той же ветви с независимым численным решением
+    low = reference.refine(travel - step, expected_pose.variables)
+    high = reference.refine(travel + step, expected_pose.variables)
+    left = reference_metrics(reference, low, side, camber, toe)
+    right = reference_metrics(reference, high, side, camber, toe)
+    derivatives = corner_derivatives(model, pose, static_camber_deg=camber, static_toe_deg=toe)
+    for key, attr, factor in (
+        ("camber_deg", "camber_deg_per_25mm", 25.0),
+        ("toe_deg", "toe_deg_per_25mm", 25.0),
+        ("lateral_displacement_mm", "lateral_mm_per_mm", 1.0),
+        ("longitudinal_displacement_mm", "longitudinal_mm_per_mm", 1.0),
+    ):
+        finite_difference = factor * (right[key] - left[key]) / (2 * step)
+        assert getattr(derivatives, attr) == pytest.approx(finite_difference, abs=1e-5, rel=0), key
+
+    # Оценка угловой скорости из разности двух абсолютных матриц вращения.
+    omega_matrix = (high.rotation @ low.rotation.T - low.rotation @ high.rotation.T) / (4 * step)
+    angular = np.array([omega_matrix[2, 1], omega_matrix[0, 2], omega_matrix[1, 0]])
+    linear = (high.center - low.center) / (2 * step)
+    motion = instantaneous_motion(model, pose)
+    np.testing.assert_allclose(motion.linear, linear, rtol=0, atol=2e-6)
+    np.testing.assert_allclose(motion.angular, angular, rtol=0, atol=2e-8)
+
+
+@pytest.mark.parametrize("side", ["left", "right"])
+def test_reference_static_angle_conventions_and_no_artificial_displacement(side: str) -> None:
+    ref = ReferenceSolver(create_axle(1), side)
+    pose = ref.solve(0)
+    metrics = reference_metrics(ref, pose, side, -1.5, 0.8)
+    assert metrics["camber_deg"] == pytest.approx(-1.5, abs=1e-12, rel=0)
+    assert metrics["toe_deg"] == pytest.approx(0.8, abs=1e-12, rel=0)
+    assert metrics["lateral_displacement_mm"] == pytest.approx(0, abs=1e-12, rel=0)
+    assert metrics["longitudinal_displacement_mm"] == pytest.approx(0, abs=1e-12, rel=0)
