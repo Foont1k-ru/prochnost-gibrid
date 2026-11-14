@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -33,9 +34,11 @@ from ..core.double_wishbone import DoubleWishbone
 from ..core.pose_view import PoseView, pose_view
 from ..core.stroke import StrokeLimits
 from ..core.sweep import travel_grid
+from ..core.sweep_plot import ANTIROLL_METRICS, antiroll_plot_points
 from ..i18n import tr
 from .analysis_dialog import AnalysisDialog
 from .canvas.antiroll_preview import AntiRollPreview
+from .canvas.sweep_plot import SweepPlot
 from .controller import AppController
 from .table_export import make_table_report, save_table_dialog
 from .widgets.playback import PlaybackControls
@@ -136,9 +139,28 @@ class AntiRollDialog(QDialog):
                                           self._playback_problem, self)
         preview_layout.addWidget(self._playback)
         self.finished.connect(lambda _result: self._playback.set_count(0))
+        self._plot = SweepPlot(self, metrics=ANTIROLL_METRICS, label_prefix="antiroll_ui.column",
+                               x_label="antiroll_ui.column.left_travel", empty_text="antiroll_ui.plot_empty")
+        self._plot_metric = QComboBox(self)
+        for key in ANTIROLL_METRICS:
+            self._plot_metric.addItem(tr(f"antiroll_ui.column.{key}"), key)
+        self._plot_metric.currentIndexChanged.connect(self._plot.set_metric)
+        self._plot.rowSelected.connect(lambda row: self._table.setCurrentCell(row, 0))
+        plot_notice = QLabel(tr("antiroll_ui.plot_notice"), self)
+        plot_notice.setWordWrap(True)
+        plot_container = QWidget(self)
+        plot_layout = QVBoxLayout(plot_container)
+        plot_layout.setContentsMargins(0, 0, 0, 0)
+        plot_layout.addWidget(self._plot_metric)
+        plot_layout.addWidget(self._plot, 1)
+        plot_layout.addWidget(plot_notice)
+        self._view_tabs = QTabWidget(self)
+        self._view_tabs.addTab(preview_container, tr("analysis.tab_pose"))
+        self._view_tabs.addTab(plot_container, tr("analysis.tab_plot"))
+        self._view_tabs.currentChanged.connect(self._playback.pause_for_view_change)
         self._split = QSplitter(Qt.Orientation.Horizontal, self)
         self._split.addWidget(self._table)
-        self._split.addWidget(preview_container)
+        self._split.addWidget(self._view_tabs)
         self._split.setSizes([700, 500])
         self._table.currentCellChanged.connect(self._show_row)
         self._slider.valueChanged.connect(lambda row: self._table.setCurrentCell(row, 0))
@@ -190,6 +212,7 @@ class AntiRollDialog(QDialog):
         self._points = ()
         self._suspensions = []
         self._checks = []
+        self._plot.set_points(())
         self._preview.clear()
         self._preview_status.setText(tr("analysis.preview_empty"))
         self._slider.setEnabled(False)
@@ -266,6 +289,7 @@ class AntiRollDialog(QDialog):
                     checks_pair = (check_components(pair[0], static_pair[0], options),
                                    check_components(pair[1], static_pair[1], options))
             self._checks.append(checks_pair)
+        self._plot.set_points(antiroll_plot_points(result.points, self._checks))
         self._preview.configure([point.state for point in result.points if point.state is not None], x, z,
                                 [view for pair in self._suspensions if pair is not None for view in pair])
         self._table.setRowCount(len(result.points))
@@ -310,6 +334,7 @@ class AntiRollDialog(QDialog):
         self._preview.set_mode("top" if self._view.currentData() == "top" else "front")
 
     def _show_row(self, row: int, *_args: object) -> None:
+        self._plot.set_row(row)
         if not 0 <= row < len(self._points):
             self._playback.observe_row(row)
             return

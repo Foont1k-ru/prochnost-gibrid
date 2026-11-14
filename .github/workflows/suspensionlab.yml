@@ -19,6 +19,8 @@ jobs:
     name: Python и Qt на Windows
     runs-on: windows-latest
     timeout-minutes: 20
+    outputs:
+      skip_package: ${{ steps.package_mode.outputs.skip_package }}
     defaults:
       run:
         working-directory: suspensionlab
@@ -27,6 +29,18 @@ jobs:
       PYTHONUTF8: '1'
     steps:
       - uses: actions/checkout@v4
+      - name: Определить режим пробной сборки
+        id: package_mode
+        shell: pwsh
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          git fetch --no-tags --depth=1 origin $env:HEAD_SHA
+          if ($LASTEXITCODE -ne 0) { throw 'Не удалось прочитать головной коммит' }
+          $message = git show -s --format=%B $env:HEAD_SHA
+          if ($LASTEXITCODE -ne 0) { throw 'Не удалось прочитать сообщение головного коммита' }
+          $skip = "$message" -match '(?i)\[test-only\]'
+          "skip_package=$($skip.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -54,7 +68,7 @@ jobs:
   package:
     name: Пробная сборка приложения Windows
     needs: test
-    if: github.event_name != 'workflow_dispatch' || inputs.diagnostic_run_id == ''
+    if: needs.test.outputs.skip_package != 'true' && (github.event_name != 'workflow_dispatch' || inputs.diagnostic_run_id == '')
     runs-on: windows-latest
     timeout-minutes: 25
     defaults:

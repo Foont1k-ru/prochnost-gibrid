@@ -309,6 +309,73 @@ def test_analysis_dialog_results_and_invalidation(window, qtbot):
     assert "пока не реализован" in dialog._status.text()
 
 
+def test_analysis_plot_uses_samples_and_tracks_table_selection(window, qtbot):
+    from PySide6.QtCore import QPoint, Qt
+
+    from suspensionlab.core.analysis import analyze_corner
+    from suspensionlab.ui.analysis_dialog import AnalysisDialog
+
+    window.controller.new_project("ring")
+    dialog = AnalysisDialog(window.controller, window)
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog._from.setValue(-1)
+    dialog._to.setValue(1)
+    dialog._run.click()
+    dialog._view_tabs.setCurrentIndex(1)
+    qtbot.wait(50)
+    result = analyze_corner(window.controller.project.front, window.controller.project.vehicle, [-1, 0, 1])
+    assert result.samples[0] is not None
+    assert dialog._plot.points[0].values[0] == result.samples[0].geometry.camber_deg
+    assert dialog._plot.row == 1
+    dialog._table.setCurrentCell(2, 0)
+    assert dialog._plot.row == 2
+    geometry = dialog._plot._geometry()
+    assert geometry is not None
+    target = dialog._plot._screen(-1, result.samples[0].geometry.camber_deg, geometry)
+    qtbot.mouseClick(dialog._plot, Qt.MouseButton.LeftButton, pos=QPoint(round(target.x()), round(target.y())))
+    assert dialog._table.currentRow() == 0 and dialog._plot.row == 0
+    assert not dialog._plot.grab().isNull()
+    dialog._plot_metric.setCurrentIndex(2)  # Нет заданной пружины — нет данных.
+    assert dialog._plot._geometry() is None
+    assert not dialog._plot.grab().isNull()
+    dialog._side.setCurrentIndex(1)
+    assert dialog._plot.points == () and dialog._plot.row == -1
+    dialog._run.click()
+    assert len(dialog._plot.points) == 3
+    dialog._from.setValue(0)
+    dialog._to.setValue(0)
+    dialog._run.click()
+    dialog._plot_metric.setCurrentIndex(0)
+    assert dialog._plot._geometry() is not None  # Одна точка и нулевой размах не ломают масштаб.
+    assert not dialog._plot.grab().isNull()
+
+
+def test_sweep_plot_with_gap_conflict_and_unreachable_row(window, qtbot):
+    from PySide6.QtCore import QPoint, Qt
+
+    from suspensionlab.core.sweep_plot import PLOT_METRICS, PlotPoint
+    from suspensionlab.ui.canvas.sweep_plot import SweepPlot
+
+    plot = SweepPlot(window)
+    qtbot.addWidget(plot)
+    plot.resize(500, 300)
+    plot.show()
+    def point(x, value, conflict=False):
+        return PlotPoint(x, (value,) + (None,) * (len(PLOT_METRICS) - 1), conflict)
+    plot.set_points((point(-1, 1), point(0, None), point(1, 2, True)))
+    assert not plot.grab().isNull()
+    selected = []
+    plot.rowSelected.connect(selected.append)
+    geometry = plot._geometry()
+    assert geometry is not None
+    target = plot._screen(0, 1.5, geometry)
+    qtbot.mouseClick(plot, Qt.MouseButton.LeftButton, pos=QPoint(round(target.x()), round(target.y())))
+    assert selected == [1]  # Даже нерассчитанную строку можно выбрать и прочитать её ошибку.
+    plot.set_row(2)
+    assert not plot.grab().isNull()
+
+
 def test_analysis_dialog_rejects_incomplete_inputs_and_clears_old_results(window, qtbot):
     from suspensionlab.ui.analysis_dialog import AnalysisDialog
 
@@ -551,6 +618,67 @@ def test_antiroll_dialog_compares_with_core_and_invalidates(window, qtbot):
     assert dialog._table.rowCount() == 0
     dialog._role.setCurrentIndex(1)
     assert not dialog._run.isEnabled() and "пока не реализован" in dialog._status.text()
+
+
+@pytest.mark.parametrize("kind", ["analysis", "antiroll"])
+def test_chart_tab_pauses_playback(window, qtbot, kind):
+    from suspensionlab.ui.analysis_dialog import AnalysisDialog
+    from suspensionlab.ui.antiroll_dialog import AntiRollDialog
+
+    window.controller.new_project("ring")
+    dialog = AnalysisDialog(window.controller, window) if kind == "analysis" else AntiRollDialog(window.controller, window)
+    qtbot.addWidget(dialog)
+    dialog._from.setValue(0)
+    dialog._to.setValue(2)
+    if kind == "antiroll":
+        dialog._axis_x.setText("-250")
+        dialog._axis_z.setText("320")
+        dialog._rate.setText("1000")
+    dialog._run.click()
+    dialog._playback.toggle()
+    assert dialog._playback._timer.isActive()
+    dialog._view_tabs.setCurrentIndex(1)
+    assert not dialog._playback._timer.isActive()
+    assert "пауза" in dialog._playback._message.text().lower()
+
+
+def test_antiroll_plot_selection_and_conflicts(window, qtbot):
+    from PySide6.QtCore import QPoint, Qt
+
+    from suspensionlab.core.antiroll import AntiRollScenario, AntiRollStudy
+    from suspensionlab.ui.antiroll_dialog import AntiRollDialog
+
+    window.controller.new_project("ring")
+    dialog = AntiRollDialog(window.controller, window)
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog._from.setValue(-1)
+    dialog._to.setValue(1)
+    dialog._axis_x.setText("-250")
+    dialog._axis_z.setText("320")
+    dialog._rate.setText("1000")
+    dialog._run.click()
+    dialog._view_tabs.setCurrentIndex(1)
+    dialog._plot_metric.setCurrentIndex(2)  # Скручивание
+    qtbot.wait(50)
+    state = AntiRollStudy(window.controller.project.front, AntiRollScenario(-250, 320, 1000)).sweep([(-1, 1)]).points[0].state
+    assert state is not None
+    assert dialog._plot.points[0].values[2] == pytest.approx(state.twist_deg, abs=1e-8)
+    geometry = dialog._plot._geometry()
+    assert geometry is not None
+    target = dialog._plot._screen(-1, dialog._plot.points[0].values[2], geometry)
+    qtbot.mouseClick(dialog._plot, Qt.MouseButton.LeftButton, pos=QPoint(round(target.x()), round(target.y())))
+    assert dialog._table.currentRow() == 0 and dialog._plot.row == 0
+    assert not dialog._plot.grab().isNull()
+    dialog._show_spring.setChecked(True)
+    dialog._spring_length.setValue(230)
+    dialog._coil_bind.setValue(231)
+    assert dialog._plot.points == ()
+    dialog._run.click()
+    assert dialog._plot.points[1].conflict
+    assert not dialog._plot.grab().isNull()
+    dialog._mode.setCurrentIndex(0)
+    assert dialog._plot.points == ()
 
 
 def test_antiroll_dialog_input_validation_and_failure(window, qtbot, monkeypatch, caplog):

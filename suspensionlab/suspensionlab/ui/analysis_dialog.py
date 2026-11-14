@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -34,8 +35,10 @@ from ..core.double_wishbone import DoubleWishbone
 from ..core.pose_view import PoseView, pose_view
 from ..core.stroke import StrokeLimits
 from ..core.sweep import travel_grid
+from ..core.sweep_plot import PLOT_METRICS, sweep_plot_points
 from ..i18n import tr
 from .canvas.pose_preview import PosePreview
+from .canvas.sweep_plot import SweepPlot
 from .controller import AppController
 from .table_export import make_table_report, save_table_dialog
 from .widgets.playback import PlaybackControls
@@ -131,9 +134,27 @@ class AnalysisDialog(QDialog):
         preview_layout.addWidget(self._playback)
         self._playback_reasons: list[str | None] = []
         self.finished.connect(lambda _result: self._playback.set_count(0))
+        self._plot = SweepPlot(self)
+        self._plot_metric = QComboBox(self)
+        for key in PLOT_METRICS:
+            self._plot_metric.addItem(tr(f"analysis.column.{key}"), key)
+        self._plot_metric.currentIndexChanged.connect(self._plot.set_metric)
+        self._plot.rowSelected.connect(lambda row: self._table.setCurrentCell(row, 0))
+        plot_notice = QLabel(tr("analysis.plot_notice"), self)
+        plot_notice.setWordWrap(True)
+        plot_container = QWidget(self)
+        plot_layout = QVBoxLayout(plot_container)
+        plot_layout.setContentsMargins(0, 0, 0, 0)
+        plot_layout.addWidget(self._plot_metric)
+        plot_layout.addWidget(self._plot, 1)
+        plot_layout.addWidget(plot_notice)
+        self._view_tabs = QTabWidget(self)
+        self._view_tabs.addTab(preview_container, tr("analysis.tab_pose"))
+        self._view_tabs.addTab(plot_container, tr("analysis.tab_plot"))
+        self._view_tabs.currentChanged.connect(self._playback.pause_for_view_change)
         self._split = QSplitter(Qt.Orientation.Horizontal, self)
         self._split.addWidget(self._table)
-        self._split.addWidget(preview_container)
+        self._split.addWidget(self._view_tabs)
         self._split.setSizes([700, 500])
         self._table.currentCellChanged.connect(self._show_row)
         self._slider.valueChanged.connect(lambda row: self._table.setCurrentCell(row, 0))
@@ -193,6 +214,7 @@ class AnalysisDialog(QDialog):
         self._frames = []
         self._cambers = []
         self._playback_reasons = []
+        self._plot.set_points(())
         self._preview.clear()
         self._preview_status.setText(tr("analysis.preview_empty"))
         self._slider.setEnabled(False)
@@ -267,6 +289,7 @@ class AnalysisDialog(QDialog):
         if not all(isfinite(value) and 0 < value < 100000 for value in (radius, width)):
             frames = [None] * len(frames)
         self._frames = frames
+        self._plot.set_points(sweep_plot_points(result, characteristic, velocity))
         self._playback_reasons = []
         for frame, sample in zip(frames, result.samples, strict=True):
             reason = None
@@ -336,6 +359,7 @@ class AnalysisDialog(QDialog):
             self._show_row(index)
 
     def _show_row(self, row: int, *_args: object) -> None:
+        self._plot.set_row(row)
         if not 0 <= row < len(self._frames):
             self._playback.observe_row(row)
             return

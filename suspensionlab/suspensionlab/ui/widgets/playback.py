@@ -54,6 +54,11 @@ class PlaybackControls(QWidget):
         if reason is not None:
             self._message.setText(tr("playback.stopped", reason=reason))
 
+    def pause_for_view_change(self, *_args: object) -> None:
+        """Не продолжает проигрывание, когда кнопка паузы скрыта другой вкладкой."""
+        if self._timer.isActive():
+            self.stop(tr("playback.paused"))
+
     def toggle(self) -> None:
         if self._timer.isActive():
             self.stop(tr("playback.paused"))
