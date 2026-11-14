@@ -22,6 +22,20 @@ def window(qtbot, tmp_path: Path):
     win.controller.dirty = False
 
 
+def test_packaging_smoke_from_isolated_directory(tmp_path):
+    import os
+    import subprocess
+    import sys
+
+    entry = Path(__file__).resolve().parents[1] / "packaging_entry.py"
+    report = tmp_path / "report.txt"
+    env = {**os.environ, "QT_QPA_PLATFORM": "offscreen", "APPDATA": str(tmp_path)}
+    result = subprocess.run([sys.executable, str(entry), "--packaging-check", str(report)], cwd=tmp_path,
+                            env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=90)
+    contents = report.read_text(encoding="utf-8") if report.exists() else "нет файла отчёта"
+    assert result.returncode == 0 and contents.strip() == "OK", f"{contents}\n{result.stdout}\n{result.stderr}"
+
+
 def test_window_and_theme(window, qtbot):
     assert window._tabs.count() == 3
     assert "Подвеска" in window.windowTitle()

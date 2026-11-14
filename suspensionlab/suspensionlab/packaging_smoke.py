@@ -9,11 +9,18 @@ from PySide6.QtCore import QSettings, QTimer
 
 from .app import create_application
 from .config import log_file_path, resources_dir
+from .core.equilibrium import SpringEquilibrium
+from .core.sweep_plot import ANTIROLL_METRICS, PLOT_METRICS
+from .export.csv_report import write_csv_report
 from .i18n import tr
 from .model.project_io import load_project
 from .model.templates import list_templates
 from .ui.analysis_dialog import AnalysisDialog
+from .ui.antiroll_dialog import AntiRollDialog
+from .ui.equilibrium_dialog import EquilibriumDialog
+from .ui.equilibrium_path_dialog import EquilibriumPathDialog
 from .ui.main_window import MainWindow
+from .ui.table_export import make_plot_report
 
 
 def _require(condition: bool, message: str) -> None:
@@ -72,15 +79,61 @@ def run_packaging_check() -> None:
         dialog = AnalysisDialog(window.controller, window)
         dialog.show()
         dialog._from.setValue(0)
-        dialog._to.setValue(0)
+        dialog._to.setValue(1)
         dialog._run.click()
         app.processEvents()
-        _require(dialog._table.rowCount() == 1, "Таблица хода не рассчитана")
+        _require(dialog._table.rowCount() == 2, "Таблица хода не рассчитана")
         camber = dialog._table.item(0, 1)
         if camber is None:
             raise RuntimeError("Не отображён развал")
         float(camber.text())
         _require(dialog._export_button.isEnabled(), "Результат анализа недоступен")
+        dialog._view_tabs.setCurrentIndex(1)
+        app.processEvents()
+        _require(not dialog._plot.grab().isNull() and len(dialog._plot.points) == 2, "График хода недоступен")
+        _require(len(dialog._summary.groups) == 1 and dialog._summary.groups[0].first.status == "incomplete",
+                 "Сводка не указывает незаданные проверки")
+        plot_report = make_plot_report(
+            window.controller, dialog._table, tr("analysis.title"), dialog._report_parameters(),
+            dialog._plot.points, tuple(tr(f"analysis.column.{key}") for key in PLOT_METRICS),
+            tr("analysis.column.travel"), (8,),
+        )
+        csv_path = write_csv_report(plot_report, temporary / "graph.csv")
+        _require(csv_path.read_bytes().startswith(b"\xef\xbb\xbf"), "CSV точек не записан")
+        antiroll = AntiRollDialog(window.controller, window)
+        antiroll.show()
+        antiroll._from.setValue(0)
+        antiroll._to.setValue(1)
+        antiroll._axis_x.setText("-250")
+        antiroll._axis_z.setText("320")
+        antiroll._rate.setText("1000")
+        antiroll._run.click()
+        antiroll._view_tabs.setCurrentIndex(1)
+        antiroll._plot_pair.setChecked(True)
+        app.processEvents()
+        _require(antiroll._table.rowCount() == 2 and antiroll._plot._secondary_metric == ANTIROLL_METRICS.index("right_angle"),
+                 "Сравнение сторон стабилизатора недоступно")
+        _require(not antiroll._plot.grab().isNull(), "График стабилизатора недоступен")
+        _require(antiroll._summary.groups[0].first.status == "incomplete", "Сводка стабилизатора некорректна")
+        equilibrium = EquilibriumDialog(window.controller, window)
+        equilibrium._length.setValue(230)
+        equilibrium._load.setValue(SpringEquilibrium(window.controller.project.front, 230).evaluate(12, 1).wheel_support_n)
+        equilibrium._run.click()
+        path = equilibrium._path
+        _require(path is not None and path.completed, "Не рассчитан учебный путь баланса")
+        assert path is not None
+        path_view = EquilibriumPathDialog(path, equilibrium)
+        path_view.show()
+        path_view._views.setCurrentIndex(1)
+        app.processEvents()
+        _require(bool(path_view._plot.points) and not path_view._plot.grab().isNull(), "График пути недоступен")
+        path_report = equilibrium._path_graph_report(path, path_view._table, path_view._plot.points,
+                                                       path_view._plot_metric.currentText())
+        _require(len(path_report.rows) == len(path.samples), "Отчёт графика пути неполон")
+        write_csv_report(path_report, temporary / "path-graph.csv")
+        path_view.close()
+        equilibrium.close()
+        antiroll.close()
         project_path = window.controller.save_project(temporary / "test.susp.json")
         loaded = load_project(project_path, require_complete=True)
         _require(loaded.front.type_code == "double_wishbone", "Проект не восстановлен")
