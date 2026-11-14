@@ -80,11 +80,11 @@ class CadJob:
                 if not output.is_file() or output.stat().st_size > 32 * 1024 * 1024:
                     raise CadPreviewError("output")
                 with np.load(output, allow_pickle=False) as data:
-                    faces, skipped = data["faces"], data["skipped"]
-                    if (faces.shape != (1,) or faces.dtype.kind not in "iu" or
-                            skipped.shape != (1,) or skipped.dtype.kind not in "iu"):
+                    faces, skipped, recovered = data["faces"], data["skipped"], data["recovered"]
+                    if any(value.shape != (1,) or value.dtype.kind not in "iu"
+                           for value in (faces, skipped, recovered)):
                         raise CadPreviewError("output")
-                    return CadMesh(data["triangles"], int(faces[0]), int(skipped[0]))
+                    return CadMesh(data["triangles"], int(faces[0]), int(skipped[0]), int(recovered[0]))
             except CadPreviewError:
                 raise
             except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as error:

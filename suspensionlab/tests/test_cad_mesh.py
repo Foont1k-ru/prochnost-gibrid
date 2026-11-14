@@ -80,10 +80,10 @@ def test_worker_saves_partial_count(monkeypatch, tmp_path):
     from suspensionlab.core import cad_worker
 
     source, output, report = (tmp_path / name for name in ("a.step", "mesh.npz", "status.json"))
-    monkeypatch.setattr(cad_worker, "create_mesh", lambda path, deviation: (np.zeros((1, 3, 3)), 3, 2))
+    monkeypatch.setattr(cad_worker, "create_mesh", lambda path, deviation: (np.zeros((1, 3, 3)), 3, 2, 1))
     assert cad_worker.main([str(source), str(output), str(report), "2"]) == 0
     with np.load(output, allow_pickle=False) as data:
-        assert list(data["faces"]) == [3] and list(data["skipped"]) == [2]
+        assert list(data["faces"]) == [3] and list(data["skipped"]) == [2] and list(data["recovered"]) == [1]
 
 
 def test_transport_preserves_and_validates_missing_faces(monkeypatch, tmp_path):
@@ -100,14 +100,22 @@ def test_transport_preserves_and_validates_missing_faces(monkeypatch, tmp_path):
         def run(command, **kwargs):
             output, report = Path(command[-3]), Path(command[-2])
             np.savez_compressed(output, triangles=np.zeros((1, 3, 3)),
-                                faces=np.array([3]), skipped=np.array([skipped]))
+                                faces=np.array([3]), skipped=np.array([skipped]), recovered=np.array([1]))
             report.write_text(json.dumps({"status": "ok"}), encoding="utf-8")
             return DummyProcess()
         return run
 
     monkeypatch.setattr(cad_transport.subprocess, "Popen", spawn(2))
     result = CadJob().run(tmp_path / "fixture.step", 2)
-    assert result.face_count == 3 and result.skipped_faces == 2
+    assert result.face_count == 3 and result.skipped_faces == 2 and result.recovered_faces == 1
     monkeypatch.setattr(cad_transport.subprocess, "Popen", spawn(3))
     with pytest.raises(CadPreviewError, match="output"):
         CadJob().run(tmp_path / "fixture.step", 2)
+
+
+def test_recovered_faces_must_fit_total():
+    triangles = np.zeros((1, 3, 3))
+    assert CadMesh(triangles, 4, 1, 2).recovered_faces == 2
+    for recovered in (-1, 4, 5):
+        with pytest.raises(ValueError):
+            CadMesh(triangles, 4, 1, recovered)

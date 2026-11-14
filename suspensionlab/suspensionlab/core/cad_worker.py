@@ -12,6 +12,7 @@ from pathlib import Path
 import numpy as np
 
 from .cad_mesh import MAX_COORDINATE, MAX_TRIANGLES
+from .cad_recovery import recover_revolution_face
 from .step_inventory import MAX_BYTES
 
 
@@ -35,7 +36,7 @@ def _retry_face_triangulation(face, location):
     return _face_triangulation(face, location)
 
 
-def create_mesh(path: Path, deviation: float) -> tuple[np.ndarray, int, int]:
+def create_mesh(path: Path, deviation: float) -> tuple[np.ndarray, int, int, int]:
     """OCCT самостоятельно читает сборочные положения; наши кандидаты не применяются."""
     if not path.is_file() or path.stat().st_size > MAX_BYTES or path.stat().st_size == 0:
         raise CadWorkerError("file_size")
@@ -67,7 +68,7 @@ def create_mesh(path: Path, deviation: float) -> tuple[np.ndarray, int, int]:
         raise CadWorkerError("mesh")
     explorer = TopExp_Explorer(shape, TopAbs_ShapeEnum.TopAbs_FACE)
     chunks: list[np.ndarray] = []
-    faces = total = skipped = 0
+    faces = total = skipped = recovered = 0
     while explorer.More():
         faces += 1
         if faces > MAX_TRIANGLES:
@@ -77,6 +78,13 @@ def create_mesh(path: Path, deviation: float) -> tuple[np.ndarray, int, int]:
         poly = _face_triangulation(face, location)
         if poly is None or poly.NbTriangles() <= 0:
             poly = _retry_face_triangulation(face, location)
+        if poly is None or poly.NbTriangles() <= 0:
+            restored = recover_revolution_face(face, deviation)
+            if restored is not None:
+                location = TopLoc_Location()
+                poly = _face_triangulation(restored, location)
+                if poly is not None and poly.NbTriangles() > 0:
+                    recovered += 1
         if poly is None or poly.NbTriangles() <= 0:
             skipped += 1
             explorer.Next()
@@ -104,7 +112,7 @@ def create_mesh(path: Path, deviation: float) -> tuple[np.ndarray, int, int]:
         explorer.Next()
     if not chunks:
         raise CadWorkerError("no_faces")
-    return np.concatenate(chunks, axis=0), faces, skipped
+    return np.concatenate(chunks, axis=0), faces, skipped, recovered
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -113,9 +121,10 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     source, output, report = map(Path, args[:3])
     try:
-        triangles, faces, skipped = create_mesh(source, float(args[3]))
+        triangles, faces, skipped, recovered = create_mesh(source, float(args[3]))
         np.savez_compressed(output, triangles=triangles, faces=np.array([faces], dtype=np.int64),
-                            skipped=np.array([skipped], dtype=np.int64))
+                            skipped=np.array([skipped], dtype=np.int64),
+                            recovered=np.array([recovered], dtype=np.int64))
         report.write_text(json.dumps({"status": "ok"}), encoding="utf-8")
         return 0
     except CadWorkerError as error:

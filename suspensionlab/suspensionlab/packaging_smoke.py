@@ -58,11 +58,31 @@ def run_startup_check() -> None:
 def run_cad_check() -> None:
     """Искусственный STEP и отдельный процесс именно собранного приложения."""
     import numpy as np
+    from OCP.BRep import BRep_Builder
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeWire
     from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+    from OCP.GC import GC_MakeSegment
+    from OCP.Geom import Geom_SurfaceOfRevolution
+    from OCP.gp import gp_Ax1, gp_Ax2, gp_Circ, gp_Dir, gp_Pnt
     from OCP.IFSelect import IFSelect_ReturnStatus
     from OCP.STEPControl import STEPControl_StepModelType, STEPControl_Writer
+    from OCP.TopoDS import TopoDS_Face
 
+    from .core.cad_recovery import recover_revolution_face
     from .core.cad_transport import CadJob
+
+    # Искусственная поверхность с единственным круговым контуром, как отдельный
+    # тест наличия кода восстановления в собранной программе.
+    axis = gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(0, 1, 0))
+    profile = GC_MakeSegment(gp_Pnt(0, 5, 0), gp_Pnt(2, 0, 0)).Value()
+    surface = Geom_SurfaceOfRevolution(profile, axis)
+    circle = gp_Circ(gp_Ax2(gp_Pnt(0, 0, 0), gp_Dir(0, 1, 0)), 2)
+    wire = BRepBuilderAPI_MakeWire(BRepBuilderAPI_MakeEdge(circle).Edge()).Wire()
+    face = TopoDS_Face()
+    builder = BRep_Builder()
+    builder.MakeFace(face, surface, 1e-7)
+    builder.Add(face, wire)
+    _require(recover_revolution_face(face, 10.) is not None, "Восстановление тестовой поверхности недоступно")
 
     with TemporaryDirectory(prefix="suspensionlab-cad-check-") as directory:
         path = Path(directory) / "fixture.step"
