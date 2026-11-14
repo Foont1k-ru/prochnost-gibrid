@@ -27,6 +27,14 @@ def _face_triangulation(face, location):
     return BRep_Tool.Triangulation_s(face, location)
 
 
+def _retry_face_triangulation(face, location):
+    """Пробуем мелкую сетку только для тех граней, которые не построились."""
+    from OCP.BRepMesh import BRepMesh_IncrementalMesh
+
+    BRepMesh_IncrementalMesh(face, 0.2, False, 0.4, False)
+    return _face_triangulation(face, location)
+
+
 def create_mesh(path: Path, deviation: float) -> tuple[np.ndarray, int, int]:
     """OCCT самостоятельно читает сборочные положения; наши кандидаты не применяются."""
     if not path.is_file() or path.stat().st_size > MAX_BYTES or path.stat().st_size == 0:
@@ -67,6 +75,8 @@ def create_mesh(path: Path, deviation: float) -> tuple[np.ndarray, int, int]:
         face = TopoDS.Face(explorer.Current())
         location = TopLoc_Location()
         poly = _face_triangulation(face, location)
+        if poly is None or poly.NbTriangles() <= 0:
+            poly = _retry_face_triangulation(face, location)
         if poly is None or poly.NbTriangles() <= 0:
             skipped += 1
             explorer.Next()

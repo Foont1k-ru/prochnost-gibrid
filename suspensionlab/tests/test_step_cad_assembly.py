@@ -132,9 +132,27 @@ def test_missing_faces_are_counted_not_silently_accepted(tmp_path, monkeypatch):
         return None if calls == 1 else original(face, location)
 
     monkeypatch.setattr(cad_worker, "_face_triangulation", miss_first)
+    monkeypatch.setattr(cad_worker, "_retry_face_triangulation", lambda face, location: None)
     triangles, faces, skipped = cad_worker.create_mesh(path, 2.)
     assert (faces, skipped, calls) == (12, 1, 12)
     assert len(triangles) == 22
     monkeypatch.setattr(cad_worker, "_face_triangulation", lambda face, location: None)
     with pytest.raises(cad_worker.CadWorkerError, match="no_faces"):
         cad_worker.create_mesh(path, 2.)
+
+
+def test_retry_can_recover_missing_face(tmp_path, monkeypatch):
+    path = tmp_path / "retry.step"
+    write_cad_assembly(path)
+    original = cad_worker._face_triangulation
+    calls = 0
+
+    def miss_first(face, location):
+        nonlocal calls
+        calls += 1
+        return None if calls == 1 else original(face, location)
+
+    monkeypatch.setattr(cad_worker, "_face_triangulation", miss_first)
+    triangles, faces, skipped = cad_worker.create_mesh(path, 2.)
+    assert (faces, skipped) == (12, 0)
+    assert len(triangles) >= 24 and calls == 13

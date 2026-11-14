@@ -56,7 +56,7 @@ class CadPreviewDialog(QDialog):
         self._deviation = QDoubleSpinBox(self)
         self._deviation.setRange(0.2, 20.)
         self._deviation.setDecimals(1)
-        self._deviation.setValue(2.)
+        self._deviation.setValue(10.)
         self._deviation.setSingleStep(0.5)
         self._deviation.setSuffix(tr("cad_preview.mm"))
         self._reload = QPushButton(tr("cad_preview.reload"), self)
