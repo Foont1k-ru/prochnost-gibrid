@@ -1478,6 +1478,75 @@ def test_antiroll_action_opens_dialog(window, monkeypatch):
     assert seen == [(window.controller, window), "opened", "released"]
 
 
+def test_3d_wire_preview_selection_camera_playback_and_invalidation(window, qtbot):
+    from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent, QWheelEvent
+    from PySide6.QtWidgets import QApplication
+
+    from suspensionlab.ui.analysis_dialog import AnalysisDialog
+
+    controller = window.controller
+    controller.new_project("ring")
+    before = controller.project.to_dict()
+    dialog = AnalysisDialog(controller, window)
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog._from.setValue(-1)
+    dialog._to.setValue(1)
+    dialog._run.click()
+    assert dialog._preview3d.frame and dialog._preview3d.frame.travel_mm == 0
+    bounds = dialog._preview3d.bounds
+    dialog._playback.toggle()
+    assert dialog._playback._timer.isActive()
+    dialog._preview_mode.setCurrentIndex(1)
+    assert not dialog._playback._timer.isActive()
+    assert dialog._preview_views.currentWidget() is dialog._preview3d
+    assert not dialog._scene_notice.isHidden() and "не загруженная модель STEP" in dialog._scene_notice.text()
+    assert not dialog._preview3d.grab().isNull()
+    view = dialog._preview3d
+    start_yaw, start_elevation = view.yaw, view.elevation
+    QApplication.sendEvent(view, QMouseEvent(QEvent.Type.MouseButtonPress, QPointF(100, 100), Qt.MouseButton.LeftButton,
+                                              Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier))
+    QApplication.sendEvent(view, QMouseEvent(QEvent.Type.MouseMove, QPointF(130, 110), Qt.MouseButton.NoButton,
+                                              Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier))
+    QApplication.sendEvent(view, QMouseEvent(QEvent.Type.MouseButtonRelease, QPointF(130, 110), Qt.MouseButton.LeftButton,
+                                              Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier))
+    assert view.yaw != start_yaw and view.elevation != start_elevation
+    QApplication.sendEvent(view, QWheelEvent(QPointF(100, 100), QPointF(100, 100), QPoint(0, 0), QPoint(0, 120),
+                                             Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier,
+                                             Qt.ScrollPhase.NoScrollPhase, False))
+    assert view.zoom > 1
+    dialog._reset_camera.click()
+    assert view.yaw == start_yaw and view.elevation == start_elevation and view.zoom == 1
+    dialog._playback.toggle()
+    dialog._playback.advance()
+    assert view.frame and view.frame.travel_mm == 1
+    assert view.bounds == bounds and not dialog._playback._timer.isActive()
+    assert controller.project.to_dict() == before
+    dialog._side.setCurrentIndex(1)
+    assert view.frame is None and view.bounds is None and not dialog._playback._timer.isActive()
+    dialog._run.click()
+    assert view.frame and view.frame.travel_mm == 0
+    assert dialog._frames[1] and dialog._frames[1].center[1] < 0
+
+
+def test_3d_preview_failure_does_not_replace_table_or_2d_view(window, qtbot, monkeypatch):
+    from suspensionlab.ui import analysis_dialog
+
+    window.controller.new_project("ring")
+    dialog = analysis_dialog.AnalysisDialog(window.controller, window)
+    qtbot.addWidget(dialog)
+    dialog._from.setValue(0)
+    dialog._to.setValue(1)
+    def fail(*args, **kwargs):
+        raise ValueError("3d only")
+    monkeypatch.setattr(analysis_dialog, "pose_scene", fail)
+    dialog._run.click()
+    assert dialog._table.rowCount() == 2 and dialog._preview.frame is not None
+    assert dialog._preview3d.frame is None and "недоступен" in dialog._preview3d.message
+    assert dialog._export_button.isEnabled()
+
+
 def test_pose_preview_selection_steps_conflict_and_invalidation(window, qtbot):
     from suspensionlab.ui.analysis_dialog import AnalysisDialog
 
@@ -1501,10 +1570,17 @@ def test_pose_preview_selection_steps_conflict_and_invalidation(window, qtbot):
     assert "геометрическ" in dialog._preview_status.text().lower()
     assert "Смыкание" in dialog._preview_status.text()
     assert "Превышен упор отбоя" in dialog._preview_status.text()
+    dialog._preview_mode.setCurrentIndex(1)
+    assert dialog._preview3d.frame is not None
+    assert "Смыкание" in dialog._preview_status.text() and "Превышен упор отбоя" in dialog._preview_status.text()
+    assert {s.kind for s in dialog._preview3d.frame.segments} >= {"spring", "damper"}
+    dialog._playback.toggle()
+    assert not dialog._playback._timer.isActive()
     z0 = dialog._preview.frame.center[2]
     bounds = dialog._preview.bounds
     dialog._next.click()
     assert dialog._preview.frame.travel_mm == pytest.approx(0.5)
+    assert dialog._preview3d.frame and dialog._preview3d.frame.travel_mm == pytest.approx(0.5)
     assert dialog._preview.frame.center[2] == pytest.approx(z0 + 0.5, abs=1e-6)
     assert dialog._preview.bounds == bounds
     dialog._previous.click()
@@ -1539,11 +1615,14 @@ def test_pose_preview_handles_unsolved_row_without_stale_image(window, qtbot, mo
                       samples=(original.samples[0], None))
     monkeypatch.setattr(analysis_dialog, "analyze_corner", lambda *args, **kwargs: partial)
     dialog._run.click()
-    assert dialog._preview.frame is not None
+    dialog._preview_mode.setCurrentIndex(1)
+    assert dialog._preview.frame is not None and dialog._preview3d.frame is not None
+    bounds = dialog._preview3d.bounds
     dialog._next.click()
     assert dialog._preview.frame is None and "недоступна" in dialog._preview_status.text()
+    assert dialog._preview3d.frame is None and dialog._preview3d.bounds == bounds
     dialog._previous.click()
-    assert dialog._preview.frame is not None
+    assert dialog._preview.frame is not None and dialog._preview3d.frame is not None
 
 
 def test_antiroll_preview_steps_both_views_and_invalidates(window, qtbot):

@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSlider,
     QSplitter,
+    QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
@@ -35,6 +36,7 @@ from ..core.damper import DamperForcePoint, LinearDamperCharacteristic, evaluate
 from ..core.double_wishbone import DoubleWishbone
 from ..core.pose_view import PoseView, pose_view
 from ..core.sample_summary import corner_summary
+from ..core.scene3d import Scene3D, pose_scene
 from ..core.stroke import StrokeLimits
 from ..core.sweep import travel_grid
 from ..core.sweep_plot import PLOT_METRICS, sweep_plot_points
@@ -43,6 +45,7 @@ from ..export.static_report import static_report_rows
 from ..i18n import tr
 from .analysis_explanation import explain_corner_sample, explain_static_sample
 from .canvas.pose_preview import PosePreview
+from .canvas.scene3d_preview import Scene3DPreview
 from .canvas.sweep_plot import SweepPlot
 from .component_transfer import transferable_damper_lengths
 from .controller import AppController
@@ -135,9 +138,22 @@ class AnalysisDialog(QDialog):
         self._table.setAlternatingRowColors(True)
         self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._frames: list[PoseView | None] = []
+        self._frames3d: list[Scene3D | None] = []
         self._samples: tuple[CornerSample | None, ...] = ()
         self._cambers: list[float] = []
         self._preview = PosePreview(self)
+        self._preview3d = Scene3DPreview(self)
+        self._preview_views = QStackedWidget(self)
+        self._preview_views.addWidget(self._preview)
+        self._preview_views.addWidget(self._preview3d)
+        self._preview_mode = QComboBox(self)
+        self._preview_mode.addItem(tr("analysis.scene3d.front"))
+        self._preview_mode.addItem(tr("analysis.scene3d.mode"))
+        self._reset_camera = QPushButton(tr("analysis.scene3d.reset"), self)
+        self._reset_camera.setEnabled(False)
+        self._reset_camera.clicked.connect(self._preview3d.reset_camera)
+        self._preview_mode.currentIndexChanged.connect(self._preview_views.setCurrentIndex)
+        self._preview_mode.currentIndexChanged.connect(lambda index: self._reset_camera.setEnabled(index == 1))
         self._preview_status = QLabel(tr("analysis.preview_empty"), self)
         self._preview_status.setWordWrap(True)
         self._slider = QSlider(Qt.Orientation.Horizontal, self)
@@ -153,12 +169,22 @@ class AnalysisDialog(QDialog):
         preview_container = QWidget(self)
         preview_layout = QVBoxLayout(preview_container)
         preview_layout.setContentsMargins(0, 0, 0, 0)
-        preview_layout.addWidget(self._preview, 1)
+        view_controls = QHBoxLayout()
+        view_controls.addWidget(self._preview_mode, 1)
+        view_controls.addWidget(self._reset_camera)
+        preview_layout.addLayout(view_controls)
+        preview_layout.addWidget(self._preview_views, 1)
+        self._scene_notice = QLabel(tr("analysis.scene3d.notice"), self)
+        self._scene_notice.setWordWrap(True)
+        self._scene_notice.setVisible(False)
+        self._preview_mode.currentIndexChanged.connect(lambda index: self._scene_notice.setVisible(index == 1))
+        preview_layout.addWidget(self._scene_notice)
         preview_layout.addWidget(self._preview_status)
         preview_layout.addLayout(navigation)
         self._playback = PlaybackControls(self._table.currentRow, lambda row: self._table.setCurrentCell(row, 0),
                                           self._playback_problem, self)
         preview_layout.addWidget(self._playback)
+        self._preview_mode.currentIndexChanged.connect(self._playback.pause_for_view_change)
         self._playback_reasons: list[str | None] = []
         self.finished.connect(lambda _result: self._playback.set_count(0))
         self._plot = SweepPlot(self)
@@ -276,6 +302,7 @@ class AnalysisDialog(QDialog):
         self._export_button.setEnabled(False)
         self._plot_export_button.setEnabled(False)
         self._frames = []
+        self._frames3d = []
         self._samples = ()
         self._explanation.setPlainText(tr("analysis.explain.empty"))
         self._cambers = []
@@ -283,6 +310,7 @@ class AnalysisDialog(QDialog):
         self._plot.set_points(())
         self._summary.set_samples(())
         self._preview.clear()
+        self._preview3d.clear()
         self._preview_status.setText(tr("analysis.preview_empty"))
         self._slider.setEnabled(False)
         self._previous.setEnabled(False)
@@ -530,6 +558,21 @@ class AnalysisDialog(QDialog):
         if not all(isfinite(value) and 0 < value < 100000 for value in (radius, width)):
             frames = [None] * len(frames)
         self._frames = frames
+        frames3d: list[Scene3D | None] = []
+        for frame, sample in zip(frames, result.samples, strict=True):
+            try:
+                scene = pose_scene(model, sample.pose, axle, frame) if frame is not None and sample is not None else None
+            except (ValueError, KeyError, ArithmeticError) as error:
+                LOG.warning("3D-каркас для хода %s недоступен: %s", frame.travel_mm if frame else "—", error)
+                scene = None
+            frames3d.append(scene)
+        try:
+            self._preview3d.configure([scene for scene in frames3d if scene is not None])
+        except (ValueError, ArithmeticError) as error:
+            LOG.warning("Границы 3D-каркаса недоступны: %s", error)
+            frames3d = [None] * len(frames)
+            self._preview3d.clear(tr("analysis.preview_no_pose"))
+        self._frames3d = frames3d
         self._samples = result.samples
         self._plot.set_points(sweep_plot_points(result, characteristic, velocity))
         self._playback_reasons = []
@@ -611,11 +654,17 @@ class AnalysisDialog(QDialog):
             self._explanation.setPlainText(explain_corner_sample(self._samples[row], spring))
         if not 0 <= row < len(self._frames):
             self._playback.observe_row(row)
+            self._preview3d.show_frame(None, tr("analysis.scene3d.unavailable"))
+            self._preview.frame = None
+            self._preview.message = tr("analysis.preview_no_pose")
+            self._preview.update()
             return
         self._playback.observe_row(row)
         self._slider.blockSignals(True)
         self._slider.setValue(row)
         self._slider.blockSignals(False)
+        scene = self._frames3d[row] if row < len(self._frames3d) else None
+        self._preview3d.show_frame(scene, tr("analysis.scene3d.unavailable"))
         frame = self._frames[row]
         if frame is None:
             # Сохраняем общий масштаб для возможного выбора следующей строки.
