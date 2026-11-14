@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .step_placements import PlacementFrames
+    from .step_units import ContextLengthUnit
 
 MAX_BYTES = 64 * 1024 * 1024
 MAX_STATEMENT = 4 * 1024 * 1024
@@ -60,6 +61,7 @@ class StepInventory:
     unsupported_string_escape: bool
     placement_frames: tuple[PlacementFrames, ...]
     placement_limit: bool
+    context_units: tuple[ContextLengthUnit, ...]
 
 
 def _statements(text: str):
@@ -220,7 +222,13 @@ def read_step_inventory(path: Path) -> StepInventory:
     except PlacementLimitError:
         frames = ()
         placement_limit = True
+    from .step_units import inspect_context_units
+
+    contexts = {context for frame in frames if frame.representation_match is not None
+                for context in (frame.representation_match.context_1, frame.representation_match.context_2)
+                if context is not None}
+    context_units = inspect_context_units(text, contexts)
     return StepInventory(tuple(schema), tuple(products.values()), occurrences, len(definitions),
                          counts["MANIFOLD_SOLID_BREP"], counts["ITEM_DEFINED_TRANSFORMATION"],
                          sum(o.parent is None or o.child is None for o in occurrences),
-                         any(b > 127 for b in data), unsupported, frames, placement_limit)
+                         any(b > 127 for b in data), unsupported, frames, placement_limit, context_units)

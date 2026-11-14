@@ -98,7 +98,9 @@ def test_step_frame_report_states_limits_without_modifying_project(window, qtbot
 #40=PRODUCT_DEFINITION_SHAPE('','',#6);#41=SHAPE_DEFINITION_REPRESENTATION(#40,#100);
 #42=PRODUCT_DEFINITION_SHAPE('','',#5);#43=SHAPE_DEFINITION_REPRESENTATION(#42,#101);
 #100=SHAPE_REPRESENTATION('',(#30),#200);#101=SHAPE_REPRESENTATION('',(#30,#31),#200);
-#200=GEOMETRIC_REPRESENTATION_CONTEXT(3);
+#200=(GEOMETRIC_REPRESENTATION_CONTEXT(3)GLOBAL_UNIT_ASSIGNED_CONTEXT((#201,#202))REPRESENTATION_CONTEXT('',''));
+#201=(LENGTH_UNIT()NAMED_UNIT(*)SI_UNIT(.MILLI.,.METRE.));
+#202=(NAMED_UNIT(*)PLANE_ANGLE_UNIT()SI_UNIT($,.RADIAN.));
 ENDSEC;END-ISO-10303-21;""", encoding="ascii")
     dialog = StepInventoryDialog(window)
     qtbot.addWidget(dialog)
@@ -111,6 +113,8 @@ ENDSEC;END-ISO-10303-21;""", encoding="ascii")
     assert "представление 1 связано с дочерним определением" in text
     assert "система 1 — да / да; система 2 — нет / да" in text
     assert "Номера контекстов не означают проверку единиц" in text
+    assert "Контекст #200: объявлена единица длины #201, 1 единица = 1 мм" in text
+    assert "Размеры и координаты не пересчитываются" in text
     assert "Пара систем координат не найдена" in text
     assert window.controller.project.to_dict() == before
 

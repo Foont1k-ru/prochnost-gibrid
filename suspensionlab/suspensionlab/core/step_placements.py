@@ -111,25 +111,20 @@ def _record(statement: str):
     return _RECORD.fullmatch(statement)
 
 
-def _relationship_components(statement: str, start: int) -> tuple[list[int], list[tuple[int, int]]]:
-    """Ищем только непосредственные компоненты комплексной записи, не имена внутри строк."""
+def _complex_components(statement: str, start: int) -> list[tuple[str, str]] | None:
+    """Читает только непосредственные компоненты комплексного объекта."""
     tail = statement[start:].strip()
     if not tail.endswith(")"):
-        return [], []
+        return None
     body = tail[:-1]
     pos = 0
-    names: set[str] = set()
-    refs: list[int] = []
-    representations: list[tuple[int, int]] = []
-    invalid_representation = False
+    result: list[tuple[str, str]] = []
     while pos < len(body):
         if not body[pos:].strip():
             break
         component = _COMPONENT.match(body, pos)
         if not component:
-            return [], []
-        name = component.group(1).upper()
-        names.add(name)
+            return None
         depth = 1
         end = None
         for bracket in _BRACKETS.finditer(body, component.end()):
@@ -143,21 +138,37 @@ def _relationship_components(statement: str, start: int) -> tuple[list[int], lis
                     pos = bracket.end()
                     break
         if end is None:
-            return [], []
+            return None
+        result.append((component.group(1).upper(), body[component.end():end].strip()))
+    return result
+
+
+def _relationship_components(statement: str, start: int) -> tuple[list[int], list[tuple[int, int]]]:
+    """Не извлекает ссылки из вложенных записей и строк."""
+    components = _complex_components(statement, start)
+    if components is None:
+        return [], []
+    names = {name for name, _body in components}
+    required = {"REPRESENTATION_RELATIONSHIP", "REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION",
+                "SHAPE_REPRESENTATION_RELATIONSHIP"}
+    if not required <= names:
+        return [], []
+    refs: list[int] = []
+    representations: list[tuple[int, int]] = []
+    invalid_representation = False
+    for name, body in components:
         if name == "REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION":
             try:
-                refs.append(_ref(body[component.end():end].strip()))
+                refs.append(_ref(body))
             except ValueError:
                 return [], []
         elif name == "REPRESENTATION_RELATIONSHIP":
             try:
-                values = _args(body[component.end():end])
+                values = _args(body)
                 representations.append((_ref(values[2]), _ref(values[3])))
             except (ValueError, IndexError):
                 invalid_representation = True
-    required = {"REPRESENTATION_RELATIONSHIP", "REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION",
-                "SHAPE_REPRESENTATION_RELATIONSHIP"}
-    return (refs, [] if invalid_representation else representations) if required <= names else ([], [])
+    return refs, [] if invalid_representation else representations
 
 
 def inspect_placement_frames(text: str, occurrences: Mapping[int, tuple[int, int]],

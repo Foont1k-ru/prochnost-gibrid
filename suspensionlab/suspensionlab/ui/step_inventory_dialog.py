@@ -46,6 +46,15 @@ def inventory_text(result: StepInventory) -> str:
         lines.append(tr("step_inventory.non_ascii"))
     if result.unsupported_string_escape:
         lines.append(tr("step_inventory.string_escape"))
+    lines.extend(("", tr("step_inventory.units_notice")))
+    if not result.context_units:
+        lines.append(tr("step_inventory.units_none"))
+    for unit in result.context_units:
+        if unit.status == "known" and unit.mm_per_unit is not None:
+            lines.append(tr("step_inventory.unit_known", context=unit.context, unit=unit.unit_entity,
+                            factor=f"{unit.mm_per_unit:.9g}"))
+        else:
+            lines.append(tr(f"step_inventory.unit_status.{unit.status}", context=unit.context))
     lines.extend(("", tr("step_inventory.products")))
     for product in result.products:
         lines.append(f"#{product.entity}: {product.name or tr('step_inventory.unnamed')} ({product.identifier})")
