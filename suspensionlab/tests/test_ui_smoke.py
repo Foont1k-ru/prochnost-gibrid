@@ -770,6 +770,84 @@ def test_antiroll_plot_selection_and_conflicts(window, qtbot):
     assert dialog._plot.points == ()
 
 
+def test_antiroll_two_sides_share_axis_and_switch_metrics(window, qtbot, tmp_path, monkeypatch):
+    import csv
+
+    from suspensionlab.core.sweep_plot import ANTIROLL_METRICS
+    from suspensionlab.ui import table_export
+    from suspensionlab.ui.antiroll_dialog import AntiRollDialog
+
+    window.controller.new_project("ring")
+    before = window.controller.project.to_dict()
+    dialog = AntiRollDialog(window.controller, window)
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog._from.setValue(-2)
+    dialog._to.setValue(2)
+    dialog._axis_x.setText("-250")
+    dialog._axis_z.setText("320")
+    dialog._rate.setText("1000")
+    dialog._run.click()
+    dialog._view_tabs.setCurrentIndex(1)
+    dialog._plot_metric.setCurrentIndex(ANTIROLL_METRICS.index("left_force"))
+    assert dialog._plot_pair.isEnabled() and not dialog._plot_pair.isChecked()
+    descriptions = []
+    dialog._plot.selectionTextChanged.connect(descriptions.append)
+    dialog._plot_pair.setChecked(True)
+    qtbot.wait(50)
+    assert dialog._plot._secondary_metric == ANTIROLL_METRICS.index("right_force")
+    assert "Сжатие стойки Л" in dialog._plot_legend.text() and "Сжатие стойки П" in dialog._plot_legend.text()
+    assert "Сжатие стойки Л" in descriptions[-1] and "Сжатие стойки П" in descriptions[-1]
+    geometry = dialog._plot._geometry()
+    assert geometry is not None
+    for point in dialog._plot.points:
+        for index in (ANTIROLL_METRICS.index("left_force"), ANTIROLL_METRICS.index("right_force")):
+            assert point.values[index] is not None and geometry[3] <= point.values[index] <= geometry[4]
+    assert not dialog._plot.grab().isNull()
+    target = tmp_path / "paired.csv"
+    monkeypatch.setattr(table_export.QFileDialog, "getSaveFileName", lambda *args: (str(target), ""))
+    dialog._plot_export_button.click()
+    with target.open(encoding="utf-8-sig", newline="") as handle:
+        records = list(csv.reader(handle, delimiter=";"))
+    index = records.index([])
+    assert dict(records[:index])["Включено сравнение сторон графика"] == "да"
+    assert "Сжатие стойки Л, Н" in records[index + 1] and "Сжатие стойки П, Н" in records[index + 1]
+    dialog._plot_metric.setCurrentIndex(ANTIROLL_METRICS.index("right_force"))
+    assert dialog._plot_pair.isChecked() and dialog._plot._secondary_metric == ANTIROLL_METRICS.index("left_force")
+    dialog._plot_metric.setCurrentIndex(ANTIROLL_METRICS.index("twist"))
+    assert not dialog._plot_pair.isEnabled() and not dialog._plot_pair.isChecked()
+    assert dialog._plot._secondary_metric is None
+    dialog._plot_metric.setCurrentIndex(ANTIROLL_METRICS.index("left_angle"))
+    assert dialog._plot_pair.isEnabled() and not dialog._plot_pair.isChecked()
+    assert window.controller.project.to_dict() == before
+
+
+def test_plot_pair_handles_missing_values_and_shared_conflict(window, qtbot):
+    from suspensionlab.core.sweep_plot import ANTIROLL_METRICS, PlotPoint
+    from suspensionlab.ui.canvas.sweep_plot import SweepPlot
+
+    plot = SweepPlot(window, metrics=ANTIROLL_METRICS, label_prefix="antiroll_ui.column")
+    qtbot.addWidget(plot)
+    plot.resize(500, 300)
+    plot.show()
+    plot.set_points((PlotPoint(0, (None, 25) + (None,) * (len(ANTIROLL_METRICS) - 2)),
+                     PlotPoint(1, (None, 35) + (None,) * (len(ANTIROLL_METRICS) - 2), True)))
+    assert plot._geometry() is None
+    plot.set_secondary_metric(1)
+    assert plot._geometry() is not None  # Вторая сторона может быть доступна без первой.
+    messages = []
+    plot.selectionTextChanged.connect(messages.append)
+    plot.set_row(0)
+    assert "нет данных" in messages[-1] and "25" in messages[-1]
+    plot.set_row(1)
+    assert "обнаружен конфликт" in messages[-1]
+    assert not plot.grab().isNull()
+    with pytest.raises(ValueError):
+        plot.set_secondary_metric(0)
+    plot.set_secondary_metric(None)
+    assert plot._geometry() is None
+
+
 def test_antiroll_dialog_input_validation_and_failure(window, qtbot, monkeypatch, caplog):
     from suspensionlab.core.antiroll import AntiRollPoint, AntiRollSweep
     from suspensionlab.ui import antiroll_dialog

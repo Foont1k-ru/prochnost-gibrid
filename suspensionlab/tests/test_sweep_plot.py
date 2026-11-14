@@ -154,3 +154,29 @@ def test_antiroll_plot_components_and_unchecked_clearances():
     unknown = antiroll_plot_points(result.points, [None])[0]
     assert unknown.values[6:] == (None,) * 10
     assert not unknown.conflict  # Проверок нет, безопасность не установлена.
+
+
+def test_antiroll_pairs_are_symmetric_unique_and_same_quantity():
+    from suspensionlab.core.sweep_plot import ANTIROLL_METRICS, ANTIROLL_PAIRS, antiroll_partner
+    from suspensionlab.i18n import Translator
+
+    flat = [name for pair in ANTIROLL_PAIRS for name in pair]
+    assert len(flat) == len(set(flat))
+    assert set(flat) == set(ANTIROLL_METRICS) - {"twist", "torque"}
+    translator = Translator()
+    for left, right in ANTIROLL_PAIRS:
+        assert left.removeprefix("left_") == right.removeprefix("right_")
+        assert antiroll_partner(left) == right and antiroll_partner(right) == left
+        assert translator.has(f"antiroll_ui.column.{left}") and translator.has(f"antiroll_ui.column.{right}")
+    for key in ("twist", "torque", "unexpected", ""):
+        assert antiroll_partner(key) is None
+
+
+def test_each_paired_series_has_independent_missing_data_segments():
+    from suspensionlab.core.sweep_plot import ANTIROLL_METRICS
+
+    def point(index, left, right, conflict=False):
+        return PlotPoint(float(index), (left, right) + (None,) * (len(ANTIROLL_METRICS) - 2), conflict)
+    points = (point(0, 1, 2), point(1, 2, None), point(2, 3, 4), point(3, 4, 5, True), point(4, 5, 6))
+    assert plot_segments(points, 0, len(ANTIROLL_METRICS)) == ((0, 1), (1, 2))
+    assert plot_segments(points, 1, len(ANTIROLL_METRICS)) == ()  # Ни пропуск, ни конфликт не соединяются.

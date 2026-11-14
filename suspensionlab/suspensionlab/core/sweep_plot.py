@@ -25,6 +25,22 @@ ANTIROLL_METRICS = (
 )
 PATH_PLOT_METRICS = ("length", "coil_clearance", "force", "ratio", "support", "residual",
                      "damper_length", "compression_clearance", "extension_clearance")
+ANTIROLL_PAIRS = (
+    ("left_angle", "right_angle"), ("left_force", "right_force"),
+    ("left_spring_length", "right_spring_length"), ("left_spring_clearance", "right_spring_clearance"),
+    ("left_damper_length", "right_damper_length"), ("left_compression_clearance", "right_compression_clearance"),
+    ("left_extension_clearance", "right_extension_clearance"),
+)
+
+
+def antiroll_partner(metric: str) -> str | None:
+    """Только одноимённые величины с одинаковыми единицами; момент и скручивание не парные."""
+    for left, right in ANTIROLL_PAIRS:
+        if metric == left:
+            return right
+        if metric == right:
+            return left
+    return None
 
 
 @dataclass(frozen=True)

@@ -34,7 +34,7 @@ from ..core.double_wishbone import DoubleWishbone
 from ..core.pose_view import PoseView, pose_view
 from ..core.stroke import StrokeLimits
 from ..core.sweep import travel_grid
-from ..core.sweep_plot import ANTIROLL_METRICS, antiroll_plot_points
+from ..core.sweep_plot import ANTIROLL_METRICS, antiroll_partner, antiroll_plot_points
 from ..export.plot_report import plot_number
 from ..i18n import tr
 from .analysis_dialog import AnalysisDialog
@@ -146,6 +146,11 @@ class AntiRollDialog(QDialog):
         for key in ANTIROLL_METRICS:
             self._plot_metric.addItem(tr(f"antiroll_ui.column.{key}"), key)
         self._plot_metric.currentIndexChanged.connect(self._plot.set_metric)
+        self._plot_pair = QCheckBox(tr("antiroll_ui.plot_pair"), self)
+        self._plot_legend = QLabel(self)
+        self._plot_legend.setWordWrap(True)
+        self._plot_metric.currentIndexChanged.connect(self._sync_plot_pair)
+        self._plot_pair.toggled.connect(self._sync_plot_pair)
         self._plot.rowSelected.connect(lambda row: self._table.setCurrentCell(row, 0))
         plot_selection = QLabel(tr("analysis.plot_no_selection"), self)
         plot_selection.setWordWrap(True)
@@ -156,6 +161,9 @@ class AntiRollDialog(QDialog):
         plot_layout = QVBoxLayout(plot_container)
         plot_layout.setContentsMargins(0, 0, 0, 0)
         plot_layout.addWidget(self._plot_metric)
+        plot_layout.addWidget(self._plot_pair)
+        plot_layout.addWidget(self._plot_legend)
+        self._sync_plot_pair()
         plot_layout.addWidget(self._plot, 1)
         plot_layout.addWidget(plot_selection)
         plot_layout.addWidget(plot_notice)
@@ -340,6 +348,20 @@ class AntiRollDialog(QDialog):
             self._table.setCurrentCell(index, 0)
             self._show_row(index)
 
+    def _sync_plot_pair(self, *_args: object) -> None:
+        partner = antiroll_partner(str(self._plot_metric.currentData()))
+        self._plot_pair.setEnabled(partner is not None)
+        if partner is None and self._plot_pair.isChecked():
+            self._plot_pair.blockSignals(True)
+            self._plot_pair.setChecked(False)
+            self._plot_pair.blockSignals(False)
+        show_pair = partner is not None and self._plot_pair.isChecked()
+        self._plot.set_secondary_metric(ANTIROLL_METRICS.index(partner) if show_pair and partner else None)
+        self._plot_legend.setVisible(show_pair)
+        if show_pair and partner:
+            self._plot_legend.setText(tr("antiroll_ui.plot_pair_legend", first=self._plot_metric.currentText(),
+                                         second=tr(f"antiroll_ui.column.{partner}")))
+
     def _change_view(self, *_args: object) -> None:
         self._preview.set_mode("top" if self._view.currentData() == "top" else "front")
 
@@ -426,7 +448,8 @@ class AntiRollDialog(QDialog):
             right_travels = tuple(plot_number(point.right_travel_mm) for point in self._points)
             report = make_plot_report(
                 self.controller, self._table, tr("export.plot_kind", kind=tr("antiroll_ui.title")),
-                [*self._report_parameters(), (tr("export.plot_selected"), self._plot_metric.currentText())],
+                [*self._report_parameters(), (tr("export.plot_selected"), self._plot_metric.currentText()),
+                 (tr("export.plot_pair"), tr("export.yes") if self._plot_pair.isChecked() else tr("export.no"))],
                 self._plot.points, tuple(tr(f"antiroll_ui.column.{key}") for key in ANTIROLL_METRICS),
                 tr("antiroll_ui.column.left_travel"), (12, 14, 16),
                 ((tr("antiroll_ui.column.right_travel"), right_travels),),

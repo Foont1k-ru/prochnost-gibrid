@@ -27,6 +27,7 @@ class SweepPlot(QWidget):
         self.setMinimumSize(300, 230)
         self.points: tuple[PlotPoint, ...] = ()
         self._metric = 0
+        self._secondary_metric: int | None = None
         self.row = -1
 
     def set_points(self, points: tuple[PlotPoint, ...]) -> None:
@@ -40,8 +41,18 @@ class SweepPlot(QWidget):
     def set_metric(self, metric: int) -> None:
         if 0 <= metric < len(self._metrics):
             self._metric = metric
+            if self._secondary_metric == metric:
+                self._secondary_metric = None
             self._selection_text()
             self.update()
+
+    def set_secondary_metric(self, metric: int | None) -> None:
+        """Вторая величина уже должна быть согласована вызывающей стороной по смыслу и единицам."""
+        if metric is not None and (not 0 <= metric < len(self._metrics) or metric == self._metric):
+            raise ValueError("Несовместимый индекс второй величины")
+        self._secondary_metric = metric
+        self._selection_text()
+        self.update()
 
     def set_row(self, row: int) -> None:
         self.row = row
@@ -56,13 +67,24 @@ class SweepPlot(QWidget):
         value = point.values[self._metric]
         text = f"{value:.6g}" if value is not None and isfinite(value) else tr("analysis.plot_value_missing")
         warning = tr("analysis.plot_conflict") if point.conflict else tr("analysis.plot_check_state")
-        self.selectionTextChanged.emit(tr("analysis.plot_selection", travel=f"{point.travel_mm:+.6g}",
-                                          value=text, warning=warning))
+        if self._secondary_metric is None:
+            self.selectionTextChanged.emit(tr("analysis.plot_selection", travel=f"{point.travel_mm:+.6g}",
+                                              value=text, warning=warning))
+        else:
+            second = point.values[self._secondary_metric]
+            second_text = f"{second:.6g}" if second is not None and isfinite(second) else tr("analysis.plot_value_missing")
+            self.selectionTextChanged.emit(tr(
+                "analysis.plot_selection_pair", travel=f"{point.travel_mm:+.6g}",
+                first_name=tr(f"{self._label_prefix}.{self._metrics[self._metric]}"), first=text,
+                second_name=tr(f"{self._label_prefix}.{self._metrics[self._secondary_metric]}"), second=second_text,
+                warning=warning,
+            ))
 
     def _geometry(self) -> tuple[QRectF, float, float, float, float] | None:
-        valid = [(p.travel_mm, p.values[self._metric]) for p in self.points
+        metrics = (self._metric,) if self._secondary_metric is None else (self._metric, self._secondary_metric)
+        valid = [(p.travel_mm, p.values[metric]) for p in self.points for metric in metrics
                  if isfinite(p.travel_mm) and abs(p.travel_mm) < 1e100
-                 and (value := p.values[self._metric]) is not None
+                 and (value := p.values[metric]) is not None
                  and isfinite(value) and abs(value) < 1e100]
         if not valid:
             return None
@@ -113,24 +135,36 @@ class SweepPlot(QWidget):
             selected_x = self._screen(self.points[self.row].travel_mm, ymin, geometry).x()
             painter.setPen(QPen(QColor("#969696"), 1, Qt.PenStyle.DashLine))
             painter.drawLine(QPointF(selected_x, rect.top()), QPointF(selected_x, rect.bottom()))
-        painter.setPen(QPen(QColor("#398bd1"), 2))
-        for a, b in plot_segments(self.points, self._metric, len(self._metrics)):
+        self._draw_series(painter, geometry, self._metric, secondary=False)
+        if self._secondary_metric is not None:
+            self._draw_series(painter, geometry, self._secondary_metric, secondary=True)
+
+    def _draw_series(self, painter: QPainter, geometry: tuple[QRectF, float, float, float, float],
+                     metric: int, *, secondary: bool) -> None:
+        color = QColor("#a564d4" if secondary else "#398bd1")
+        style = Qt.PenStyle.DashLine if secondary else Qt.PenStyle.SolidLine
+        painter.setPen(QPen(color, 2, style))
+        for a, b in plot_segments(self.points, metric, len(self._metrics)):
             first, second = self.points[a], self.points[b]
-            v1, v2 = first.values[self._metric], second.values[self._metric]
+            v1, v2 = first.values[metric], second.values[metric]
             if (v1 is not None and v2 is not None and abs(v1) < 1e100 and abs(v2) < 1e100
                     and abs(first.travel_mm) < 1e100 and abs(second.travel_mm) < 1e100):
                 painter.drawLine(self._screen(first.travel_mm, v1, geometry), self._screen(second.travel_mm, v2, geometry))
         for i, point in enumerate(self.points):
-            value = point.values[self._metric]
+            value = point.values[metric]
             if (value is None or not isfinite(value) or abs(value) >= 1e100
                     or not isfinite(point.travel_mm) or abs(point.travel_mm) >= 1e100):
                 continue
             center = self._screen(point.travel_mm, value, geometry)
-            color = QColor("#cf534d") if point.conflict else QColor("#398bd1")
-            painter.setPen(QPen(color, 2))
+            painter.setPen(QPen(QColor("#cf534d") if point.conflict else color, 2))
             if point.conflict:
                 painter.drawLine(center + QPointF(-4, -4), center + QPointF(4, 4))
                 painter.drawLine(center + QPointF(-4, 4), center + QPointF(4, -4))
+            elif secondary:
+                # Открытый квадрат заметен даже на совпадающей точке первой серии.
+                size = 7 if i == self.row else 5
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawRect(QRectF(center.x() - size, center.y() - size, size * 2, size * 2))
             else:
                 painter.setBrush(color)
                 painter.drawEllipse(center, 3 if i != self.row else 5, 3 if i != self.row else 5)
