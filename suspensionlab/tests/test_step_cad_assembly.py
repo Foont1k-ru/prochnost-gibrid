@@ -24,9 +24,9 @@ from suspensionlab.core.spatial_transform import RigidTransform, SpatialFrame  #
 from suspensionlab.core.step_inventory import read_step_inventory  # noqa: E402
 
 
-def cad_placement(angle, translation):
+def cad_placement(angle, translation, axis=(0, 0, 1)):
     placement = gp_Trsf()
-    placement.SetRotation(gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1)), angle)
+    placement.SetRotation(gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(*axis)), angle)
     placement.SetTranslationPart(gp_Vec(*translation))
     return placement
 
@@ -47,8 +47,8 @@ def write_cad_assembly(path):
     part = tool.NewShape()
     tool.SetShape(part, BRepPrimAPI_MakeBox(2., 3., 5.).Shape())
     parent = cad_placement(pi / 2, (100, 30, 7))
-    first = cad_placement(pi / 4, (11, -6, 4))
-    second = cad_placement(-pi / 3, (-4, 17, 8))
+    first = cad_placement(pi / 4, (11, -6, 4), (1, 0, 0))
+    second = cad_placement(-pi / 3, (-4, 17, 8), (0, 1, 0))
     tool.AddComponent(sub, part, TopLoc_Location(first))
     tool.AddComponent(sub, part, TopLoc_Location(second))
     tool.AddComponent(root, sub, TopLoc_Location(parent))
@@ -92,7 +92,8 @@ def test_generated_step_nested_and_repeated_occurrences_against_cad(tmp_path):
     parent_candidate = candidate(frames[parent_occurrence.entity])
     child_candidates = [candidate(frames[occurrence.entity]) for occurrence in children]
     probe = (2., 3., 5.)
-    assert parent_candidate.apply_point(probe) == pytest.approx(expected_point(parent, probe), abs=1e-7)
+    for point in ((0., 0., 0.), probe, (-3., 7., 1.)):
+        assert parent_candidate.apply_point(point) == pytest.approx(expected_point(parent, point), abs=1e-7)
     expected_children = [expected_point(first, probe), expected_point(second, probe)]
     for expected in expected_children:
         assert sum(c.apply_point(probe) == pytest.approx(expected, abs=1e-7) for c in child_candidates) == 1
