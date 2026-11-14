@@ -40,9 +40,9 @@ def test_plot_preserves_spring_and_damping_values_and_conflicts():
     dynamics = evaluate_linear_damping(sample.damper, characteristic, 50)
     assert points[1].values[2:7] == (sample.spring.state.length_mm, sample.spring.state.compression_mm,
                                     sample.spring.state.force_n, sample.damper.length_mm, sample.damper.motion_ratio)
-    assert points[1].values[7:] == (dynamics.compression_velocity_mm_s, dynamics.wheel_force_n, dynamics.dissipated_power_w)
+    assert points[1].values[7:10] == (dynamics.compression_velocity_mm_s, dynamics.wheel_force_n, dynamics.dissipated_power_w)
     assert not points[1].conflict
-    assert sweep_plot_points(analysis)[1].values[7:] == (None, None, None)
+    assert sweep_plot_points(analysis)[1].values[7:10] == (None, None, None)
     conflict_spring = replace(sample.spring, state=replace(sample.spring.state, status="coil_bind"))
     broken_damper = replace(sample.damper, error="test")
     altered = replace(analysis, samples=(replace(sample, spring=conflict_spring), None,
@@ -50,7 +50,7 @@ def test_plot_preserves_spring_and_damping_values_and_conflicts():
     altered_points = sweep_plot_points(altered, characteristic, 50)
     assert altered_points[0].conflict and not altered_points[1].conflict and altered_points[2].conflict
     assert all(value is None for value in altered_points[1].values)
-    assert altered_points[2].values[7:] == (None, None, None)
+    assert altered_points[2].values[7:10] == (None, None, None)
     assert plot_segments(altered_points, 0) == ()
 
 
@@ -91,8 +91,9 @@ def test_antiroll_plot_values_preserve_both_sides_and_left_travel(mode):
         assert source.state is not None
         state = source.state
         assert point.travel_mm == source.left_travel_mm
-        assert point.values == (state.left.arm_angle_deg, state.right.arm_angle_deg, state.twist_deg,
+        assert point.values[:6] == (state.left.arm_angle_deg, state.right.arm_angle_deg, state.twist_deg,
                                 state.torque_nm, state.left.compression_force_n, state.right.compression_force_n)
+        assert point.values[6:] == (None,) * 10
         assert not point.conflict  # Непроверенные ограничения не превращаются в конфликт или доказательство безопасности.
     assert len(plot_segments(points, 0, len(ANTIROLL_METRICS))) == len(points) - 1
 
@@ -118,3 +119,38 @@ def test_antiroll_conflicts_from_either_side_and_failed_samples():
         antiroll_plot_points(sweep.points, [None])
     with pytest.raises(ValueError):
         plot_segments(points, 0)  # Нельзя использовать количество колонок другого графика.
+
+
+def test_corner_plot_clearances_are_signed_and_unknown_is_none():
+    result = _analysis(spring_mount="lower_arm", static_spring_length_mm=230,
+                       coil_bind_length_mm=231, damper_mount="lower_arm",
+                       damper_limits=StrokeLimits(100, 200))
+    sample = result.samples[1]
+    assert sample and sample.spring and sample.spring.state and sample.damper and sample.damper.stroke
+    point = sweep_plot_points(result)[1]
+    assert point.conflict
+    assert point.values[10:] == (sample.spring.state.coil_clearance_mm,
+                                 sample.damper.stroke.compression_clearance_mm,
+                                 sample.damper.stroke.extension_clearance_mm)
+    assert point.values[10] < 0 and point.values[12] < 0
+    without_limits = _analysis(spring_mount="lower_arm", static_spring_length_mm=230,
+                               damper_mount="lower_arm")
+    assert sweep_plot_points(without_limits)[1].values[10:] == (None, None, None)
+
+
+def test_antiroll_plot_components_and_unchecked_clearances():
+    from suspensionlab.core.antiroll import AntiRollScenario, AntiRollStudy
+    from suspensionlab.core.combined_checks import ComponentChecks, DamperClearance, SpringClearance
+    from suspensionlab.core.stroke import stroke_state
+    from suspensionlab.core.sweep_plot import antiroll_plot_points
+
+    study = AntiRollStudy(load_template("ring").front, AntiRollScenario(-250, 320, 1000))
+    result = study.sweep([(0, 0)])
+    left = ComponentChecks(SpringClearance(150, 0, "coil_bind"), DamperClearance(300, stroke_state(300, StrokeLimits(350, 450))))
+    right = ComponentChecks(SpringClearance(230, None, "limit_unknown"), DamperClearance(400, None))
+    point = antiroll_plot_points(result.points, [(left, right)])[0]
+    assert point.conflict
+    assert point.values[6:] == (150, 230, 0, None, 300, 400, -50, None, 150, None)
+    unknown = antiroll_plot_points(result.points, [None])[0]
+    assert unknown.values[6:] == (None,) * 10
+    assert not unknown.conflict  # Проверок нет, безопасность не установлена.

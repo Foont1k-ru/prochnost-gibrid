@@ -14,8 +14,14 @@ from .damper import LinearDamperCharacteristic, evaluate_linear_damping
 PLOT_METRICS = (
     "camber", "toe", "spring_length", "spring_compression", "spring_force", "damper_length",
     "damper_ratio", "damper_speed", "damper_wheel_force", "damper_power",
+    "spring_clearance", "damper_compression_clearance", "damper_extension_clearance",
 )
-ANTIROLL_METRICS = ("left_angle", "right_angle", "twist", "torque", "left_force", "right_force")
+ANTIROLL_METRICS = (
+    "left_angle", "right_angle", "twist", "torque", "left_force", "right_force",
+    "left_spring_length", "right_spring_length", "left_spring_clearance", "right_spring_clearance",
+    "left_damper_length", "right_damper_length", "left_compression_clearance", "right_compression_clearance",
+    "left_extension_clearance", "right_extension_clearance",
+)
 
 
 @dataclass(frozen=True)
@@ -63,6 +69,9 @@ def sweep_plot_points(
             damper.motion_ratio if damper else None,
             dynamics.compression_velocity_mm_s if dynamics else None,
             dynamics.wheel_force_n if dynamics else None, dynamics.dissipated_power_w if dynamics else None,
+            state.coil_clearance_mm if state else None,
+            damper.stroke.compression_clearance_mm if damper and damper.stroke else None,
+            damper.stroke.extension_clearance_mm if damper and damper.stroke else None,
         )
         points.append(PlotPoint(point.travel_mm, tuple(_finite(v) for v in values), conflict))
     return tuple(points)
@@ -85,8 +94,21 @@ def antiroll_plot_points(
                 check.damper.stroke is not None and check.damper.stroke.status != "inside")))
             for check in pair or ()
         )
-        values = (state.left.arm_angle_deg, state.right.arm_angle_deg, state.twist_deg, state.torque_nm,
-                  state.left.compression_force_n, state.right.compression_force_n) if state else (None,) * len(ANTIROLL_METRICS)
+        if state is None:
+            values: tuple[float | None, ...] = (None,) * len(ANTIROLL_METRICS)
+        else:
+            left, right = pair if pair is not None else (None, None)
+            def component_values(check: ComponentChecks | None) -> tuple[float | None, ...]:
+                spring = check.spring if check else None
+                damper = check.damper if check else None
+                stroke = damper.stroke if damper and not damper.invalid else None
+                return (spring.length_mm if spring else None, spring.coil_clearance_mm if spring else None,
+                        damper.length_mm if damper and not damper.invalid else None,
+                        stroke.compression_clearance_mm if stroke else None, stroke.extension_clearance_mm if stroke else None)
+            lv, rv = component_values(left), component_values(right)
+            values = (state.left.arm_angle_deg, state.right.arm_angle_deg, state.twist_deg, state.torque_nm,
+                      state.left.compression_force_n, state.right.compression_force_n,
+                      lv[0], rv[0], lv[1], rv[1], lv[2], rv[2], lv[3], rv[3], lv[4], rv[4])
         result.append(PlotPoint(point.left_travel_mm, tuple(_finite(v) for v in values), conflict))
     return tuple(result)
 

@@ -365,8 +365,15 @@ def test_sweep_plot_with_gap_conflict_and_unreachable_row(window, qtbot):
         return PlotPoint(x, (value,) + (None,) * (len(PLOT_METRICS) - 1), conflict)
     plot.set_points((point(-1, 1), point(0, None), point(1, 2, True)))
     assert not plot.grab().isNull()
-    selected = []
+    selected, descriptions = [], []
     plot.rowSelected.connect(selected.append)
+    plot.selectionTextChanged.connect(descriptions.append)
+    plot.set_row(0)
+    assert "значение 1" in descriptions[-1]
+    plot.set_row(1)
+    assert "нет данных" in descriptions[-1]
+    plot.set_row(2)
+    assert "обнаружен конфликт" in descriptions[-1]
     geometry = plot._geometry()
     assert geometry is not None
     target = plot._screen(0, 1.5, geometry)

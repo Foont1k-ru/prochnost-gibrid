@@ -13,6 +13,7 @@ from ...i18n import tr
 
 class SweepPlot(QWidget):
     rowSelected = Signal(int)
+    selectionTextChanged = Signal(str)
 
     def __init__(self, parent: QWidget | None = None, *, metrics: tuple[str, ...] = PLOT_METRICS,
                  label_prefix: str = "analysis.column", x_label: str = "analysis.column.travel",
@@ -32,16 +33,30 @@ class SweepPlot(QWidget):
             raise ValueError("Число величин в точке не совпадает с настройкой графика")
         self.points = points
         self.row = -1
+        self._selection_text()
         self.update()
 
     def set_metric(self, metric: int) -> None:
         if 0 <= metric < len(self._metrics):
             self._metric = metric
+            self._selection_text()
             self.update()
 
     def set_row(self, row: int) -> None:
         self.row = row
+        self._selection_text()
         self.update()
+
+    def _selection_text(self) -> None:
+        if not 0 <= self.row < len(self.points):
+            self.selectionTextChanged.emit(tr("analysis.plot_no_selection"))
+            return
+        point = self.points[self.row]
+        value = point.values[self._metric]
+        text = f"{value:.6g}" if value is not None and isfinite(value) else tr("analysis.plot_value_missing")
+        warning = tr("analysis.plot_conflict") if point.conflict else tr("analysis.plot_check_state")
+        self.selectionTextChanged.emit(tr("analysis.plot_selection", travel=f"{point.travel_mm:+.6g}",
+                                          value=text, warning=warning))
 
     def _geometry(self) -> tuple[QRectF, float, float, float, float] | None:
         valid = [(p.travel_mm, p.values[self._metric]) for p in self.points
