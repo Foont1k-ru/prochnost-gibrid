@@ -45,6 +45,7 @@ from .analysis_explanation import explain_corner_sample, explain_static_sample
 from .canvas.pose_preview import PosePreview
 from .canvas.sweep_plot import SweepPlot
 from .controller import AppController
+from .damper_conversion_dialog import MAX_DAMPING_COEFFICIENT, DamperConversionDialog
 from .table_export import make_plot_report, make_report, make_table_report, save_table_dialog
 from .widgets.playback import PlaybackControls
 from .widgets.sample_summary import SampleSummary
@@ -88,6 +89,9 @@ class AnalysisDialog(QDialog):
             edit.setMaximumWidth(110)
         for edit in (self._compression, self._rebound):
             edit.setToolTip(tr("analysis.damping_tip"))
+        self._convert_damping = QPushButton(tr("damper_conversion.button"), self)
+        self._convert_damping.setToolTip(tr("damper_conversion.button_tip"))
+        self._convert_damping.clicked.connect(self._open_damper_conversion)
 
         fields = QHBoxLayout()
         geometry = QFormLayout()
@@ -225,6 +229,7 @@ class AnalysisDialog(QDialog):
         for key, edit in (("velocity", self._velocity), ("compression", self._compression), ("rebound", self._rebound)):
             dynamics.addWidget(QLabel(tr(f"analysis.{key}"), self))
             dynamics.addWidget(edit)
+        dynamics.addWidget(self._convert_damping)
         dynamics.addStretch()
         layout.addLayout(dynamics)
         layout.addWidget(self._status)
@@ -283,6 +288,7 @@ class AnalysisDialog(QDialog):
         if not self._damper.isChecked():
             self._damping.setChecked(False)
         self._damping.setEnabled(self._damper.isChecked())
+        self._convert_damping.setEnabled(self._damper.isChecked() and self._damping.isChecked())
         for field in (self._velocity, self._compression, self._rebound):
             field.setEnabled(self._damper.isChecked() and self._damping.isChecked())
         axle = self.controller.project.axle(str(self._role.currentData()))
@@ -292,6 +298,16 @@ class AnalysisDialog(QDialog):
         self._run.setEnabled(supported)
         self._static_button.setEnabled(supported)
         self._status.setText(tr("analysis.ready" if supported else "analysis.unsupported"))
+
+    def _open_damper_conversion(self) -> None:
+        dialog = DamperConversionDialog(self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        compression, rebound = dialog.coefficients()
+        if compression is not None:
+            self._compression.setText(repr(compression))
+        if rebound is not None:
+            self._rebound.setText(repr(rebound))
 
     def _component_inputs(self) -> tuple[float | None, float | None, StrokeLimits | None]:
         if self._spring.isChecked() and self._spring_length.value() <= 0:
@@ -361,8 +377,8 @@ class AnalysisDialog(QDialog):
             velocity = 0.0
             if self._damping.isChecked():
                 velocity = self._explicit_number(self._velocity, -10000, 10000)
-                compression = self._explicit_number(self._compression, 0, 10000)
-                rebound = self._explicit_number(self._rebound, 0, 10000)
+                compression = self._explicit_number(self._compression, 0, MAX_DAMPING_COEFFICIENT)
+                rebound = self._explicit_number(self._rebound, 0, MAX_DAMPING_COEFFICIENT)
                 characteristic = LinearDamperCharacteristic(compression, rebound)
             travels = travel_grid(self._from.value(), self._to.value(), max_spacing_mm=self._step.value())
             if len(travels) > 401:

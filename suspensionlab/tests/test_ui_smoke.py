@@ -536,6 +536,79 @@ def test_static_csv_export_snapshot_and_invalidation(window, qtbot, monkeypatch,
     assert "failed for test" in dialog._static_explanation.toPlainText()
 
 
+def test_damper_conversion_dialog_explicit_inputs_and_preview(window, qtbot):
+    from suspensionlab.ui.damper_conversion_dialog import DamperConversionDialog
+
+    dialog = DamperConversionDialog(window)
+    qtbot.addWidget(dialog)
+    dialog.show()
+    assert not dialog._apply.isEnabled() and dialog.coefficients() == (None, None)
+    dialog._compression_force.setText("235")
+    assert not dialog._apply.isEnabled() and "укажите и силу, и скорость" in dialog._result.text()
+    dialog._compression_speed.setText("300")
+    assert dialog._apply.isEnabled() and dialog.coefficients() == (235 / 300, None)
+    assert "не изменяется" in dialog._result.text()
+    dialog._rebound_force.setText("1342")
+    assert not dialog._apply.isEnabled() and dialog.coefficients() == (None, None)
+    dialog._rebound_speed.setText("300")
+    assert dialog.coefficients() == (235 / 300, 1342 / 300)
+    assert repr(1342 / 300) in dialog._result.text()
+    dialog._rebound_speed.setText("0")
+    assert not dialog._apply.isEnabled() and "больше нуля" in dialog._result.text()
+    dialog._rebound_speed.setText("nan")
+    assert not dialog._apply.isEnabled()
+    dialog._rebound_speed.setText("0,1")
+    assert not dialog._apply.isEnabled() and "превышает предел" in dialog._result.text()
+    dialog._rebound_force.setText("0")
+    assert dialog._apply.isEnabled() and dialog.coefficients()[1] == 0
+    dialog._apply.click()
+    assert dialog.result() == dialog.DialogCode.Accepted
+
+
+def test_analysis_damper_conversion_is_opt_in_and_invalidates_results(window, qtbot, monkeypatch):
+    from PySide6.QtWidgets import QDialog
+
+    from suspensionlab.ui import analysis_dialog
+
+    controller = window.controller
+    controller.new_project("ring")
+    before = controller.project.to_dict()
+    dialog = analysis_dialog.AnalysisDialog(controller, window)
+    qtbot.addWidget(dialog)
+    assert not dialog._convert_damping.isEnabled()
+    dialog._damper.setChecked(True)
+    dialog._damping.setChecked(True)
+    assert dialog._convert_damping.isEnabled()
+    dialog._velocity.setText("100")
+    dialog._compression.setText("7")
+    dialog._rebound.setText("8")
+    dialog._from.setValue(0)
+    dialog._to.setValue(0)
+    dialog._run.click()
+    assert dialog._table.rowCount() == 1
+    class Cancelled:
+        def __init__(self, parent):
+            assert parent is dialog
+        def exec(self):
+            return QDialog.DialogCode.Rejected
+    monkeypatch.setattr(analysis_dialog, "DamperConversionDialog", Cancelled)
+    dialog._convert_damping.click()
+    assert dialog._compression.text() == "7" and dialog._rebound.text() == "8"
+    assert dialog._table.rowCount() == 1
+    class Accepted(Cancelled):
+        def exec(self):
+            return QDialog.DialogCode.Accepted
+        def coefficients(self):
+            return 235 / 300, None
+    monkeypatch.setattr(analysis_dialog, "DamperConversionDialog", Accepted)
+    dialog._convert_damping.click()
+    assert float(dialog._compression.text()) == 235 / 300 and dialog._rebound.text() == "8"
+    assert dialog._velocity.text() == "100" and dialog._table.rowCount() == 0
+    assert controller.project.to_dict() == before
+    dialog._damping.setChecked(False)
+    assert not dialog._convert_damping.isEnabled()
+
+
 def test_analysis_plot_uses_samples_and_tracks_table_selection(window, qtbot):
     from PySide6.QtCore import QPoint, Qt
 

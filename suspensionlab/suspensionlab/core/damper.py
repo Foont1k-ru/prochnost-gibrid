@@ -55,6 +55,22 @@ class LowerArmDamper:
         return DamperMetrics(length, compression, ratio, stroke)
 
 
+def linear_coefficient_from_point(force_n: float, speed_mm_s: float) -> float:
+    """Условная прямая через начало координат по модулю силы и скорости штока.
+
+    Одна точка не определяет форму кривой, трение, гистерезис или газовое усилие.
+    Это не измерение демпфирующего коэффициента для всего диапазона скоростей.
+    """
+    from math import isfinite
+
+    if not isfinite(force_n) or force_n < 0 or not isfinite(speed_mm_s) or speed_mm_s <= 0:
+        raise ValueError("Нужны неотрицательная сила и положительная скорость штока, конечные числа")
+    coefficient = force_n / speed_mm_s
+    if not isfinite(coefficient) or (force_n > 0 and coefficient == 0):
+        raise ValueError("Коэффициент невозможно представить с доступной точностью")
+    return coefficient
+
+
 @dataclass(frozen=True)
 class LinearDamperCharacteristic:
     """Условные коэффициенты сжатия и отбоя, Н·с/мм; задаются явно.
