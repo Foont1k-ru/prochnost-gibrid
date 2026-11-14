@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Literal
 
 from PySide6.QtCore import Qt
@@ -29,6 +30,8 @@ from ..i18n import tr
 from .controller import AppController
 from .equilibrium_path_dialog import EquilibriumPathDialog
 from .table_export import make_report, save_table_dialog
+
+LOG = logging.getLogger(__name__)
 
 # Порядок и подписи для CSV; значения берутся из того же снимка, что и текст окна.
 _RESULT_FIELDS = ("lower", "upper", "lower_residual", "upper_residual", "travel", "length", "spring_force",
@@ -170,10 +173,13 @@ class EquilibriumDialog(QDialog):
             self._path_button.setEnabled(True)
             failure = error.path.failure
             assert failure is not None
+            LOG.warning("Проверка пути баланса прервана: точка %.3f мм, отказ %.3f мм: %s",
+                        failure.requested_travel_mm, failure.failure_travel_mm, failure.reason)
             self._status.setText(tr("equilibrium_ui.path_error", requested=f"{failure.requested_travel_mm:.3f}",
                                     failure=f"{failure.failure_travel_mm:.3f}", reason=failure.reason))
             return
         except (ValueError, ArithmeticError) as error:
+            LOG.warning("Поиск баланса не выполнен: %s", error)
             self._status.setText(tr("equilibrium_ui.error", reason=str(error)))
             return
         self._result = result

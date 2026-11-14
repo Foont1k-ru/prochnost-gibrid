@@ -1,6 +1,7 @@
 """Экспериментальная таблица двух стоек идеализированного стабилизатора."""
 from __future__ import annotations
 
+import logging
 from contextlib import suppress
 
 from PySide6.QtCore import Qt
@@ -38,6 +39,8 @@ from .canvas.antiroll_preview import AntiRollPreview
 from .controller import AppController
 from .table_export import make_table_report, save_table_dialog
 from .widgets.playback import PlaybackControls
+
+LOG = logging.getLogger(__name__)
 
 
 class AntiRollDialog(QDialog):
@@ -237,6 +240,7 @@ class AntiRollDialog(QDialog):
             direction = 1 if self._mode.currentData() == "bounce" else -1
             result = study.sweep([(h, direction * h) for h in grid], max_step_mm=min(1, self._step.value()))
         except (ValueError, ArithmeticError) as error:
+            LOG.warning("Расчёт стабилизатора не выполнен: %s", error)
             self._status.setText(tr("analysis.error", reason=str(error)))
             return
         self._points = result.points
@@ -287,6 +291,9 @@ class AntiRollDialog(QDialog):
                 item = QTableWidgetItem(value)
                 item.setToolTip(value)
                 self._table.setItem(row, column, item)
+        if failures:
+            first_error = next((point.error for point in result.points if point.error), None)
+            LOG.warning("Расчёт стабилизатора: нерешённых строк %d; первый отказ: %s", failures, first_error or "не указан")
         self._status.setText(tr("analysis.complete", count=len(result.points), failures=failures))
         self._export_button.setEnabled(bool(result.points))
         if result.points:

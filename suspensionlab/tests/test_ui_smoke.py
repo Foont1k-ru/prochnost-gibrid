@@ -260,6 +260,24 @@ def test_analysis_dialog_clears_results_if_wheel_projection_fails(window, qtbot,
     assert not dialog._frames and dialog._preview.frame is None
 
 
+def test_calculation_input_failures_are_logged(window, qtbot, caplog):
+    from suspensionlab.ui.analysis_dialog import AnalysisDialog
+    from suspensionlab.ui.equilibrium_dialog import EquilibriumDialog
+
+    window.controller.new_project("ring")
+    analysis = AnalysisDialog(window.controller, window)
+    qtbot.addWidget(analysis)
+    analysis._spring.setChecked(True)
+    analysis._run.click()
+    assert "Расчёт хода не выполнен" in caplog.text
+    assert "длину пружины" in analysis._status.text()
+    equilibrium = EquilibriumDialog(window.controller, window)
+    qtbot.addWidget(equilibrium)
+    equilibrium._run.click()
+    assert "Поиск баланса не выполнен" in caplog.text
+    assert not equilibrium._export_button.isEnabled()
+
+
 def test_analysis_action_opens_dialog(window, monkeypatch):
     from suspensionlab.ui import main_window
 
@@ -280,7 +298,7 @@ def test_analysis_action_opens_dialog(window, monkeypatch):
     assert seen == [(window.controller, window), "opened", "released"]
 
 
-def test_analysis_dialog_shows_partial_failure_and_mechanical_conflicts(window, qtbot, monkeypatch):
+def test_analysis_dialog_shows_partial_failure_and_mechanical_conflicts(window, qtbot, monkeypatch, caplog):
     from dataclasses import replace
 
     from suspensionlab.core.analysis import analyze_corner
@@ -305,6 +323,7 @@ def test_analysis_dialog_shows_partial_failure_and_mechanical_conflicts(window, 
     assert dialog._table.item(1, 1).text() == "—"
     assert "test failure" in dialog._table.item(1, 8).text()
     assert "нерешённых: 1" in dialog._status.text()
+    assert "Расчёт хода: нерешённых строк 1" in caplog.text and "test failure" in caplog.text
     monkeypatch.setattr(analysis_dialog, "analyze_corner", analyze_corner)
     dialog._to.setValue(0)
     dialog._spring.setChecked(True)
@@ -427,7 +446,7 @@ def test_antiroll_dialog_compares_with_core_and_invalidates(window, qtbot):
     assert not dialog._run.isEnabled() and "пока не реализован" in dialog._status.text()
 
 
-def test_antiroll_dialog_input_validation_and_failure(window, qtbot, monkeypatch):
+def test_antiroll_dialog_input_validation_and_failure(window, qtbot, monkeypatch, caplog):
     from suspensionlab.core.antiroll import AntiRollPoint, AntiRollSweep
     from suspensionlab.ui import antiroll_dialog
 
@@ -466,6 +485,9 @@ def test_antiroll_dialog_input_validation_and_failure(window, qtbot, monkeypatch
     assert dialog._table.item(0, 9).text() == "—"
     assert dialog._table.item(0, 12).text() == "test failure"
     assert "нерешённых: 1" in dialog._status.text()
+    assert "Расчёт стабилизатора не выполнен" in caplog.text
+    assert "Расчёт стабилизатора: нерешённых строк 1" in caplog.text
+    assert "test failure" in caplog.text
 
 
 def test_antiroll_action_opens_dialog(window, monkeypatch):
@@ -1359,7 +1381,7 @@ def test_equilibrium_dialog_matches_core_and_invalidates_stale_result(window, qt
     assert not dialog._run.isEnabled()
 
 
-def test_equilibrium_dialog_rejects_incomplete_inputs_and_conflicts(window, qtbot):
+def test_equilibrium_dialog_rejects_incomplete_inputs_and_conflicts(window, qtbot, caplog):
     from suspensionlab.core.equilibrium import SpringEquilibrium
     from suspensionlab.ui.equilibrium_dialog import EquilibriumDialog
 
@@ -1397,6 +1419,7 @@ def test_equilibrium_dialog_rejects_incomplete_inputs_and_conflicts(window, qtbo
     assert "0.000" in dialog._status.text() and dialog._result is None and dialog._output.text() == ""
     assert dialog._path is not None and dialog._path.failure is not None
     assert not dialog._path.samples and dialog._path_button.isEnabled() and not dialog._export_button.isEnabled()
+    assert "Проверка пути баланса прервана" in caplog.text
 
 
 def test_equilibrium_menu_opens_dialog(window, monkeypatch):

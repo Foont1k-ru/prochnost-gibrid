@@ -5,10 +5,10 @@ import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from PySide6.QtCore import QSettings
+from PySide6.QtCore import QSettings, QTimer
 
 from .app import create_application
-from .config import resources_dir
+from .config import log_file_path, resources_dir
 from .i18n import tr
 from .model.project_io import load_project
 from .model.templates import list_templates
@@ -19,6 +19,32 @@ from .ui.main_window import MainWindow
 def _require(condition: bool, message: str) -> None:
     if not condition:
         raise RuntimeError(message)
+
+
+def run_startup_check() -> None:
+    """Настоящий main с циклом Qt; CI должен изолировать APPDATA до вызова."""
+    from . import app as application
+
+    original = application.create_application
+    opened: list[bool] = []
+
+    def create_and_schedule(argv: list[str] | None = None):
+        app = original(argv)
+
+        def inspect_and_quit() -> None:
+            opened.append(any(isinstance(widget, MainWindow) and widget.isVisible() for widget in app.topLevelWidgets()))
+            app.quit()
+
+        QTimer.singleShot(100, inspect_and_quit)
+        return app
+
+    application.create_application = create_and_schedule
+    try:
+        exit_code = application.main([])
+        _require(exit_code == 0 and opened == [True], "Обычный запуск не открыл главное окно")
+        _require("Запуск" in log_file_path().read_text(encoding="utf-8"), "Нет записи о запуске в журнале")
+    finally:
+        application.create_application = original
 
 
 def run_packaging_check() -> None:

@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import logging.handlers
 import os
+import sys
 
 from .config import log_file_path
 
@@ -42,10 +43,12 @@ def setup_logging(level: int | None = None) -> logging.Logger:
         file_handler.setLevel(level)
         root.addHandler(file_handler)
 
-    console = logging.StreamHandler()
-    console.setFormatter(formatter)
-    console.setLevel(max(level, logging.INFO))
-    root.addHandler(console)
+    # В Windows-сборке без консоли sys.stderr может отсутствовать.
+    if sys.stderr is not None:
+        console = logging.StreamHandler(sys.stderr)
+        console.setFormatter(formatter)
+        console.setLevel(max(level, logging.INFO))
+        root.addHandler(console)
 
     _configured = True
     root.debug("Журналирование запущено, уровень %s", logging.getLevelName(level))

@@ -78,18 +78,21 @@ jobs:
           PYTHONUTF8: '1'
         run: |
           $exe = (Resolve-Path 'dist/SuspensionLab/SuspensionLab.exe').Path
-          $report = Join-Path $env:RUNNER_TEMP 'suspensionlab-package-check.txt'
           $isolated = Join-Path $env:RUNNER_TEMP 'suspensionlab-package-check'
           New-Item -ItemType Directory -Force -Path $isolated | Out-Null
           $env:APPDATA = $isolated
-          $process = Start-Process -FilePath $exe -ArgumentList @('--packaging-check', "`"$report`"") -WorkingDirectory $isolated -PassThru
-          if (-not $process.WaitForExit(90000)) {
-            $process.Kill()
-            throw 'Превышено время проверки собранного приложения'
-          }
-          if (Test-Path $report) { Get-Content -Path $report -Encoding utf8 }
-          if ($process.ExitCode -ne 0 -or -not (Test-Path $report) -or (Get-Content -Raw -Encoding utf8 $report).Trim() -ne 'OK') {
-            throw "Ошибка проверки собранного приложения: $($process.ExitCode)"
+          foreach ($check in @('--packaging-check', '--packaging-startup-check')) {
+            $report = Join-Path $isolated "$check.txt"
+            Remove-Item $report -ErrorAction SilentlyContinue
+            $process = Start-Process -FilePath $exe -ArgumentList @($check, "`"$report`"") -WorkingDirectory $isolated -PassThru
+            if (-not $process.WaitForExit(90000)) {
+              $process.Kill()
+              throw "Превышено время проверки $check"
+            }
+            if (Test-Path $report) { Get-Content -Path $report -Encoding utf8 }
+            if ($process.ExitCode -ne 0 -or -not (Test-Path $report) -or (Get-Content -Raw -Encoding utf8 $report).Trim() -ne 'OK') {
+              throw "Ошибка проверки ${check}: $($process.ExitCode)"
+            }
           }
       - name: Подготовить файлы для ознакомления
         shell: pwsh

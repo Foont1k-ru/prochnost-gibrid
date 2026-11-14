@@ -1,6 +1,7 @@
 """Первый табличный просмотр экспериментального расчёта двухрычажной оси."""
 from __future__ import annotations
 
+import logging
 from math import isfinite
 from typing import Literal
 
@@ -38,6 +39,8 @@ from .canvas.pose_preview import PosePreview
 from .controller import AppController
 from .table_export import make_table_report, save_table_dialog
 from .widgets.playback import PlaybackControls
+
+LOG = logging.getLogger(__name__)
 
 
 class AnalysisDialog(QDialog):
@@ -247,6 +250,7 @@ class AnalysisDialog(QDialog):
                 max_step_mm=1.0,
             )
         except (ValueError, ArithmeticError) as error:
+            LOG.warning("Расчёт хода не выполнен: %s", error)
             self._status.setText(tr("analysis.error", reason=str(error)))
             return
         # Отдельная подготовка проекции: сбой показа не подменяет результаты таблицы.
@@ -316,6 +320,9 @@ class AnalysisDialog(QDialog):
                 item = QTableWidgetItem(text)
                 item.setToolTip(text)
                 self._table.setItem(row, column, item)
+        if failures:
+            first_error = next((point.error for point in result.sweep.points if point.error is not None), None)
+            LOG.warning("Расчёт хода: нерешённых строк %d; первый отказ: %s", failures, first_error or "не указан")
         self._status.setText(tr("analysis.complete", count=len(travels), failures=failures))
         self._export_button.setEnabled(bool(travels))
         if travels:
