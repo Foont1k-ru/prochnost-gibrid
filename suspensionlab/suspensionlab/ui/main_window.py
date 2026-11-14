@@ -31,6 +31,7 @@ from ..model.suspension_types import types_for_role
 from ..model.units import LENGTH_UNITS, RATE_UNITS, UnitKind, UnitSettings
 from .analysis_dialog import AnalysisDialog
 from .antiroll_dialog import AntiRollDialog
+from .cad_preview_dialog import CadPreviewDialog
 from .canvas.axle_view import AxleCanvas
 from .controller import AppController, Selection
 from .dialogs import RestoreSnapshotDialog, SnapshotDialog, TemplateDialog
@@ -121,6 +122,9 @@ class MainWindow(QMainWindow):
     def _open_step_inventory(self) -> None:
         StepInventoryDialog(self).exec()
 
+    def _open_cad_preview(self) -> None:
+        CadPreviewDialog(self).exec()
+
     # ------------------------------------------------------------------ панели
     def _build_docks(self) -> None:
         """Создаёт док-панели: проект, инспектор, диагностика."""
@@ -173,6 +177,9 @@ class MainWindow(QMainWindow):
 
         self.action_step_inventory = QAction(tr("step_inventory.menu"), self)
         self.action_step_inventory.triggered.connect(self._open_step_inventory)
+
+        self.action_cad_preview = QAction(tr("cad_preview.menu"), self)
+        self.action_cad_preview.triggered.connect(self._open_cad_preview)
 
         self.action_exit = QAction(tr("menu.file.exit"), self)
         self.action_exit.setShortcut(QKeySequence.StandardKey.Quit)
@@ -251,6 +258,7 @@ class MainWindow(QMainWindow):
         menu_file.addAction(self.action_new)
         menu_file.addAction(self.action_open)
         menu_file.addAction(self.action_step_inventory)
+        menu_file.addAction(self.action_cad_preview)
         menu_file.addAction(self.action_recover_autosave)
         menu_file.addAction(self.action_templates)
         menu_file.addSeparator()

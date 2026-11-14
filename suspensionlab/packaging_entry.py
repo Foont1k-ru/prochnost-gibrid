@@ -22,6 +22,10 @@ def main() -> int:
             return 1
         report.write_text("OK\n", encoding="utf-8")
         return 0
+    if len(sys.argv) == 6 and sys.argv[1] == "--cad-preview-worker":
+        from suspensionlab.core.cad_worker import main as cad_main
+
+        return cad_main(sys.argv[2:])
     from suspensionlab.app import main as app_main
 
     return app_main()

@@ -46,6 +46,15 @@ def test_packaging_startup_check_has_separate_route(tmp_path: Path, monkeypatch)
     assert report.read_text(encoding="utf-8") == "OK\n"
 
 
+def test_cad_worker_is_dispatched_before_gui(monkeypatch) -> None:
+    worker = ModuleType("suspensionlab.core.cad_worker")
+    called: list[list[str]] = []
+    worker.main = lambda args: called.append(args) or 9  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "suspensionlab.core.cad_worker", worker)
+    monkeypatch.setattr(sys, "argv", ["app", "--cad-preview-worker", "source", "output", "report", "2.0"])
+    assert packaging_entry.main() == 9 and called == [["source", "output", "report", "2.0"]]
+
+
 def test_normal_start_delegates_to_app(monkeypatch) -> None:
     app = ModuleType("suspensionlab.app")
     app.main = lambda: 17  # type: ignore[attr-defined]

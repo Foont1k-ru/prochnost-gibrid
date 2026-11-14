@@ -5,6 +5,7 @@
 """
 from math import pi
 
+import numpy as np
 import pytest
 
 pytest.importorskip("OCP", reason="Опциональный CAD-эталон устанавливается отдельно", exc_type=ImportError)
@@ -20,6 +21,7 @@ from OCP.TopLoc import TopLoc_Location  # noqa: E402
 from OCP.XCAFApp import XCAFApp_Application  # noqa: E402
 from OCP.XCAFDoc import XCAFDoc_DocumentTool  # noqa: E402
 
+from suspensionlab.core.cad_transport import CadJob  # noqa: E402
 from suspensionlab.core.step_candidate import candidate_transforms  # noqa: E402
 from suspensionlab.core.step_inventory import read_step_inventory  # noqa: E402
 
@@ -62,6 +64,20 @@ def write_cad_assembly(path):
 def test_generated_step_nested_and_repeated_occurrences_against_cad(tmp_path):
     path = tmp_path / "independent.step"
     parent, first, second = write_cad_assembly(path)
+    unicode_path = tmp_path / "испытание сборки.step"
+    path.rename(unicode_path)
+    path = unicode_path
+    mesh = CadJob().run(path, 2., timeout=90)
+    assert mesh.face_count == 12 and len(mesh.triangles) >= 24
+    bounds_points = []
+    for placement in (parent.Multiplied(first), parent.Multiplied(second)):
+        for x in (0., 2.):
+            for y in (0., 3.):
+                for z in (0., 5.):
+                    bounds_points.append(expected_point(placement, (x, y, z)))
+    vertices = mesh.triangles.reshape(-1, 3)
+    assert vertices.min(axis=0) == pytest.approx(np.min(bounds_points, axis=0), abs=1e-6)
+    assert vertices.max(axis=0) == pytest.approx(np.max(bounds_points, axis=0), abs=1e-6)
     result = read_step_inventory(path)
     assert len(result.occurrences) == 3
     frames = {item.occurrence: item for item in result.placement_frames}

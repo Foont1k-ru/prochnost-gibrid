@@ -126,6 +126,60 @@ ENDSEC;END-ISO-10303-21;""", encoding="ascii")
     assert window.controller.project.to_dict() == before
 
 
+def test_cad_preview_load_rotate_and_cancel_without_project_changes(window, qtbot, tmp_path, monkeypatch):
+    from threading import Event
+
+    import numpy as np
+    from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent, QWheelEvent
+    from PySide6.QtWidgets import QApplication
+
+    from suspensionlab.core.cad_mesh import CadMesh
+    from suspensionlab.core.cad_transport import CadJob, CadPreviewError
+    from suspensionlab.ui.cad_preview_dialog import CadPreviewDialog
+
+    window.controller.new_project("ring")
+    before = window.controller.project.to_dict()
+    mesh = CadMesh(np.array([[[0, 0, 0], [10, 0, 0], [0, 10, 0]]]), 1)
+    monkeypatch.setattr(CadJob, "run", lambda self, path, deviation: mesh)
+    dialog = CadPreviewDialog(window)
+    qtbot.addWidget(dialog)
+    dialog.show()
+    assert window.action_cad_preview.isEnabled()
+    dialog.load_file(tmp_path / "model.step")
+    qtbot.waitUntil(lambda: dialog._reader is None, timeout=10000)
+    assert dialog._view.mesh is mesh and "треугольников 1" in dialog._status.text()
+    assert not dialog._view.grab().isNull()
+    view = dialog._view
+    old_yaw = view.yaw
+    QApplication.sendEvent(view, QMouseEvent(QEvent.Type.MouseButtonPress, QPointF(100, 100), Qt.MouseButton.LeftButton,
+                                              Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier))
+    QApplication.sendEvent(view, QMouseEvent(QEvent.Type.MouseMove, QPointF(130, 110), Qt.MouseButton.NoButton,
+                                              Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier))
+    QApplication.sendEvent(view, QMouseEvent(QEvent.Type.MouseButtonRelease, QPointF(130, 110), Qt.MouseButton.LeftButton,
+                                              Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier))
+    assert view.yaw != old_yaw
+    QApplication.sendEvent(view, QWheelEvent(QPointF(100, 100), QPointF(100, 100), QPoint(0, 0), QPoint(0, 120),
+                                             Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier,
+                                             Qt.ScrollPhase.NoScrollPhase, False))
+    assert view.zoom > 1
+    dialog._reset.click()
+    assert view.zoom == 1 and view.yaw == old_yaw
+    started = Event()
+    def wait_for_cancel(self, path, deviation):
+        started.set()
+        assert self._cancelled.wait(5)
+        raise CadPreviewError("cancelled")
+    monkeypatch.setattr(CadJob, "run", wait_for_cancel)
+    dialog._reload.click()
+    assert started.wait(3) and dialog._view.mesh is None and not dialog._choose.isEnabled()
+    dialog._cancel.click()
+    qtbot.waitUntil(lambda: dialog._reader is None, timeout=10000)
+    assert "отменено" in dialog._status.text() and dialog._view.mesh is None
+    assert window.controller.project.to_dict() == before
+    dialog.close()
+
+
 def test_window_and_theme(window, qtbot):
     assert window._tabs.count() == 3
     assert "Подвеска" in window.windowTitle()

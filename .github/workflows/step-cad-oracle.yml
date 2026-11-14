@@ -4,15 +4,19 @@ on:
   push:
     paths:
       - 'suspensionlab/suspensionlab/core/spatial_transform.py'
+      - 'suspensionlab/suspensionlab/core/cad_*.py'
       - 'suspensionlab/suspensionlab/core/step_*.py'
       - 'suspensionlab/tests/test_cad_oracle.py'
+      - 'suspensionlab/tests/test_cad_mesh.py'
       - 'suspensionlab/tests/test_step_cad_assembly.py'
       - '.github/workflows/step-cad-oracle.yml'
   pull_request:
     paths:
       - 'suspensionlab/suspensionlab/core/spatial_transform.py'
+      - 'suspensionlab/suspensionlab/core/cad_*.py'
       - 'suspensionlab/suspensionlab/core/step_*.py'
       - 'suspensionlab/tests/test_cad_oracle.py'
+      - 'suspensionlab/tests/test_cad_mesh.py'
       - 'suspensionlab/tests/test_step_cad_assembly.py'
       - '.github/workflows/step-cad-oracle.yml'
   workflow_dispatch:
@@ -41,7 +45,7 @@ jobs:
       - name: Убедиться, что CAD-ядро загружается
         run: python -c "from OCP.gp import gp_Ax3, gp_Pnt, gp_Trsf; print('Open CASCADE ready')"
       - name: Сверить преобразования и искусственную STEP-сборку
-        run: python -m pytest -q tests/test_cad_oracle.py tests/test_step_cad_assembly.py --junitxml=cad-results.xml
+        run: python -m pytest -q tests/test_cad_oracle.py tests/test_cad_mesh.py tests/test_step_cad_assembly.py --junitxml=cad-results.xml
       - name: Показать ошибки тестов в аннотациях
         if: failure()
         run: python scripts/annotate_pytest.py cad-results.xml
