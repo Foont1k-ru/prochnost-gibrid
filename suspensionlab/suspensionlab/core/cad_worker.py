@@ -59,7 +59,7 @@ def create_mesh(path: Path, deviation: float) -> tuple[np.ndarray, int]:
         faces += 1
         if faces > MAX_TRIANGLES:
             raise CadWorkerError("limit")
-        face = TopoDS.Face_s(explorer.Current())
+        face = TopoDS.Face(explorer.Current())
         location = TopLoc_Location()
         poly = BRep_Tool.Triangulation_s(face, location)
         if poly is None or poly.NbTriangles() <= 0 or poly.NbNodes() <= 0:
