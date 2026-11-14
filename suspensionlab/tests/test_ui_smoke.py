@@ -150,6 +150,12 @@ def test_cad_preview_load_rotate_and_cancel_without_project_changes(window, qtbo
     qtbot.waitUntil(lambda: dialog._reader is None, timeout=10000)
     assert dialog._view.mesh is mesh and "треугольников 1" in dialog._status.text()
     assert not dialog._view.grab().isNull()
+    partial = CadMesh(mesh.triangles, 3, 2)
+    dialog._show_mesh(partial)
+    assert dialog._view.mesh is partial
+    assert "НЕПОЛНАЯ МОДЕЛЬ" in dialog._status.text() and "не показано 2" in dialog._status.text()
+    dialog._show_mesh(mesh)
+    assert "НЕПОЛНАЯ МОДЕЛЬ" not in dialog._status.text()
     view = dialog._view
     old_yaw = view.yaw
     QApplication.sendEvent(view, QMouseEvent(QEvent.Type.MouseButtonPress, QPointF(100, 100), Qt.MouseButton.LeftButton,

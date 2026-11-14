@@ -21,14 +21,19 @@ class CadWorkerError(Exception):
         self.code = code
 
 
-def create_mesh(path: Path, deviation: float) -> tuple[np.ndarray, int]:
+def _face_triangulation(face, location):
+    from OCP.BRep import BRep_Tool
+
+    return BRep_Tool.Triangulation_s(face, location)
+
+
+def create_mesh(path: Path, deviation: float) -> tuple[np.ndarray, int, int]:
     """OCCT самостоятельно читает сборочные положения; наши кандидаты не применяются."""
     if not path.is_file() or path.stat().st_size > MAX_BYTES or path.stat().st_size == 0:
         raise CadWorkerError("file_size")
     if not np.isfinite(deviation) or not 0.2 <= deviation <= 20:
         raise CadWorkerError("deviation")
     try:
-        from OCP.BRep import BRep_Tool
         from OCP.BRepMesh import BRepMesh_IncrementalMesh
         from OCP.IFSelect import IFSelect_ReturnStatus
         from OCP.Interface import Interface_Static
@@ -54,16 +59,20 @@ def create_mesh(path: Path, deviation: float) -> tuple[np.ndarray, int]:
         raise CadWorkerError("mesh")
     explorer = TopExp_Explorer(shape, TopAbs_ShapeEnum.TopAbs_FACE)
     chunks: list[np.ndarray] = []
-    faces = total = 0
+    faces = total = skipped = 0
     while explorer.More():
         faces += 1
         if faces > MAX_TRIANGLES:
             raise CadWorkerError("limit")
         face = TopoDS.Face(explorer.Current())
         location = TopLoc_Location()
-        poly = BRep_Tool.Triangulation_s(face, location)
-        if poly is None or poly.NbTriangles() <= 0 or poly.NbNodes() <= 0:
-            raise CadWorkerError("missing_face")
+        poly = _face_triangulation(face, location)
+        if poly is None or poly.NbTriangles() <= 0:
+            skipped += 1
+            explorer.Next()
+            continue
+        if poly.NbNodes() <= 0:
+            raise CadWorkerError("mesh")
         number_triangles = poly.NbTriangles()
         if total + number_triangles > MAX_TRIANGLES or poly.NbNodes() > MAX_TRIANGLES * 3:
             raise CadWorkerError("limit")
@@ -85,7 +94,7 @@ def create_mesh(path: Path, deviation: float) -> tuple[np.ndarray, int]:
         explorer.Next()
     if not chunks:
         raise CadWorkerError("no_faces")
-    return np.concatenate(chunks, axis=0), faces
+    return np.concatenate(chunks, axis=0), faces, skipped
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -94,8 +103,9 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     source, output, report = map(Path, args[:3])
     try:
-        triangles, faces = create_mesh(source, float(args[3]))
-        np.savez_compressed(output, triangles=triangles, faces=np.array([faces], dtype=np.int64))
+        triangles, faces, skipped = create_mesh(source, float(args[3]))
+        np.savez_compressed(output, triangles=triangles, faces=np.array([faces], dtype=np.int64),
+                            skipped=np.array([skipped], dtype=np.int64))
         report.write_text(json.dumps({"status": "ok"}), encoding="utf-8")
         return 0
     except CadWorkerError as error:

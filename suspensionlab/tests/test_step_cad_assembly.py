@@ -21,6 +21,7 @@ from OCP.TopLoc import TopLoc_Location  # noqa: E402
 from OCP.XCAFApp import XCAFApp_Application  # noqa: E402
 from OCP.XCAFDoc import XCAFDoc_DocumentTool  # noqa: E402
 
+from suspensionlab.core import cad_worker  # noqa: E402
 from suspensionlab.core.cad_transport import CadJob  # noqa: E402
 from suspensionlab.core.cad_worker import create_mesh  # noqa: E402
 from suspensionlab.core.step_candidate import candidate_transforms  # noqa: E402
@@ -70,7 +71,7 @@ def test_generated_step_nested_and_repeated_occurrences_against_cad(tmp_path):
     path = unicode_path
     create_mesh(path, 2.)  # Synthetic data: expose exceptions directly in CAD CI.
     mesh = CadJob().run(path, 2., timeout=90)
-    assert mesh.face_count == 12 and len(mesh.triangles) >= 24
+    assert mesh.face_count == 12 and mesh.skipped_faces == 0 and len(mesh.triangles) >= 24
     bounds_points = []
     for placement in (parent.Multiplied(first), parent.Multiplied(second)):
         for x in (0., 2.):
@@ -117,3 +118,23 @@ def test_generated_step_nested_and_repeated_occurrences_against_cad(tmp_path):
         combined_reference = parent.Multiplied(reference)
         for point in ((0., 0., 0.), probe, (-3., 7., 1.)):
             assert parent_candidate.compose(child).apply_point(point) == pytest.approx(expected_point(combined_reference, point), abs=1e-7)
+
+
+def test_missing_faces_are_counted_not_silently_accepted(tmp_path, monkeypatch):
+    path = tmp_path / "synthetic.step"
+    write_cad_assembly(path)
+    original = cad_worker._face_triangulation
+    calls = 0
+
+    def miss_first(face, location):
+        nonlocal calls
+        calls += 1
+        return None if calls == 1 else original(face, location)
+
+    monkeypatch.setattr(cad_worker, "_face_triangulation", miss_first)
+    triangles, faces, skipped = cad_worker.create_mesh(path, 2.)
+    assert (faces, skipped, calls) == (12, 1, 12)
+    assert len(triangles) == 22
+    monkeypatch.setattr(cad_worker, "_face_triangulation", lambda face, location: None)
+    with pytest.raises(cad_worker.CadWorkerError, match="no_faces"):
+        cad_worker.create_mesh(path, 2.)

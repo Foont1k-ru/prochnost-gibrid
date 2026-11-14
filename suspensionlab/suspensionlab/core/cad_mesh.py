@@ -16,6 +16,7 @@ class CadMesh:
 
     triangles: np.ndarray
     face_count: int
+    skipped_faces: int = 0
 
     def __post_init__(self) -> None:
         try:
@@ -24,7 +25,8 @@ class CadMesh:
             raise ValueError("Некорректная треугольная сетка") from error
         if (mesh.ndim != 3 or mesh.shape[1:] != (3, 3) or not 0 < len(mesh) <= MAX_TRIANGLES or
                 not np.all(np.isfinite(mesh)) or np.any(np.abs(mesh) > MAX_COORDINATE) or
-                not 0 < self.face_count <= MAX_TRIANGLES):
+                not 0 < self.face_count <= MAX_TRIANGLES or
+                not 0 <= self.skipped_faces < self.face_count):
             raise ValueError("Сетка пуста, слишком велика или содержит некорректные координаты")
         mesh.flags.writeable = False
         object.__setattr__(self, "triangles", mesh)

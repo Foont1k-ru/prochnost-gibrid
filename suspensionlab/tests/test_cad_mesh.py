@@ -65,3 +65,49 @@ def test_timeout_kills_child(monkeypatch, tmp_path):
     with pytest.raises(CadPreviewError, match="timeout"):
         CadJob().run(tmp_path / "not-found", 2, timeout=0.1)
     assert killed.is_set()
+
+
+def test_skipped_faces_must_fit_total():
+    triangles = np.zeros((1, 3, 3))
+    mesh = CadMesh(triangles, 4, 2)
+    assert mesh.face_count == 4 and mesh.skipped_faces == 2
+    for skipped in (-1, 4, 5):
+        with pytest.raises(ValueError):
+            CadMesh(triangles, 4, skipped)
+
+
+def test_worker_saves_partial_count(monkeypatch, tmp_path):
+    from suspensionlab.core import cad_worker
+
+    source, output, report = (tmp_path / name for name in ("a.step", "mesh.npz", "status.json"))
+    monkeypatch.setattr(cad_worker, "create_mesh", lambda path, deviation: (np.zeros((1, 3, 3)), 3, 2))
+    assert cad_worker.main([str(source), str(output), str(report), "2"]) == 0
+    with np.load(output, allow_pickle=False) as data:
+        assert list(data["faces"]) == [3] and list(data["skipped"]) == [2]
+
+
+def test_transport_preserves_and_validates_missing_faces(monkeypatch, tmp_path):
+    import json
+    from pathlib import Path
+
+    from suspensionlab.core import cad_transport
+
+    class DummyProcess:
+        def wait(self, timeout=None):
+            return 0
+
+    def spawn(skipped):
+        def run(command, **kwargs):
+            output, report = Path(command[-3]), Path(command[-2])
+            np.savez_compressed(output, triangles=np.zeros((1, 3, 3)),
+                                faces=np.array([3]), skipped=np.array([skipped]))
+            report.write_text(json.dumps({"status": "ok"}), encoding="utf-8")
+            return DummyProcess()
+        return run
+
+    monkeypatch.setattr(cad_transport.subprocess, "Popen", spawn(2))
+    result = CadJob().run(tmp_path / "fixture.step", 2)
+    assert result.face_count == 3 and result.skipped_faces == 2
+    monkeypatch.setattr(cad_transport.subprocess, "Popen", spawn(3))
+    with pytest.raises(CadPreviewError, match="output"):
+        CadJob().run(tmp_path / "fixture.step", 2)

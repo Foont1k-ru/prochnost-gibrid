@@ -112,7 +112,11 @@ class CadPreviewDialog(QDialog):
 
     def _show_mesh(self, mesh: CadMesh) -> None:
         self._view.set_mesh(mesh)
-        self._status.setText(tr("cad_preview.loaded", faces=mesh.face_count, triangles=len(mesh.triangles)))
+        if mesh.skipped_faces:
+            self._status.setText(tr("cad_preview.partial", faces=mesh.face_count,
+                                    skipped=mesh.skipped_faces, triangles=len(mesh.triangles)))
+        else:
+            self._status.setText(tr("cad_preview.loaded", faces=mesh.face_count, triangles=len(mesh.triangles)))
 
     def _show_error(self, code: str) -> None:
         self._view.set_mesh(None)
