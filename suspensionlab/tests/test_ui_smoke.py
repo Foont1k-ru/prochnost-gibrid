@@ -237,6 +237,29 @@ def test_analysis_dialog_rejects_incomplete_inputs_and_clears_old_results(window
     assert dialog._table.rowCount() == 0
 
 
+def test_analysis_dialog_clears_results_if_wheel_projection_fails(window, qtbot, monkeypatch):
+    from suspensionlab.core import metrics
+    from suspensionlab.core.double_wishbone import KinematicsError
+    from suspensionlab.ui.analysis_dialog import AnalysisDialog
+
+    window.controller.new_project("ring")
+    dialog = AnalysisDialog(window.controller, window)
+    qtbot.addWidget(dialog)
+    dialog._from.setValue(0)
+    dialog._to.setValue(0)
+    dialog._run.click()
+    assert dialog._table.rowCount() == 1 and dialog._export_button.isEnabled()
+
+    def reject_projection(_normal, _forward, travel):
+        raise KinematicsError(travel, "проекция оси колеса вырождена")
+
+    monkeypatch.setattr(metrics, "_validate_wheel_projections", reject_projection)
+    dialog._run.click()
+    assert "проекция оси колеса вырождена" in dialog._status.text()
+    assert dialog._table.rowCount() == 0 and not dialog._export_button.isEnabled()
+    assert not dialog._frames and dialog._preview.frame is None
+
+
 def test_analysis_action_opens_dialog(window, monkeypatch):
     from suspensionlab.ui import main_window
 

@@ -38,6 +38,13 @@ def _wheel_directions(
     initial_forward = np.array([cos(toe), -side * sin(toe), 0.0])
     return pose.rotation @ initial_normal, pose.rotation @ initial_forward
 
+
+def _validate_wheel_projections(normal: np.ndarray, forward: np.ndarray, travel_mm: float) -> None:
+    """Угол и его производная не определены при исчезающей проекции оси."""
+    if normal[1] ** 2 + normal[2] ** 2 < 1e-16 or forward[0] ** 2 + forward[1] ** 2 < 1e-16:
+        raise KinematicsError(travel_mm, "проекция оси колеса вырождена")
+
+
 def corner_metrics(
     model: DoubleWishbone,
     pose: Pose,
@@ -54,6 +61,7 @@ def corner_metrics(
     """
     side = model.sign
     normal, forward = _wheel_directions(model, pose, static_camber_deg, static_toe_deg)
+    _validate_wheel_projections(normal, forward, pose.travel_mm)
     ubj = pose.point(model.points["ubj"], model.center0)
     lbj = pose.point(model.points["lbj"], model.center0)
     axis = ubj - lbj
@@ -94,13 +102,12 @@ def corner_derivatives(
     from .screw_axis import instantaneous_motion
 
     normal, forward = _wheel_directions(model, pose, static_camber_deg, static_toe_deg)
+    _validate_wheel_projections(normal, forward, pose.travel_mm)
     motion = instantaneous_motion(model, pose)
     normal_rate = np.cross(motion.angular, normal)
     forward_rate = np.cross(motion.angular, forward)
     camber_denominator = normal[1] ** 2 + normal[2] ** 2
     toe_denominator = forward[0] ** 2 + forward[1] ** 2
-    if camber_denominator < 1e-16 or toe_denominator < 1e-16:
-        raise KinematicsError(pose.travel_mm, "проекция оси колеса вырождена")
     camber = -model.sign * (normal[1] * normal_rate[2] - normal[2] * normal_rate[1]) / camber_denominator
     toe = -model.sign * (forward[0] * forward_rate[1] - forward[1] * forward_rate[0]) / toe_denominator
     return CornerDerivatives(
