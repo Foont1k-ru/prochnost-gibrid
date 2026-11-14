@@ -1,0 +1,20 @@
+[
+  {
+    "key": "ring",
+    "file": "ring.susp.json",
+    "title_key": "template.ring.name",
+    "description_key": "template.ring.desc"
+  },
+  {
+    "key": "city",
+    "file": "city.susp.json",
+    "title_key": "template.city.name",
+    "description_key": "template.city.desc"
+  },
+  {
+    "key": "live_axle",
+    "file": "live_axle.susp.json",
+    "title_key": "template.live_axle.name",
+    "description_key": "template.live_axle.desc"
+  }
+]
