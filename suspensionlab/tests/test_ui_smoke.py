@@ -116,6 +116,13 @@ ENDSEC;END-ISO-10303-21;""", encoding="ascii")
     assert "Контекст #200: объявлена единица длины #201, 1 единица = 1 мм" in text
     assert "Размеры и координаты не пересчитываются" in text
     assert "Пара систем координат не найдена" in text
+    assert not dialog._show_candidates.isChecked() and "КАНДИДАТ:" not in text
+    dialog._show_candidates.setChecked(True)
+    text = dialog._text.toPlainText()
+    assert "КАНДИДАТ: t = (1, 2, 3) мм" in text
+    assert "Не установочное положение" in text and "Кандидат недоступен" in text
+    dialog._show_candidates.setChecked(False)
+    assert "КАНДИДАТ:" not in dialog._text.toPlainText()
     assert window.controller.project.to_dict() == before
 
 

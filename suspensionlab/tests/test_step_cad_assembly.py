@@ -20,7 +20,7 @@ from OCP.TopLoc import TopLoc_Location  # noqa: E402
 from OCP.XCAFApp import XCAFApp_Application  # noqa: E402
 from OCP.XCAFDoc import XCAFDoc_DocumentTool  # noqa: E402
 
-from suspensionlab.core.spatial_transform import RigidTransform, SpatialFrame  # noqa: E402
+from suspensionlab.core.step_candidate import candidate_transforms  # noqa: E402
 from suspensionlab.core.step_inventory import read_step_inventory  # noqa: E402
 
 
@@ -59,14 +59,6 @@ def write_cad_assembly(path):
     return parent, first, second
 
 
-def candidate(frame_pair):
-    first, second = frame_pair.first, frame_pair.second
-    assert first is not None and second is not None
-    def to_frame(value):
-        return SpatialFrame(value.origin, value.x, value.y, value.z)
-    return RigidTransform.align_frames_same_units(to_frame(first), to_frame(second))
-
-
 def test_generated_step_nested_and_repeated_occurrences_against_cad(tmp_path):
     path = tmp_path / "independent.step"
     parent, first, second = write_cad_assembly(path)
@@ -89,8 +81,11 @@ def test_generated_step_nested_and_repeated_occurrences_against_cad(tmp_path):
     children = [occurrence for occurrence in result.occurrences
                 if occurrence.parent_definition == parent_occurrence.child_definition]
     assert len(children) == 2 and children[0].child_definition == children[1].child_definition
-    parent_candidate = candidate(frames[parent_occurrence.entity])
-    child_candidates = [candidate(frames[occurrence.entity]) for occurrence in children]
+    candidates = {item.occurrence: item for item in candidate_transforms(result)}
+    assert all(item.status == "ready" and item.transform is not None for item in candidates.values())
+    parent_candidate = candidates[parent_occurrence.entity].transform
+    child_candidates = [candidates[occurrence.entity].transform for occurrence in children]
+    assert parent_candidate is not None and all(c is not None for c in child_candidates)
     probe = (2., 3., 5.)
     for point in ((0., 0., 0.), probe, (-3., 7., 1.)):
         assert parent_candidate.apply_point(point) == pytest.approx(expected_point(parent, point), abs=1e-7)

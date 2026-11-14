@@ -5,8 +5,18 @@ import logging
 from pathlib import Path
 
 from PySide6.QtCore import QThread, Signal
-from PySide6.QtWidgets import QDialog, QDialogButtonBox, QFileDialog, QLabel, QPlainTextEdit, QPushButton, QVBoxLayout
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QDialog,
+    QDialogButtonBox,
+    QFileDialog,
+    QLabel,
+    QPlainTextEdit,
+    QPushButton,
+    QVBoxLayout,
+)
 
+from ..core.step_candidate import CandidateTransform, candidate_transforms
 from ..core.step_inventory import StepInventory, StepInventoryError, read_step_inventory
 from ..i18n import tr
 
@@ -23,7 +33,8 @@ class _Reader(QThread):
 
     def run(self) -> None:
         try:
-            self.result_ready.emit(read_step_inventory(self._path))
+            result = read_step_inventory(self._path)
+            self.result_ready.emit((result, candidate_transforms(result)))
         except StepInventoryError as error:
             self.failed.emit(str(error))
         except Exception:
@@ -37,7 +48,7 @@ def _product_name(product, definition: int) -> str:
     return f"{product.name or product.identifier or tr('step_inventory.unnamed')} [#{definition}]"
 
 
-def inventory_text(result: StepInventory) -> str:
+def inventory_text(result: StepInventory, candidates: tuple[CandidateTransform, ...] | None = None) -> str:
     lines = [tr("step_inventory.summary", schema=", ".join(result.schema) or tr("step_inventory.unknown"),
                 products=len(result.products), definitions=result.definitions, occurrences=len(result.occurrences),
                 unresolved=result.unresolved_occurrences, solids=result.solid_records,
@@ -62,6 +73,10 @@ def inventory_text(result: StepInventory) -> str:
     frames_by_occurrence = {item.occurrence: item for item in result.placement_frames}
     lines.append(tr("step_inventory.frames_notice"))
     lines.append(tr("step_inventory.rep_notice"))
+    by_occurrence = {item.occurrence: item for item in candidates} if candidates is not None else {}
+    if candidates is not None:
+        ready = sum(item.status == "ready" for item in candidates)
+        lines.append(tr("step_inventory.candidate_notice", count=ready, total=len(candidates)))
     if result.placement_limit:
         lines.append(tr("step_inventory.frames_limit"))
     else:
@@ -72,6 +87,19 @@ def inventory_text(result: StepInventory) -> str:
         parent = _product_name(occurrence.parent, occurrence.parent_definition)
         child = _product_name(occurrence.child, occurrence.child_definition)
         lines.append(f"#{occurrence.entity}: {parent} → {child} ({occurrence.name or occurrence.identifier})")
+        candidate = by_occurrence.get(occurrence.entity)
+        if candidate is not None:
+            if candidate.transform is None:
+                lines.append("    " + tr(f"step_inventory.candidate_status.{candidate.status}"))
+            else:
+                def fmt_candidate(vector):
+                    return ", ".join(f"{value:.6g}" for value in vector)
+                transform = candidate.transform
+                lines.append("    " + tr("step_inventory.candidate_value",
+                                         translation=fmt_candidate(transform.translation),
+                                         r1=fmt_candidate(transform.rotation[0]),
+                                         r2=fmt_candidate(transform.rotation[1]),
+                                         r3=fmt_candidate(transform.rotation[2])))
         placement = frames_by_occurrence.get(occurrence.entity)
         if placement is None:
             continue
@@ -110,6 +138,8 @@ class StepInventoryDialog(QDialog):
         self.setWindowTitle(tr("step_inventory.title"))
         self.resize(850, 650)
         self._reader: _Reader | None = None
+        self._result: StepInventory | None = None
+        self._candidates: tuple[CandidateTransform, ...] = ()
         layout = QVBoxLayout(self)
         notice = QLabel(tr("step_inventory.notice"), self)
         notice.setWordWrap(True)
@@ -120,6 +150,10 @@ class StepInventoryDialog(QDialog):
         self._status = QLabel(tr("step_inventory.empty"), self)
         self._status.setWordWrap(True)
         layout.addWidget(self._status)
+        self._show_candidates = QCheckBox(tr("step_inventory.candidate_toggle"), self)
+        self._show_candidates.setEnabled(False)
+        self._show_candidates.toggled.connect(self._render)
+        layout.addWidget(self._show_candidates)
         self._text = QPlainTextEdit(self)
         self._text.setReadOnly(True)
         layout.addWidget(self._text, 1)
@@ -135,6 +169,10 @@ class StepInventoryDialog(QDialog):
     def load_file(self, path: Path) -> None:
         if self._reader is not None:
             return
+        self._result = None
+        self._candidates = ()
+        self._show_candidates.setChecked(False)
+        self._show_candidates.setEnabled(False)
         self._text.clear()
         self._status.setText(tr("step_inventory.loading"))
         self._choose.setEnabled(False)
@@ -146,11 +184,21 @@ class StepInventoryDialog(QDialog):
         reader.finished.connect(self._finished)
         reader.start()
 
-    def _show_result(self, result: StepInventory) -> None:
-        self._text.setPlainText(inventory_text(result))
+    def _show_result(self, payload: tuple[StepInventory, tuple[CandidateTransform, ...]]) -> None:
+        self._result, self._candidates = payload
+        self._show_candidates.setEnabled(True)
+        self._render()
         self._status.setText(tr("step_inventory.done"))
 
+    def _render(self, *_args: object) -> None:
+        if self._result is not None:
+            candidates = self._candidates if self._show_candidates.isChecked() else None
+            self._text.setPlainText(inventory_text(self._result, candidates))
+
     def _show_error(self, error: str) -> None:
+        self._result = None
+        self._candidates = ()
+        self._show_candidates.setEnabled(False)
         self._text.clear()
         self._status.setText(tr("step_inventory.error", reason=error))
 
