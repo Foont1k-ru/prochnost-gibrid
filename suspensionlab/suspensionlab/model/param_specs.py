@@ -14,6 +14,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from ..core.powertrain_layout import LAYOUTS
 from .entities import Axle, Hardpoint, Link, Project, Vehicle, Wheel
 from .units import UnitKind
 
@@ -162,6 +163,8 @@ def vehicle_specs(vehicle: Vehicle) -> list[GroupSpec]:
             "insp.group.vehicle",
             [
                 _text(vehicle, "name", "vehicle.name"),
+                _enum(vehicle, "powertrain_layout", "vehicle.powertrain_layout",
+                      tuple((code, f"powertrain.{code}") for code in LAYOUTS)),
                 _num(vehicle, "mass_kg", "vehicle.mass", 500, 3000, 10, UnitKind.MASS, title_key="param.mass_kg.name", help_key="param.mass_kg.help"),
                 _num(vehicle, "front_weight_pct", "vehicle.front_weight", 30, 70, 0.5, UnitKind.PLAIN, title_key="param.front_weight_pct.name", help_key="param.front_weight_pct.help"),
                 _num(vehicle, "cg_height_mm", "vehicle.cg_height", 200, 900, 5, UnitKind.LENGTH, title_key="param.cg_height_mm.name", help_key="param.cg_height_mm.help"),

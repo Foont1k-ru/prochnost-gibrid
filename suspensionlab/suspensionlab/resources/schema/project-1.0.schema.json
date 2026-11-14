@@ -8,7 +8,12 @@
   "properties": {
     "schema_version": {"const": "1.0"},
     "meta": {"type": "object"},
-    "vehicle": {"type": "object"},
+    "vehicle": {
+      "type": "object",
+      "properties": {
+        "powertrain_layout": {"type": "string", "description": "Необязательная условная компоновка для отображения; отсутствие означает, что она не задана."}
+      }
+    },
     "front_axle": {"$ref": "#/$defs/axle"},
     "rear_axle": {"$ref": "#/$defs/axle"},
     "model_b": {"type": ["object", "null"]},

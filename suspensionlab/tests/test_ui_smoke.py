@@ -32,6 +32,43 @@ def test_window_and_theme(window, qtbot):
     qtbot.wait(10)
 
 
+@pytest.mark.parametrize("mode,expected", [("front", "rect"), ("side", "ellipse"), ("top", "rect")])
+@pytest.mark.parametrize("template,role", [("ring", "front"), ("live_axle", "rear")])
+def test_main_canvas_wheel_shape_and_dimensions(window, mode, expected, template, role):
+    from suspensionlab.ui.theme import canvas_colors
+
+    class PainterRecorder:
+        def __init__(self):
+            self.shapes = []
+
+        def setPen(self, _pen):  # noqa: N802
+            pass
+
+        def setBrush(self, _brush):  # noqa: N802
+            pass
+
+        def drawRect(self, rect):  # noqa: N802
+            self.shapes.append(("rect", rect))
+
+        def drawEllipse(self, rect):  # noqa: N802
+            self.shapes.append(("ellipse", rect))
+
+    window.controller.new_project(template)
+    canvas = window._canvases[role]
+    canvas.set_view_mode(mode)
+    recorder = PainterRecorder()
+    axle = window.controller.project.axle(role)
+    canvas._draw_wheels(recorder, axle, canvas_colors("dark"))
+    assert len(recorder.shapes) == 2
+    assert all(shape == expected for shape, _rect in recorder.shapes)
+    scale = canvas._scale()
+    width = axle.wheel.width_mm if mode == "front" else 2 * axle.wheel.r_dynamic_mm
+    height = axle.wheel.width_mm if mode == "top" else 2 * axle.wheel.r_dynamic_mm
+    for _shape, rect in recorder.shapes:
+        assert rect.width() == pytest.approx(width * scale)
+        assert rect.height() == pytest.approx(height * scale)
+
+
 def test_template_save_open_and_undo(window, tmp_path):
     c = window.controller
     c.new_project("ring")
@@ -136,11 +173,14 @@ def test_configurable_template_dialog(window, qtbot, tmp_path):
     dialog.show()
     assert dialog.selected_key() is None
     assert dialog._front.currentData() == "macpherson_front"
+    assert dialog._powertrain.currentData() == "transverse_front"
+    dialog._powertrain.setCurrentIndex(dialog._powertrain.findData("longitudinal_transaxle"))
     assert dialog._front_drive.isChecked() and not dialog._rear_drive.isChecked()
     dialog._rear.setCurrentIndex(dialog._rear.findData("torsion_beam_rear"))
     assert not dialog._rear_drive.isEnabled() and not dialog._rear_drive.isChecked()
     project = dialog.selected_project()
     assert project is not None and project.rear.type_code == "torsion_beam_rear"
+    assert project.vehicle.powertrain_layout == "longitudinal_transaxle"
     window.controller.new_project(project=project)
     window._show_workspace()
     for mode in ("front", "side", "top"):
@@ -149,13 +189,42 @@ def test_configurable_template_dialog(window, qtbot, tmp_path):
     path = window.controller.save_project(tmp_path / "configured")
     window.controller.open_project(path)
     assert window.controller.project.front.type_code == "macpherson_front"
+    assert window.controller.project.vehicle.powertrain_layout == "longitudinal_transaxle"
     dialog._list.setCurrentRow(1)
+    assert dialog._powertrain.currentData() == "longitudinal_transfer"
     assert dialog._front.currentData() == "multilink_front"
     assert dialog._front_drive.isChecked() and dialog._rear_drive.isChecked()
     dialog._rear.setCurrentIndex(dialog._rear.findData("live_axle_coil"))
     assert dialog.selected_project().rear.type_code == "live_axle_coil"
     dialog._list.setCurrentRow(2)
     assert dialog.selected_project() is None and dialog.selected_key() == "ring"
+
+
+def test_powertrain_inspector_undo_and_views(window, tmp_path):
+    from suspensionlab.core.powertrain_layout import layout_diagram
+
+    c = window.controller
+    c.new_project("ring")
+    c.select(Selection("vehicle"))
+    row = next(row for row in window._inspector._rows if row.spec.attr == "powertrain_layout")
+    combo = row.widget
+    assert combo.currentData() == "unspecified"
+    combo.setCurrentIndex(combo.findData("longitudinal_transfer"))
+    assert c.project.vehicle.powertrain_layout == "longitudinal_transfer"
+    assert layout_diagram(c.project).status == "ok"
+    c.undo_last()
+    assert c.project.vehicle.powertrain_layout == "unspecified" and combo.currentData() == "unspecified"
+    c.redo_last()
+    assert c.project.vehicle.powertrain_layout == "longitudinal_transfer"
+    window._show_workspace()
+    for role in ("front", "rear", "both"):
+        for mode in ("front", "side", "top"):
+            canvas = window._canvases[role]
+            canvas.set_view_mode(mode)
+            canvas.grab()
+    path = c.save_project(tmp_path / "powertrain")
+    c.open_project(path)
+    assert c.project.vehicle.powertrain_layout == "longitudinal_transfer"
 
 
 def test_analysis_dialog_results_and_invalidation(window, qtbot):

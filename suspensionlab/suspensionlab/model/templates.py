@@ -84,12 +84,16 @@ class VehicleTemplateOptions:
     rear_type: str = "multilink_rear"
     front_driven: bool = True
     rear_driven: bool = False
+    powertrain_layout: str = "unspecified"
 
 
 def create_vehicle_template(options: VehicleTemplateOptions) -> Project:
     """Создаёт отдельные оси без подмены типа подвески или расчётной модели."""
+    from ..core.powertrain_layout import LAYOUTS
     from .entities import Axle
 
+    if options.powertrain_layout not in LAYOUTS:
+        raise ValueError("Unsupported powertrain layout")
     allowed = {
         "passenger": (("macpherson_front", "multilink_front", "double_wishbone"),
                       ("multilink_rear", "torsion_beam_rear")),
@@ -109,5 +113,6 @@ def create_vehicle_template(options: VehicleTemplateOptions) -> Project:
     front.drivetrain.driven = options.front_driven
     rear.drivetrain.driven = options.rear_driven
     project = Project(front=front, rear=rear)
+    project.vehicle.powertrain_layout = options.powertrain_layout
     project.meta.name = ""
     return project

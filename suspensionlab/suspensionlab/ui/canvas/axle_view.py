@@ -16,6 +16,8 @@ from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QMouseEvent, QPainter, QPainterPath, QPen, QWheelEvent
 from PySide6.QtWidgets import QWidget
 
+from ...core.powertrain_layout import layout_diagram
+from ...core.wheel_projection import wheel_projection
 from ...i18n import tr
 from ...model.entities import Axle
 from ..controller import AppController, Selection
@@ -69,8 +71,9 @@ class AxleCanvas(QWidget):
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setMinimumSize(320, 240)
+        self._layout_key = self._powertrain_key()
 
-        controller.modelChanged.connect(self.update)
+        controller.modelChanged.connect(self._on_model_changed)
         controller.projectReplaced.connect(self._request_fit)
         controller.selectionChanged.connect(lambda _selection: self.update())
 
@@ -99,6 +102,18 @@ class AxleCanvas(QWidget):
     def roles(self) -> tuple[str, ...]:
         """Показанные оси."""
         return self._roles
+
+    def _powertrain_key(self) -> tuple[str, float, bool, bool]:
+        project = self._controller.project
+        return (project.vehicle.powertrain_layout, project.vehicle.wheelbase_mm,
+                project.front.drivetrain.driven, project.rear.drivetrain.driven)
+
+    def _on_model_changed(self) -> None:
+        key = self._powertrain_key()
+        if key != self._layout_key:
+            self._layout_key = key
+            self._request_fit()
+        self.update()
 
     def _request_fit(self) -> None:
         """Просит выполнить вписывание при следующей отрисовке."""
@@ -160,13 +175,22 @@ class AxleCanvas(QWidget):
         """Проекция точки оси с учётом смещения задней оси."""
         return self._project(x + self._axle_offset(axle.role), y, z)
 
+    def _global_project(self, x: float, y: float, z: float) -> tuple[float, float]:
+        """Общие координаты схемы привода в локальный вид выбранной оси."""
+        if self._roles == ("rear",) and self._mode in ("side", "top"):
+            x += self._controller.project.vehicle.wheelbase_mm
+        return self._project(x, y, z)
+
     def _collect_bounds(self) -> tuple[float, float, float, float]:
         """Границы геометрии в координатах плоскости (umin, umax, vmin, vmax)."""
         us: list[float] = []
         vs: list[float] = []
         for role in self._roles:
             axle = self._controller.project.axle(role)
-            for point in axle.hardpoints.values():
+            for code, point in axle.hardpoints.items():
+                spec = axle.spec.point(code)
+                if code == "driveshaft_front" or (spec is not None and spec.group == "drivetrain" and not axle.drivetrain.driven):
+                    continue
                 u, v = self._axle_project(axle, point.x, point.y, point.z)
                 us.append(u)
                 vs.append(v)
@@ -175,9 +199,9 @@ class AxleCanvas(QWidget):
                     us.append(u2)
                     vs.append(v2)
             radius = axle.wheel.r_dynamic_mm
-            code = axle.wheel_center_code()
-            if code:
-                point = axle.hardpoints[code]
+            wheel_code = axle.wheel_center_code()
+            if wheel_code:
+                point = axle.hardpoints[wheel_code]
                 centers = [point.as_tuple()]
                 if axle.has_explicit_sides:
                     right = axle.hardpoints.get("wheel_center_r")
@@ -185,10 +209,24 @@ class AxleCanvas(QWidget):
                         centers.append(right.as_tuple())
                 else:
                     centers.append((point.x, -point.y, point.z))
+                _, half_u, half_v = wheel_projection(self._mode, radius, axle.wheel.width_mm)
                 for x, y, z in centers:
                     u, v = self._axle_project(axle, x, y, z)
-                    us.extend([u - radius, u + radius])
-                    vs.extend([v - radius, v + radius])
+                    us.extend([u - half_u, u + half_u])
+                    vs.extend([v - half_v, v + half_v])
+        if self._mode in ("side", "top"):
+            diagram = layout_diagram(self._controller.project)
+            for component in diagram.components:
+                for p3 in (component.low, component.high):
+                    u, v = self._global_project(*p3)
+                    us.append(u)
+                    vs.append(v)
+            for shaft in diagram.shafts:
+                if shaft.role in self._roles:
+                    for p3 in (shaft.start, shaft.end):
+                        u, v = self._global_project(*p3)
+                        us.append(u)
+                        vs.append(v)
         if not us:
             return (-500.0, 500.0, -200.0, 600.0)
         return (min(us), max(us), min(vs), max(vs))
@@ -216,6 +254,7 @@ class AxleCanvas(QWidget):
         colors = canvas_colors(self._controller.project.view.theme)
         painter.fillRect(self.rect(), QColor(colors.background))
         self._draw_grid(painter, colors)
+        self._draw_powertrain(painter, colors)
         for role in self._roles:
             self._draw_axle(painter, self._controller.project.axle(role), colors)
         self._draw_legend(painter, colors)
@@ -276,40 +315,76 @@ class AxleCanvas(QWidget):
         painter.setFont(QFont(self.font().family(), 9))
         painter.drawText(QRectF(x0, y0 - 20, 140, 16), int(Qt.AlignmentFlag.AlignLeft), f"{length_mm:.0f} {tr('unit.length.mm')}")
 
-    def _draw_axle(self, painter: QPainter, axle: Axle, colors) -> None:
-        """Рисует одну ось во всех слоях."""
-        sides = (1.0,) if axle.has_explicit_sides else (1.0, -1.0)
-        radius = axle.wheel.r_dynamic_mm
+    def _draw_powertrain(self, painter: QPainter, colors) -> None:
+        """Показывает только условную компоновку, не редактируемую геометрию агрегатов."""
+        if self._mode not in ("side", "top"):
+            return
+        diagram = layout_diagram(self._controller.project)
+        painter.setPen(QPen(QColor(colors.hint)))
+        painter.setFont(QFont(self.font().family(), 9))
+        painter.drawText(QRectF(14, 8, self.width() - 28, 34),
+                         int(Qt.AlignmentFlag.AlignLeft) | int(Qt.TextFlag.TextWordWrap),
+                         tr(f"powertrain.status.{diagram.status}"))
+        if diagram.status != "ok":
+            return
+        for part in diagram.components:
+            a = self._to_screen(*self._global_project(*part.low))
+            b = self._to_screen(*self._global_project(*part.high))
+            rect = QRectF(a, b).normalized()
+            fill = QColor(colors.damper)
+            fill.setAlpha(45)
+            painter.setBrush(fill)
+            pen = QPen(QColor(colors.damper), 1.3)
+            pen.setStyle(Qt.PenStyle.DashLine)
+            painter.setPen(pen)
+            painter.drawRoundedRect(rect, 3, 3)
+            painter.setPen(QPen(QColor(colors.label)))
+            painter.drawText(rect, int(Qt.AlignmentFlag.AlignCenter) | int(Qt.TextFlag.TextWordWrap), tr(f"powertrain.part.{part.kind}"))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        pen = QPen(QColor(colors.damper), 3.0)
+        pen.setStyle(Qt.PenStyle.DashLine)
+        painter.setPen(pen)
+        for shaft in diagram.shafts:
+            if shaft.role in self._roles:
+                painter.drawLine(self._to_screen(*self._global_project(*shaft.start)),
+                                 self._to_screen(*self._global_project(*shaft.end)))
 
-        # колесо
-        wheel_pen = QPen(QColor(colors.wheel), 1.8)
-        painter.setPen(wheel_pen)
+    def _draw_wheels(self, painter: QPainter, axle: Axle, colors) -> None:
+        """Ортографический профиль: фронт/верх — прямоугольник, бок — круг."""
+        painter.setPen(QPen(QColor(colors.wheel), 1.8))
         fill = QColor(colors.wheel_fill)
         fill.setAlpha(90)
         painter.setBrush(fill)
+        shape, half_u, half_v = wheel_projection(self._mode, axle.wheel.r_dynamic_mm, axle.wheel.width_mm)
         for side in (1.0, -1.0):
             code = ("wheel_center_l" if side > 0 else "wheel_center_r") if axle.has_explicit_sides else axle.wheel_center_code()
             if code is None or code not in axle.hardpoints:
                 continue
             point = axle.hardpoints[code]
             y = point.y if axle.has_explicit_sides else point.y * side
-            u, v = self._axle_project(axle, point.x, y, point.z)
-            center = self._to_screen(u, v)
-            if self._mode in ("front", "side"):
-                pixels = radius * self._scale()
-                painter.drawEllipse(center, pixels, pixels)
+            center = self._to_screen(*self._axle_project(axle, point.x, y, point.z))
+            rect = QRectF(center.x() - half_u * self._scale(), center.y() - half_v * self._scale(),
+                          2 * half_u * self._scale(), 2 * half_v * self._scale())
+            if shape == "ellipse":
+                painter.drawEllipse(rect)
             else:
-                length = 2.0 * radius * self._scale()
-                width = axle.wheel.width_mm * self._scale()
-                painter.drawRect(QRectF(center.x() - length / 2.0, center.y() - width / 2.0, length, width))
+                painter.drawRect(rect)
         painter.setBrush(Qt.BrushStyle.NoBrush)
+
+    def _draw_axle(self, painter: QPainter, axle: Axle, colors) -> None:
+        """Рисует одну ось во всех слоях."""
+        sides = (1.0,) if axle.has_explicit_sides else (1.0, -1.0)
+        radius = axle.wheel.r_dynamic_mm
+
+        self._draw_wheels(painter, axle, colors)
 
         # кузов / подрамник: вертикальная линия по внутренним опорам
         body_pen = QPen(QColor(colors.body), 1.2)
         body_pen.setStyle(Qt.PenStyle.DashLine)
         painter.setPen(body_pen)
         inner = [p for code, p in axle.hardpoints.items()
-                 if (point_spec := axle.spec.point(code)) is not None and point_spec.role == "body"]
+                 if code != "driveshaft_front" and (point_spec := axle.spec.point(code)) is not None
+                 and point_spec.role == "body" and (point_spec.group != "drivetrain" or axle.drivetrain.driven)]
         if inner:
             projections = [self._axle_project(axle, p.x, p.y, p.z) for p in inner]
             vmins = min(v[1] for v in projections)
@@ -327,6 +402,8 @@ class AxleCanvas(QWidget):
         link_pen = QPen(QColor(colors.link), 2.4)
         painter.setPen(link_pen)
         for link_spec in axle.spec.links:
+            if link_spec.code in ("driveshaft_to_differential", "driveshaft"):
+                continue  # Старый условный кардан не задаёт компоновку всего автомобиля.
             if link_spec.group == "drivetrain" and not axle.drivetrain.driven:
                 continue
             for side in sides:
@@ -360,7 +437,7 @@ class AxleCanvas(QWidget):
 
         # точки крепления
         for code in axle.point_codes():
-            if code not in axle.hardpoints:
+            if code == "driveshaft_front" or code not in axle.hardpoints:
                 continue
             point_spec = axle.spec.point(code)
             if point_spec is not None and point_spec.group == "drivetrain" and not axle.drivetrain.driven:
@@ -392,9 +469,9 @@ class AxleCanvas(QWidget):
         painter.setPen(QPen(QColor(colors.label)))
         painter.setFont(QFont(self.font().family(), 10, QFont.Weight.DemiBold))
         title = tr("canvas.front") if axle.role == "front" else tr("canvas.rear")
-        code = axle.wheel_center_code()
-        if code is not None:
-            point = axle.hardpoints[code]
+        wheel_code = axle.wheel_center_code()
+        if wheel_code is not None:
+            point = axle.hardpoints[wheel_code]
             u, v = self._axle_project(axle, point.x, point.y, point.z)
             anchor = self._to_screen(u, v)
             anchor = QPointF(anchor.x(), anchor.y() - radius * self._scale() - 8.0)
@@ -480,7 +557,7 @@ class AxleCanvas(QWidget):
             axle = self._controller.project.axle(role)
             sides = (1.0,) if axle.has_explicit_sides else (1.0, -1.0)
             for code in axle.point_codes():
-                if code not in axle.hardpoints:
+                if code == "driveshaft_front" or code not in axle.hardpoints:
                     continue
                 point_spec = axle.spec.point(code)
                 if point_spec is not None and point_spec.group == "drivetrain" and not axle.drivetrain.driven:

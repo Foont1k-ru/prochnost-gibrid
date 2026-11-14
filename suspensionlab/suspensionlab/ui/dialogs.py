@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..core.powertrain_layout import LAYOUTS
 from ..i18n import tr
 from ..model.entities import Project
 from ..model.templates import TemplateInfo, VehicleTemplateOptions, create_vehicle_template, list_templates
@@ -46,10 +47,14 @@ class TemplateDialog(QDialog):
         self._config = QGroupBox(tr("template.config.title"), self)
         self._front = QComboBox(self._config)
         self._rear = QComboBox(self._config)
+        self._powertrain = QComboBox(self._config)
+        for code in LAYOUTS:
+            self._powertrain.addItem(tr(f"powertrain.{code}"), code)
         self._front_drive = QCheckBox(tr("template.config.driven"), self._config)
         self._rear_drive = QCheckBox(tr("template.config.driven"), self._config)
         self._front_drive.setChecked(True)
         form = QFormLayout(self._config)
+        form.addRow(tr("param.powertrain_layout.name"), self._powertrain)
         form.addRow(tr("template.config.front"), self._front)
         form.addRow(tr("template.config.front_drive"), self._front_drive)
         form.addRow(tr("template.config.rear"), self._rear)
@@ -89,6 +94,7 @@ class TemplateDialog(QDialog):
                 self._front.addItem(tr(f"type.{code}.name"), code)
             for code in rear:
                 self._rear.addItem(tr(f"type.{code}.name"), code)
+            self._powertrain.setCurrentIndex(self._powertrain.findData("transverse_front" if row == 0 else "longitudinal_transfer"))
             self._front_drive.setChecked(True)
             self._rear_drive.setChecked(row == 1)
             self._rear_changed()
@@ -112,6 +118,7 @@ class TemplateDialog(QDialog):
             category="passenger" if row == 0 else "suv",
             front_type=str(self._front.currentData()), rear_type=str(self._rear.currentData()),
             front_driven=self._front_drive.isChecked(), rear_driven=self._rear_drive.isChecked(),
+            powertrain_layout=str(self._powertrain.currentData()),
         ))
 
     def selected_key(self) -> str | None:

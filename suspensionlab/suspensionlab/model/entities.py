@@ -683,6 +683,7 @@ class Vehicle:
     unsprung_front_kg: float = 42.0
     unsprung_rear_kg: float = 48.0
     profile: str = "ring_race"
+    powertrain_layout: str = "unspecified"
 
     @property
     def front_mass_kg(self) -> float:
@@ -696,7 +697,7 @@ class Vehicle:
 
     def to_dict(self) -> dict[str, Any]:
         """Сериализация автомобиля."""
-        return {
+        data = {
             "name": self.name,
             "mass_kg": _round(self.mass_kg),
             "front_weight_pct": _round(self.front_weight_pct),
@@ -709,6 +710,10 @@ class Vehicle:
             "unsprung_rear_kg": _round(self.unsprung_rear_kg),
             "profile": self.profile,
         }
+        # Отсутствие поля сохраняет совместимость со старыми снимками 1.0.
+        if self.powertrain_layout != "unspecified":
+            data["powertrain_layout"] = self.powertrain_layout
+        return data
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Vehicle:
@@ -726,9 +731,10 @@ class Vehicle:
             "unsprung_front_kg",
             "unsprung_rear_kg",
             "profile",
+            "powertrain_layout",
         ):
             if name in data:
-                if name == "name" or name == "profile":
+                if name in ("name", "profile", "powertrain_layout"):
                     setattr(vehicle, name, str(data[name]))
                 else:
                     setattr(vehicle, name, float(data[name]))
