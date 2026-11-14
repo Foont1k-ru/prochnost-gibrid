@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from ..core.geometry import distance
+from ..core.powertrain_layout import layout_diagram
 from .entities import SCHEMA_VERSION, Axle, Project
 from .suspension_types import REGISTRY
 
@@ -81,6 +82,9 @@ def validate_axle(axle: Axle, project: Project | None = None) -> list[Issue]:
 
     # --- наличие обязательных точек -------------------------------------
     for point_spec in spec.points:
+        # Устаревший локальный кардан хранится для совместимости, но не рисуется и не рассчитывается.
+        if point_spec.code == "driveshaft_front":
+            continue
         if point_spec.code not in axle.hardpoints:
             issues.append(
                 _issue(
@@ -93,7 +97,7 @@ def validate_axle(axle: Axle, project: Project | None = None) -> list[Issue]:
             )
 
     # --- совпадающие координаты ----------------------------------------
-    codes = [code for code in axle.point_codes() if code in axle.hardpoints]
+    codes = [code for code in axle.point_codes() if code != "driveshaft_front" and code in axle.hardpoints]
     for index, first in enumerate(codes):
         for second in codes[index + 1 :]:
             if distance(axle.hardpoints[first].as_tuple(), axle.hardpoints[second].as_tuple()) < 0.5:
@@ -118,6 +122,8 @@ def validate_axle(axle: Axle, project: Project | None = None) -> list[Issue]:
 
     # --- длины рычагов ---------------------------------------------------
     for link_spec in spec.links:
+        if link_spec.code in ("driveshaft", "driveshaft_to_differential"):
+            continue
         length = axle.link_length(link_spec.code)
         if length < MIN_LINK_LENGTH_MM:
             issues.append(
@@ -199,7 +205,7 @@ def validate_axle(axle: Axle, project: Project | None = None) -> list[Issue]:
     if axle.drivetrain.driven and not spec.supports_driven:
         issues.append(_issue("warning", "diag.drive_not_supported", role))
     if axle.drivetrain.driven:
-        drive_points = ("differential_center", "pinion_center", "driveshaft_front") if axle.is_live_axle else ("differential_center", "driveshaft_front", "halfshaft_in", "halfshaft_out")
+        drive_points = ("differential_center", "pinion_center") if axle.is_live_axle else ("differential_center", "halfshaft_in", "halfshaft_out")
         for code in drive_points:
             if code not in axle.hardpoints:
                 issues.append(_issue("warning", "diag.drive_points_missing", role, code=code))
@@ -214,6 +220,12 @@ def validate_project(project: Project) -> list[Issue]:
         issues.extend(validate_axle(axle, project))
 
     vehicle = project.vehicle
+    powertrain_status = layout_diagram(project).status
+    if powertrain_status == "unspecified":
+        if project.front.drivetrain.driven or project.rear.drivetrain.driven:
+            issues.append(_issue("info", "diag.powertrain_unspecified"))
+    elif powertrain_status != "ok":
+        issues.append(_issue("warning", f"diag.powertrain_{powertrain_status}"))
     if vehicle.mass_kg <= 0:
         issues.append(_issue("error", "diag.vehicle_mass_invalid"))
     if not 30.0 <= vehicle.front_weight_pct <= 70.0:

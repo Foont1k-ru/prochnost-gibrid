@@ -61,7 +61,9 @@ class DiagnosticsPanel(QWidget):
         issue = item.data(0x0100)
         if not isinstance(issue, Issue):
             return
-        if issue.code and issue.role:
+        if issue.key.startswith("diag.powertrain_"):
+            self.issueSelected.emit(Selection("vehicle"))
+        elif issue.code and issue.role:
             kind = "point" if issue.key in ("diag.point_missing", "diag.points_coincide", "diag.point_out_of_zone", "diag.point_below_ground") else "link"
             self.issueSelected.emit(Selection(kind, issue.role, issue.code))
         elif issue.role:

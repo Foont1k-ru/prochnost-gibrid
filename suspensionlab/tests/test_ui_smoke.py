@@ -227,6 +227,44 @@ def test_powertrain_inspector_undo_and_views(window, tmp_path):
     assert c.project.vehicle.powertrain_layout == "longitudinal_transfer"
 
 
+def test_powertrain_diagnostic_updates_and_selects_vehicle(window, qtbot):
+    from suspensionlab.model.templates import VehicleTemplateOptions, create_vehicle_template
+
+    project = create_vehicle_template(VehicleTemplateOptions("passenger", "double_wishbone", "multilink_rear",
+                                                             False, True, "transverse_front"))
+    controller = window.controller
+    controller.new_project(project=project)
+    panel = window._diagnostics
+    item = next(panel._list.item(i) for i in range(panel._list.count())
+                if (issue := panel._list.item(i).data(0x0100)) is not None
+                and issue.key == "diag.powertrain_incompatible")
+    assert "включена только задняя" in item.text()
+    panel._on_item(item)
+    assert controller.selection == Selection("vehicle")
+    controller.set_value(controller.project.front.drivetrain, "driven", True)
+    assert not any(issue.key == "diag.powertrain_incompatible" for issue in controller.issues)
+    controller.undo_last()
+    assert any(issue.key == "diag.powertrain_incompatible" for issue in controller.issues)
+    controller.redo_last()
+    assert not any(issue.key == "diag.powertrain_incompatible" for issue in controller.issues)
+
+
+def test_template_warns_about_incompatible_powertrain_before_creation(window, qtbot):
+    from suspensionlab.ui.dialogs import TemplateDialog
+
+    dialog = TemplateDialog(window)
+    qtbot.addWidget(dialog)
+    dialog._front_drive.setChecked(False)
+    dialog._rear_drive.setChecked(True)
+    assert "Несовместимо" in dialog._powertrain_hint.text()
+    selected = dialog.selected_project()
+    assert selected is not None and not selected.front.drivetrain.driven and selected.rear.drivetrain.driven
+    dialog._powertrain.setCurrentIndex(dialog._powertrain.findData("longitudinal_transfer"))
+    assert "Условная компоновка" in dialog._powertrain_hint.text()
+    dialog._powertrain.setCurrentIndex(dialog._powertrain.findData("unspecified"))
+    assert "не задана" in dialog._powertrain_hint.text()
+
+
 def test_analysis_dialog_results_and_invalidation(window, qtbot):
     from suspensionlab.core.analysis import analyze_corner
     from suspensionlab.core.stroke import StrokeLimits

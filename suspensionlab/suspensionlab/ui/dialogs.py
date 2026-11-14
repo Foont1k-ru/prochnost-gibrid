@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..core.powertrain_layout import LAYOUTS
+from ..core.powertrain_layout import LAYOUTS, layout_topology_status
 from ..i18n import tr
 from ..model.entities import Project
 from ..model.templates import TemplateInfo, VehicleTemplateOptions, create_vehicle_template, list_templates
@@ -59,6 +59,13 @@ class TemplateDialog(QDialog):
         form.addRow(tr("template.config.front_drive"), self._front_drive)
         form.addRow(tr("template.config.rear"), self._rear)
         form.addRow(tr("template.config.rear_drive"), self._rear_drive)
+        self._powertrain_hint = QLabel(self._config)
+        self._powertrain_hint.setObjectName("Hint")
+        self._powertrain_hint.setWordWrap(True)
+        form.addRow(self._powertrain_hint)
+        self._powertrain.currentIndexChanged.connect(self._update_powertrain_hint)
+        self._front_drive.toggled.connect(self._update_powertrain_hint)
+        self._rear_drive.toggled.connect(self._update_powertrain_hint)
         self._rear.currentIndexChanged.connect(self._rear_changed)
         self._description = QLabel(self)
         self._description.setObjectName("Hint")
@@ -98,6 +105,7 @@ class TemplateDialog(QDialog):
             self._front_drive.setChecked(True)
             self._rear_drive.setChecked(row == 1)
             self._rear_changed()
+            self._update_powertrain_hint()
             self._description.setText(tr("template.config.limits"))
         elif 2 <= row < len(self._templates) + 2:
             self._description.setText(tr(self._templates[row - 2].description_key))
@@ -109,6 +117,11 @@ class TemplateDialog(QDialog):
         if not allowed:
             self._rear_drive.setChecked(False)
         self._rear_drive.setEnabled(allowed)
+
+    def _update_powertrain_hint(self, *_args: object) -> None:
+        status = layout_topology_status(str(self._powertrain.currentData()),
+                                        self._front_drive.isChecked(), self._rear_drive.isChecked())
+        self._powertrain_hint.setText(tr(f"powertrain.status.{status}"))
 
     def selected_project(self) -> Project | None:
         row = self._list.currentRow()

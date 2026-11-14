@@ -33,6 +33,17 @@ class LayoutDiagram:
     status: str
 
 
+def layout_topology_status(layout: str, front_driven: bool, rear_driven: bool) -> str:
+    """Статус только для выбранной условной схемы, без проверки геометрии."""
+    if layout == "unspecified":
+        return "unspecified"
+    if layout not in LAYOUTS:
+        return "unsupported"
+    if layout in ("transverse_front", "longitudinal_transaxle") and rear_driven and not front_driven:
+        return "incompatible"
+    return "ok"
+
+
 def layout_diagram(project: Project) -> LayoutDiagram:
     """Строит учебную схему относительно передней оси: X вперёд, задняя ось на −базе.
 
@@ -40,16 +51,13 @@ def layout_diagram(project: Project) -> LayoutDiagram:
     несовместимые входы не превращаются в выбранную автоматически схему.
     """
     layout = project.vehicle.powertrain_layout
-    if layout == "unspecified":
-        return LayoutDiagram((), (), "unspecified")
-    if layout not in LAYOUTS:
-        return LayoutDiagram((), (), "unsupported")
+    front, rear = project.front, project.rear
+    status = layout_topology_status(layout, front.drivetrain.driven, rear.drivetrain.driven)
+    if status != "ok":
+        return LayoutDiagram((), (), status)
     base = project.vehicle.wheelbase_mm
     if not isfinite(base) or base <= 0:
         return LayoutDiagram((), (), "invalid")
-    front, rear = project.front, project.rear
-    if layout in ("transverse_front", "longitudinal_transaxle") and rear.drivetrain.driven and not front.drivetrain.driven:
-        return LayoutDiagram((), (), "incompatible")
     f = front.hardpoints.get("differential_center")
     r = rear.hardpoints.get("pinion_center" if rear.is_live_axle else "differential_center")
     if (front.drivetrain.driven and f is None) or (rear.drivetrain.driven and r is None):
