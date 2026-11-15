@@ -6,6 +6,7 @@ from math import isfinite
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
+    QCheckBox,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
@@ -50,6 +51,16 @@ class SpringCandidateDialog(QDialog):
             edit.setPlaceholderText(tr("spring_candidate.required"))
             edit.textChanged.connect(self._clear)
             form.addRow(tr(f"spring_candidate.{key}"), edit)
+        self._force_enable = QCheckBox(tr("spring_candidate.force.enable"), self)
+        self._force_rate = QLineEdit(self)
+        self._force_rate.setPlaceholderText(tr("spring_candidate.force.rate_placeholder"))
+        self._force_rate.setToolTip(tr("spring_candidate.force.tip"))
+        self._force_enable.setToolTip(tr("spring_candidate.force.tip"))
+        self._force_rate.setEnabled(False)
+        self._force_enable.toggled.connect(self._force_rate.setEnabled)
+        self._force_enable.toggled.connect(self._clear)
+        self._force_rate.textChanged.connect(self._clear)
+        form.addRow(self._force_enable, self._force_rate)
         self._compare = QPushButton(tr("spring_candidate.compare"), self)
         self._compare.clicked.connect(self._calculate)
         self._result = QTextEdit(self)
@@ -91,7 +102,13 @@ class SpringCandidateDialog(QDialog):
                 if not isfinite(value) or not 0 <= value <= 2000:
                     raise ValueError
                 return value
-            candidate = SpringCandidate(*(parse(key) for key in ("free", "installed", "coil", "coil_reserve", "compression_reserve")))
+            rate = None
+            if self._force_enable.isChecked():
+                rate = float(self._force_rate.text().strip().replace(",", "."))
+                if not isfinite(rate) or not 0 < rate <= 10000:
+                    raise ValueError
+            candidate = SpringCandidate(parse("free"), parse("installed"), parse("coil"), parse("coil_reserve"),
+                                        parse("compression_reserve"), linear_rate_n_mm=rate)
             self.comparison = compare_spring_candidate(self._points, self._reference_installed, candidate)
         except (ValueError, OverflowError):
             self._result.setPlainText(tr("spring_candidate.invalid"))
@@ -105,6 +122,20 @@ class SpringCandidateDialog(QDialog):
             if first:
                 index, point = first
                 lines.append(tr(f"spring_candidate.first.{key}", row=index, travel=f"{point.travel_mm:+.2f}"))
+        if comparison.candidate.linear_rate_n_mm is None:
+            lines.append(tr("spring_candidate.force.disabled"))
+        else:
+            values = [(i, point) for i, point in enumerate(comparison.points, 1) if point.force_n is not None]
+            lines.append(tr("spring_candidate.force.count", rate=repr(comparison.candidate.linear_rate_n_mm),
+                            available=len(values), total=len(comparison.points)))
+            if values:
+                index, point = max(values, key=lambda item: item[1].force_n if item[1].force_n is not None else -1)
+                assert point.force_n is not None
+                lines.append(tr("spring_candidate.force.maximum", force=f"{point.force_n:.2f}",
+                                row=index, travel=f"{point.travel_mm:+.2f}"))
+            else:
+                lines.append(tr("spring_candidate.force.no_values"))
+            lines.append(tr("spring_candidate.force.notice"))
         lines.append(tr("spring_candidate.result_notice"))
         if self._report_factory is not None:
             try:

@@ -909,6 +909,8 @@ class AnalysisDialog(QDialog):
                       candidate.coil_reserve_mm, candidate.compression_reserve_mm)
             fields = ("free", "installed", "coil", "coil_reserve", "compression_reserve")
             inputs = [(tr(f"spring_candidate.{key}"), repr(value)) for key, value in zip(fields, values, strict=True)]
+            inputs.append((tr("spring_candidate.force.rate_label"), repr(candidate.linear_rate_n_mm)
+                           if candidate.linear_rate_n_mm is not None else tr("spring_candidate.force.not_enabled")))
             return make_report(self.controller, tr("spring_candidate.report.kind"),
                                [*parameters, *inputs, (tr("spring_candidate.report.scope_label"),
                                                        tr("spring_candidate.report.scope"))],

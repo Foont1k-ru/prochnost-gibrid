@@ -276,6 +276,12 @@ def run_packaging_check() -> None:
                  "Устаревшие точки пружины не очищены")
         _require(spring_candidate.report is None and not spring_candidate._export.isEnabled(),
                  "Устаревший отчёт пружины не очищен")
+        spring_candidate._force_enable.setChecked(True)
+        spring_candidate._force_rate.setText("12.5")
+        spring_candidate._compare.click()
+        _require(spring_candidate.comparison is not None and spring_candidate.report is not None
+                 and spring_candidate.comparison.points[0].force_n is not None
+                 and spring_candidate.report.rows[0][8] != "—", "Линейная оценка силы пружины недоступна")
         spring_candidate.reject()
         _require(dialog._spring_candidate_dialog is None, "Окно сравнения пружины не закрыто")
         _require("Точек на упоре или за ним: 2" in dialog._damper_range.toPlainText(),

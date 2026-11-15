@@ -47,3 +47,47 @@ def test_invalid_source_and_overflow():
             candidate = SpringCandidate(1e308, 1e308, 100, 0, 0)
         with pytest.raises(ValueError):
             compare_spring_candidate(points, reference, candidate)
+
+
+def test_optional_linear_force_distinguishes_zero_conflict_missing_and_short_reserve():
+    source = tuple(enumerate((None, 1., 100., 105., 110., 290., 300., 310.)))
+    candidate = SpringCandidate(300, 200, 100, 10, 10, linear_rate_n_mm=20)
+    result = compare_spring_candidate(source, 200, candidate)
+    assert [p.status for p in result.points] == ["missing", "coil_bind", "coil_bind", "reserve_short", "clear",
+                                                  "clear", "uncompressed", "uncompressed"]
+    assert [p.force_n for p in result.points] == [None, None, None, 3900., 3800., 200., 0., 0.]
+    assert [p.force_status for p in result.points] == ["missing", "coil_bind", "coil_bind", "calculated", "calculated",
+                                                        "calculated", "calculated", "calculated"]
+    disabled = compare_spring_candidate(source, 200, SpringCandidate(300, 200, 100, 10, 10))
+    assert all(p.force_n is None and p.force_status == "disabled" for p in disabled.points)
+    assert [p.status for p in disabled.points] == [p.status for p in result.points]
+
+
+def test_force_invalid_length_boundaries_and_overflow():
+    candidate = SpringCandidate(300, 50, 100, 0, 0, linear_rate_n_mm=10)
+    result = compare_spring_candidate(((0, 1), (1, 250), (2, 400)), 200, candidate)
+    assert result.points[0].status == "invalid" and result.points[0].force_status == "invalid"
+    assert result.points[0].force_n is None
+    assert result.points[1].length_mm == 100 and result.points[1].force_n is None
+    assert result.points[2].length_mm == 250 and result.points[2].force_n == 500
+    candidate = SpringCandidate(1e308, 2, 1, 0, 0, linear_rate_n_mm=1e308)
+    result = compare_spring_candidate(((0, 2),), 2, candidate)
+    assert result.points[0].force_n is None and result.points[0].force_status == "overflow"
+
+
+@pytest.mark.parametrize("rate", [0, -1, inf, nan])
+def test_invalid_candidate_linear_rate(rate):
+    with pytest.raises(ValueError):
+        SpringCandidate(300, 200, 100, 0, 0, linear_rate_n_mm=rate)
+
+
+@pytest.mark.parametrize("length", [99.9, 100., 100.1, 150., 299.999, 300., 301., 500.])
+@pytest.mark.parametrize("rate", [0.001, 1., 125.5, 10000.])
+def test_linear_force_matches_explicit_formula_and_stop_rule(length, rate):
+    candidate = SpringCandidate(300, 200, 100, 10, 10, linear_rate_n_mm=rate)
+    point = compare_spring_candidate(((0, length),), 200, candidate).points[0]
+    if length <= 100:
+        assert point.force_n is None and point.force_status == "coil_bind"
+    else:
+        assert point.force_n == pytest.approx(rate * max(300 - length, 0))
+        assert point.force_status == "calculated"

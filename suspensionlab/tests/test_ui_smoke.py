@@ -4333,3 +4333,55 @@ def test_spring_candidate_points_hide_stale_snapshot(window, qtbot):
     assert candidate._details_dialog is not None
     dialog._to.setValue(2)
     assert dialog._spring_candidate_dialog is None and not dialog._spring_compare_button.isEnabled()
+
+
+def test_spring_candidate_optional_force_export_and_snapshot_invalidation(window, qtbot):
+    from suspensionlab.i18n import tr
+    from suspensionlab.ui.analysis_dialog import AnalysisDialog
+
+    window.controller.new_project("ring")
+    before = window.controller.project.to_dict()
+    dialog = AnalysisDialog(window.controller, window)
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog._spring.setChecked(True)
+    dialog._spring_length.setValue(320)
+    dialog._from.setValue(0)
+    dialog._to.setValue(2)
+    dialog._run.click()
+    dialog._spring_compare_button.click()
+    candidate = dialog._spring_candidate_dialog
+    assert candidate is not None and not candidate._force_enable.isChecked() and not candidate._force_rate.isEnabled()
+    for key, value in (("free", "350"), ("installed", "310"), ("coil", "120"),
+                       ("coil_reserve", "10"), ("compression_reserve", "5")):
+        candidate._fields[key].setText(value)
+    candidate._compare.click()
+    assert candidate.comparison is not None and all(point.force_n is None for point in candidate.comparison.points)
+    assert dict(candidate.report.metadata)[tr("spring_candidate.force.rate_label")] == tr("spring_candidate.force.not_enabled")
+    candidate._details.click()
+    assert candidate._details_dialog is not None
+    candidate._force_enable.setChecked(True)
+    assert candidate._details_dialog is None and candidate.comparison is None and not candidate._export.isEnabled()
+    candidate._compare.click()
+    assert candidate.comparison is None and "жёсткость" in candidate._result.toPlainText()
+    for bad in ("0", "-1", "nan", "inf", "10001"):
+        candidate._force_rate.setText(bad)
+        candidate._compare.click()
+        assert candidate.comparison is None and candidate.report is None
+    candidate._force_rate.setText("12,5")
+    candidate._compare.click()
+    assert candidate.comparison is not None and candidate.report is not None
+    assert candidate.comparison.points[0].force_n == 500
+    assert candidate.report.rows[0][8] == "500.0"
+    assert candidate.report.rows[0][9] == tr("spring_candidate.force.status.calculated")
+    assert dict(candidate.report.metadata)[tr("spring_candidate.force.rate_label")] == "12.5"
+    assert "не сила на колесе" in candidate._result.toPlainText()
+    candidate._details.click()
+    assert candidate._details_dialog is not None
+    assert candidate._details_dialog._table.item(0, 8).text() == "500.000"
+    candidate._force_rate.setText("20")
+    assert candidate.comparison is None and candidate.report is None and candidate._details_dialog is None
+    candidate._force_enable.setChecked(False)
+    candidate._compare.click()
+    assert candidate.comparison.points[0].force_n is None and candidate.report.rows[0][8] == "—"
+    assert window.controller.project.to_dict() == before

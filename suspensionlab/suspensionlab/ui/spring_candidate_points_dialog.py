@@ -31,7 +31,7 @@ class SpringCandidatePointsDialog(QDialog):
 
     def __init__(self, comparison: SpringComparison, report: CSVReport, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        if len(report.rows) != len(comparison.points) or len(report.columns) != 8 or any(len(row) != 8 for row in report.rows):
+        if len(report.rows) != len(comparison.points) or len(report.columns) != 10 or any(len(row) != 10 for row in report.rows):
             raise ValueError("Несогласованные результаты сравнения")
         self.comparison = comparison
         self.setWindowFlag(Qt.WindowType.WindowMaximizeButtonHint, True)
@@ -58,7 +58,7 @@ class SpringCandidatePointsDialog(QDialog):
         self._table.setAlternatingRowColors(True)
         for i, row in enumerate(report.rows):
             for j, raw in enumerate(row):
-                displayed = f"{float(raw):.3f}" if j in (1, 2, 3, 4, 5) and raw != "—" else raw
+                displayed = f"{float(raw):.3f}" if j in (1, 2, 3, 4, 5, 8) and raw != "—" else raw
                 item = QTableWidgetItem(displayed)
                 item.setToolTip(raw)
                 self._table.setItem(i, j, item)
