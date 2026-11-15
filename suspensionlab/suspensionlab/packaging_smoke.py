@@ -264,6 +264,10 @@ def run_packaging_check() -> None:
         _require(spring_detail is not None and spring_detail._table.rowCount() == 2,
                  "Точки сравнения пружины не открылись")
         assert spring_detail is not None
+        spring_detail._tabs.setCurrentIndex(1)
+        app.processEvents()
+        _require(spring_detail._plot._geometry() is not None and not spring_detail._plot.grab().isNull(),
+                 "График сравнения пружины недоступен")
         spring_detail._filter.setCurrentIndex(spring_detail._filter.findData("missing"))
         _require(spring_detail._table.isRowHidden(0) and spring_detail._table.isRowHidden(1),
                  "Фильтр точек пружины работает неправильно")
