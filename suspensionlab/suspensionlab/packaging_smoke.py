@@ -211,6 +211,16 @@ def run_packaging_check() -> None:
         candidate_path = write_csv_report(dialog._candidate_report, temporary / "candidate.csv")
         _require(candidate_path.read_bytes().startswith(b"\xef\xbb\xbf") and len(dialog._candidate_report.rows) == 2,
                  "CSV сравнения кандидата не записан")
+        _require(dialog._candidate_details.isEnabled(), "Просмотр точек кандидата недоступен")
+        dialog._candidate_details.click()
+        details = dialog._candidate_detail_dialog
+        _require(details is not None, "Окно точек кандидата не открыто")
+        assert details is not None
+        details._filter.setCurrentIndex(details._filter.findData("clear"))
+        details._table.setCurrentCell(1, 0)
+        details._choose.click()
+        _require(dialog._table.currentRow() == 1 and dialog._candidate_detail_dialog is None,
+                 "Переход к точке кандидата недоступен")
         dialog._candidate_reserve.setText("15")
         _require(not dialog._candidate_export.isEnabled(), "Отчёт кандидата не очищен после правки")
         dialog._static_button.click()

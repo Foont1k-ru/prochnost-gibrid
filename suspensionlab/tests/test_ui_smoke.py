@@ -3618,8 +3618,12 @@ def test_damper_candidate_report_failure_does_not_keep_old_report(window, qtbot,
     monkeypatch.setattr(analysis_dialog, "make_report", fail)
     dialog._candidate_compare.click()
     assert dialog._candidate_report is None and not dialog._candidate_export.isEnabled()
-    assert "Отчёт недоступен" in dialog._candidate_result.toPlainText()
-    assert "На упоре или за ним: 0" in dialog._candidate_result.toPlainText()
+    assert dialog._candidate_details.isEnabled()
+    dialog._candidate_details.click()
+    assert dialog._candidate_detail_dialog is not None
+    dialog.reject()
+    assert dialog._candidate_detail_dialog is None and not dialog._candidate_details.isEnabled()
+    assert "Укажите две длины" in dialog._candidate_result.toPlainText()
 
 
 def test_damper_candidate_export_keeps_partial_missing_points(window, qtbot, monkeypatch):
@@ -3650,3 +3654,49 @@ def test_damper_candidate_export_keeps_partial_missing_points(window, qtbot, mon
     assert report.rows[1][2:5] == ("—", "—", "—")
     assert report.rows[1][5] == tr("damper_candidate.report.status.missing")
     assert "сравнение неполное" in dialog._candidate_result.toPlainText()
+
+
+def test_damper_candidate_details_navigation_and_invalidation(window, qtbot):
+    from suspensionlab.ui.analysis_dialog import AnalysisDialog
+
+    window.controller.new_project("ring")
+    before = window.controller.project.to_dict()
+    dialog = AnalysisDialog(window.controller, window)
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog._from.setValue(-1)
+    dialog._to.setValue(1)
+    dialog._damper.setChecked(True)
+    dialog._damper_min.setValue(200)
+    dialog._damper_max.setValue(325)
+    dialog._run.click()
+    dialog._candidate_min.setText("200")
+    dialog._candidate_max.setText("325")
+    dialog._candidate_reserve.setText("10")
+    assert not dialog._candidate_details.isEnabled()
+    dialog._candidate_compare.click()
+    assert dialog._candidate_details.isEnabled()
+    dialog._candidate_details.click()
+    details = dialog._candidate_detail_dialog
+    assert details is not None and details.isVisible()
+    details._filter.setCurrentIndex(details._filter.findData("stop"))
+    assert details._count.text() == "Строк: 3 из 3"
+    details._table.setCurrentCell(2, 0)
+    details._choose.click()
+    assert dialog._candidate_detail_dialog is None
+    assert dialog._table.currentRow() == 2 and dialog._view_tabs.currentIndex() == 0
+    assert window.controller.project.to_dict() == before
+    dialog._candidate_details.click()
+    details = dialog._candidate_detail_dialog
+    assert details is not None and details.isVisible()
+    dialog._candidate_max.setText("500")
+    assert not details.isVisible() and dialog._candidate_detail_dialog is None
+    assert not dialog._candidate_details.isEnabled() and dialog._table.rowCount() == 3
+    dialog._candidate_compare.click()
+    dialog._candidate_details.click()
+    details2 = dialog._candidate_detail_dialog
+    assert details2 is not None and details2.isVisible()
+    dialog._side.setCurrentIndex(1)
+    assert not details2.isVisible() and dialog._candidate_detail_dialog is None
+    assert not dialog._candidate_details.isEnabled() and dialog._table.rowCount() == 0
+    assert window.controller.project.to_dict() == before

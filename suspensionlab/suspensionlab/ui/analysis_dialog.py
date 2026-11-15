@@ -33,7 +33,7 @@ from PySide6.QtWidgets import (
 
 from ..core.analysis import CornerSample, analyze_corner
 from ..core.damper import DamperForcePoint, LinearDamperCharacteristic, evaluate_linear_damping
-from ..core.damper_range import compare_candidate, summarize_damper_range
+from ..core.damper_range import CandidateComparison, compare_candidate, summarize_damper_range
 from ..core.double_wishbone import DoubleWishbone
 from ..core.pose_view import PoseView, pose_view
 from ..core.sample_summary import corner_summary
@@ -51,6 +51,7 @@ from .canvas.scene3d_preview import Scene3DPreview
 from .canvas.sweep_plot import SweepPlot
 from .component_transfer import transferable_damper_lengths
 from .controller import AppController
+from .damper_candidate_dialog import DamperCandidateDialog
 from .damper_conversion_dialog import MAX_DAMPING_COEFFICIENT, DamperConversionDialog
 from .damper_range_text import candidate_text, damper_range_text
 from .table_export import make_plot_report, make_report, make_table_report, save_table_dialog
@@ -237,6 +238,11 @@ class AnalysisDialog(QDialog):
         self._candidate_export.setEnabled(False)
         self._candidate_export.clicked.connect(self._export_candidate)
         self._candidate_report: CSVReport | None = None
+        self._candidate_details = QPushButton(tr("damper_candidate.details.button"), self)
+        self._candidate_details.setEnabled(False)
+        self._candidate_details.clicked.connect(self._open_candidate_details)
+        self._candidate_detail_dialog: DamperCandidateDialog | None = None
+        self._candidate_detail_snapshot: tuple[CandidateComparison, tuple[str, ...], tuple[tuple[str, ...], ...], str] | None = None
         self._candidate_points: list[tuple[float, float | None]] | None = None
         damper_tab = QWidget(self)
         damper_layout = QVBoxLayout(damper_tab)
@@ -245,8 +251,12 @@ class AnalysisDialog(QDialog):
         damper_layout.addLayout(form)
         damper_layout.addWidget(self._candidate_compare)
         damper_layout.addWidget(self._candidate_result, 1)
-        damper_layout.addWidget(self._candidate_export)
+        candidate_actions = QHBoxLayout()
+        candidate_actions.addWidget(self._candidate_details)
+        candidate_actions.addWidget(self._candidate_export)
+        damper_layout.addLayout(candidate_actions)
         self._view_tabs.addTab(damper_tab, tr("damper_range.tab"))
+        self.finished.connect(self._clear_candidate)
         self._explanation = QTextEdit(self)
         self._explanation.setReadOnly(True)
         self._view_tabs.addTab(self._explanation, tr("analysis.tab_explain"))
@@ -694,13 +704,17 @@ class AnalysisDialog(QDialog):
     def _clear_candidate(self, *_args: object) -> None:
         self._candidate_report = None
         self._candidate_export.setEnabled(False)
+        self._candidate_detail_snapshot = None
+        self._candidate_details.setEnabled(False)
+        if self._candidate_detail_dialog is not None:
+            self._candidate_detail_dialog.reject()
+            self._candidate_detail_dialog = None
         self._candidate_result.setPlainText(tr("damper_candidate.empty"))
 
     def _compare_candidate(self) -> None:
         if self._candidate_points is None or not self._candidate_compare.isEnabled():
             return
-        self._candidate_report = None
-        self._candidate_export.setEnabled(False)
+        self._clear_candidate()
         try:
             def parse(edit: QLineEdit) -> float:
                 value = float(edit.text().strip().replace(",", "."))
@@ -719,6 +733,11 @@ class AnalysisDialog(QDialog):
                 raise ValueError(tr("export.no_results"))
             source_states = tuple(item.text() for item in source_items if item is not None)
             columns, rows = candidate_report_rows(result, source_states)
+            context = tr("damper_candidate.details.context", axis=self._role.currentText(), side=self._side.currentText(),
+                         compressed=repr(limits.compressed_mm), extended=repr(limits.extended_mm),
+                         reserve=repr(result.reserve_mm))
+            self._candidate_detail_snapshot = (result, columns, rows, context)
+            self._candidate_details.setEnabled(True)
             parameters = [*self._report_parameters(),
                           (tr("damper_candidate.minimum"), repr(limits.compressed_mm)),
                           (tr("damper_candidate.maximum"), repr(limits.extended_mm)),
@@ -736,6 +755,29 @@ class AnalysisDialog(QDialog):
             LOG.warning("Отчёт кандидата недоступен: %s", error)
             text += "\n\n" + tr("damper_candidate.report.unavailable", reason=str(error))
         self._candidate_result.setPlainText(text)
+
+    def _open_candidate_details(self) -> None:
+        if self._candidate_detail_snapshot is None:
+            return
+        if self._candidate_detail_dialog is not None:
+            self._candidate_detail_dialog.raise_()
+            self._candidate_detail_dialog.activateWindow()
+            return
+        self._playback.pause_for_view_change()
+        result, columns, rows, context = self._candidate_detail_snapshot
+        dialog = DamperCandidateDialog(result, columns, rows, context, self)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        self._candidate_detail_dialog = dialog
+        dialog.rowSelected.connect(self._choose_candidate_row)
+        dialog.finished.connect(lambda _result: setattr(self, "_candidate_detail_dialog", None))
+        dialog.show()
+
+    def _choose_candidate_row(self, row: int) -> None:
+        if self._candidate_detail_snapshot is None or not 0 <= row < len(self._samples):
+            return
+        self._view_tabs.setCurrentIndex(0)
+        self._table.setCurrentCell(row, 0)
+        self._show_row(row)
 
     def _export_candidate(self) -> None:
         if self._candidate_report is not None:
