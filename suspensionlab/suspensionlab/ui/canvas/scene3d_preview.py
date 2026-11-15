@@ -25,13 +25,18 @@ class Scene3DPreview(QWidget):
         self.bounds: tuple[Point, float] | None = None
         self.message = tr("analysis.preview_empty")
         self._drag: QPointF | None = None
+        self._pan_drag: QPointF | None = None
+        self._pan_button: Qt.MouseButton | None = None
         self.reset_camera()
 
     def reset_camera(self) -> None:
         self.yaw = -0.65
         self.elevation = 0.35
         self.zoom = 1.0
+        self.pan_x, self.pan_y = 0., 0.
         self._drag = None
+        self._pan_drag = None
+        self._pan_button = None
         self.update()
 
     def configure(self, frames: list[Scene3D]) -> None:
@@ -63,8 +68,8 @@ class Scene3DPreview(QWidget):
             a = project_orthographic(segment.start, center, self.yaw, self.elevation)
             b = project_orthographic(segment.end, center, self.yaw, self.elevation)
             painter.setPen(QPen(QColor(_COLORS[segment.kind]), 1.5 if segment.kind == "wheel" else 2.5))
-            painter.drawLine(QPointF(self.width() / 2 + a[0] * scale, self.height() / 2 + 8 - a[1] * scale),
-                             QPointF(self.width() / 2 + b[0] * scale, self.height() / 2 + 8 - b[1] * scale))
+            painter.drawLine(QPointF(self.width() / 2 + self.pan_x + a[0] * scale, self.height() / 2 + 8 + self.pan_y - a[1] * scale),
+                             QPointF(self.width() / 2 + self.pan_x + b[0] * scale, self.height() / 2 + 8 + self.pan_y - b[1] * scale))
         painter.setPen(self.palette().text().color())
         painter.drawText(QRectF(8, 4, self.width() - 16, 22), int(Qt.AlignmentFlag.AlignLeft),
                          tr("analysis.scene3d.travel", travel=f"{self.frame.travel_mm:+.2f}"))
@@ -72,26 +77,41 @@ class Scene3DPreview(QWidget):
                          tr("analysis.scene3d.legend"))
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
-        if event.button() == Qt.MouseButton.LeftButton:
+        if event.button() in (Qt.MouseButton.MiddleButton, Qt.MouseButton.RightButton) and self._drag is None and self._pan_drag is None:
+            self._pan_drag = event.position()
+            self._pan_button = event.button()
+            event.accept()
+        elif event.button() == Qt.MouseButton.LeftButton and self._pan_drag is None:
             self._drag = event.position()
             event.accept()
         else:
             super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:  # noqa: N802
-        if self._drag is not None and event.buttons() & Qt.MouseButton.LeftButton:
+        if self._pan_drag is not None and self._pan_button is not None and event.buttons() & self._pan_button:
+            now = event.position()
+            delta, self._pan_drag = now - self._pan_drag, now
+            self.pan_x += delta.x()
+            self.pan_y += delta.y()
+            self.update()
+            event.accept()
+        elif self._drag is not None and event.buttons() & Qt.MouseButton.LeftButton:
             now = event.position()
             delta = now - self._drag
             self._drag = now
             self.yaw = remainder(self.yaw + delta.x() * 0.01, 2 * pi)
-            self.elevation = max(-1.35, min(1.35, self.elevation + delta.y() * 0.01))
+            self.elevation = remainder(self.elevation + delta.y() * 0.01, 2 * pi)
             self.update()
             event.accept()
         else:
             super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802
-        if event.button() == Qt.MouseButton.LeftButton:
+        if self._pan_button is not None and event.button() == self._pan_button:
+            self._pan_drag = None
+            self._pan_button = None
+            event.accept()
+        elif event.button() == Qt.MouseButton.LeftButton and self._pan_drag is None:
             self._drag = None
             event.accept()
         else:

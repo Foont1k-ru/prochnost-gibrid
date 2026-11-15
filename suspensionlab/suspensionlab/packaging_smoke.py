@@ -126,6 +126,8 @@ def run_packaging_check() -> None:
     app = create_application([])
     # Проверяем именно GUI-отрисовку и наличие растеризатора в упаковке.
     import numpy as np
+    from PySide6.QtCore import QEvent, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
 
     from .core.cad_measurement import measurement_distance, point_on_projected_triangle
     from .core.cad_mesh import CadMesh
@@ -138,6 +140,15 @@ def run_packaging_check() -> None:
                      np.array([True]), through=True)
     _require(not preview.grab().isNull() and preview._frame is not None and preview._through,
              "CAD-просмотр с подсветкой не отрисован")
+    for button, start, end in ((Qt.MouseButton.RightButton, QPointF(40, 40), QPointF(65, 50)),
+                               (Qt.MouseButton.LeftButton, QPointF(50, 50), QPointF(50, 250))):
+        app.sendEvent(preview, QMouseEvent(QEvent.Type.MouseButtonPress, start, button, button, Qt.KeyboardModifier.NoModifier))
+        app.sendEvent(preview, QMouseEvent(QEvent.Type.MouseMove, end, Qt.MouseButton.NoButton, button, Qt.KeyboardModifier.NoModifier))
+        app.sendEvent(preview, QMouseEvent(QEvent.Type.MouseButtonRelease, end, button, Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier))
+    _require((preview.pan_x, preview.pan_y) == (25., 10.) and preview.elevation > 1.35 and not preview.grab().isNull(),
+             "Управление камерой CAD-просмотра недоступно")
+    preview.reset_camera()
+    _require((preview.pan_x, preview.pan_y) == (0., 0.), "Сброс камеры CAD-просмотра недоступен")
     preview.close()
     sample = np.array([[[-2., 0., -2.], [2., 0., -2.], [0., 0., 2.]]])
     _require(pick_triangle(sample, np.zeros(3), 3., 0., 0., 1., 100, 100, 50, 50) == 0,

@@ -322,7 +322,8 @@ def test_pick_matches_drawn_pixel_and_explicit_through_overlay():
         pick_triangle(*args, 50, 50, highlight=np.array([1, 0]))
 
 
-def test_pick_agrees_with_full_image_rasterization_including_triangle_edges():
+@pytest.mark.parametrize("offset", [(0., 0.), (17.25, -13.5)])
+def test_pick_agrees_with_full_image_rasterization_including_triangle_edges(offset):
     from PIL import Image, ImageDraw
 
     from suspensionlab.core.cad_raster import pick_triangle, screen_projection
@@ -335,7 +336,7 @@ def test_pick_agrees_with_full_image_rasterization_including_triangle_edges():
     radius = 6.
     yaw, elevation, zoom = 0.6, -0.3, 1.3
     width, height = 137, 103
-    points, order = screen_projection(triangles, center, radius, yaw, elevation, zoom, width, height)
+    points, order = screen_projection(triangles, center, radius, yaw, elevation, zoom, width, height, offset=offset)
     selected = np.arange(len(triangles)) % 7 == 0
     coordinates = points.reshape(-1, 6).tolist()
     for through in (False, True):
@@ -355,5 +356,42 @@ def test_pick_agrees_with_full_image_rasterization_including_triangle_edges():
             r, g, b = image.getpixel((x, y))
             identifier = (r << 16) | (g << 8) | b
             actual = pick_triangle(triangles, center, radius, yaw, elevation, zoom, width, height, x, y,
-                                   highlight=selected, through=through)
+                                   highlight=selected, through=through, offset=offset)
             assert actual == (identifier - 1 if identifier else None), (x, y, through)
+
+
+def test_panning_keeps_raster_picking_and_measurement_in_same_frame():
+    from suspensionlab.core.cad_measurement import point_on_projected_triangle
+    from suspensionlab.core.cad_raster import COLORS, pick_triangle, rasterize, screen_projection
+
+    triangle = np.array([[[-2., 0, -2], [2, 0, -2], [0, 0, 2]]])
+    center = np.zeros(3)
+    base = (triangle, center, 3., 0., 0., 1., 100, 100)
+    offset = (23., -17.)
+    before, _ = screen_projection(*base)
+    after, _ = screen_projection(*base, offset=offset)
+    assert after - before == pytest.approx(np.broadcast_to(offset, after.shape))
+    x, y = 50 + int(offset[0]), 50 + int(offset[1])
+    image = rasterize(triangle, np.array([150], dtype=np.uint8), center, 3., 0., 0., 1., 100, 100,
+                      (255, 255, 255), offset=offset)
+    assert image.getpixel((x, y)) == COLORS[150]
+    assert pick_triangle(*base, x, y, offset=offset) == 0
+    assert point_on_projected_triangle(triangle[0], after[0], x, y) == pytest.approx((0., 0., 0.))
+    assert pick_triangle(*base, 50, 50, offset=offset) is None
+
+
+def test_orbit_projection_is_continuous_at_poles_and_periodic():
+    from math import pi
+
+    from suspensionlab.core.cad_mesh import project_points
+
+    triangles = np.array([[[2., 3., 5.], [-4., 6., 1.], [3., -2., 7.]]])
+    center = np.zeros(3)
+    for yaw in (-1.1, 0., 1.4):
+        for pole in (-pi / 2, pi / 2):
+            before, _ = project_points(triangles, center, yaw, pole - 1e-7)
+            after, _ = project_points(triangles, center, yaw, pole + 1e-7)
+            assert before == pytest.approx(after, abs=2e-6)
+        ref, _ = project_points(triangles, center, yaw, 0.4)
+        full, _ = project_points(triangles, center, yaw + 2 * pi, 0.4 + 2 * pi)
+        assert full == pytest.approx(ref, abs=1e-12)

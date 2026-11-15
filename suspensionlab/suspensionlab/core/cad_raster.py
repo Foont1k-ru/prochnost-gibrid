@@ -19,19 +19,19 @@ def triangle_shades(triangles: np.ndarray) -> np.ndarray:
 
 def screen_projection(triangles: np.ndarray, center: np.ndarray, radius: float,
                       yaw: float, elevation: float, zoom: float, width: int, height: int,
-                      margin: float = 24.) -> tuple[np.ndarray, np.ndarray]:
+                      margin: float = 24., offset: tuple[float, float] = (0., 0.)) -> tuple[np.ndarray, np.ndarray]:
     """Пиксельные координаты и тот же порядок, что используется в отрисовке."""
     projected, order = project_points(triangles, center, yaw, elevation)
     scale = max(1., min(width - margin, height - margin)) / (2 * radius) * zoom
-    projected[:, :, 0] = width / 2 + projected[:, :, 0] * scale
-    projected[:, :, 1] = height / 2 - projected[:, :, 1] * scale
+    projected[:, :, 0] = width / 2 + offset[0] + projected[:, :, 0] * scale
+    projected[:, :, 1] = height / 2 + offset[1] - projected[:, :, 1] * scale
     return projected, order
 
 
 def pick_triangle(triangles: np.ndarray, center: np.ndarray, radius: float,
                   yaw: float, elevation: float, zoom: float, width: int, height: int,
                   x: int, y: int, margin: float = 24., highlight: np.ndarray | None = None,
-                  through: bool = False) -> int | None:
+                  through: bool = False, offset: tuple[float, float] = (0., 0.)) -> int | None:
     """Какой треугольник последним рисуется в пикселе, не инженерный hit-test.
 
     PIL сам разрешает граничные и вырожденные случаи, как при отрисовке.
@@ -43,7 +43,7 @@ def pick_triangle(triangles: np.ndarray, center: np.ndarray, radius: float,
         return None
     if highlight is not None and (highlight.shape != (len(triangles),) or highlight.dtype.kind != "b"):
         raise ValueError("Некорректная маска подсветки")
-    projected, order = screen_projection(triangles, center, radius, yaw, elevation, zoom, width, height, margin)
+    projected, order = screen_projection(triangles, center, radius, yaw, elevation, zoom, width, height, margin, offset)
     coords = np.trunc(projected).astype(np.int64)
     # Грубый отбор по прямоугольникам сокращает число вызовов PIL, но не
     # определяет результат: окончательное совпадение проверяет сам растеризатор.
@@ -74,11 +74,12 @@ def pick_triangle(triangles: np.ndarray, center: np.ndarray, radius: float,
 def rasterize(triangles: np.ndarray, shades: np.ndarray, center: np.ndarray, radius: float,
               yaw: float, elevation: float, zoom: float, width: int, height: int,
               background: tuple[int, int, int], margin: float = 24.,
-              highlight: np.ndarray | None = None, through: bool = False) -> Image.Image:
+              highlight: np.ndarray | None = None, through: bool = False,
+              offset: tuple[float, float] = (0., 0.)) -> Image.Image:
     """Ортографический приближённый просмотр с сортировкой по средней глубине."""
     if highlight is not None and (highlight.shape != (len(triangles),) or highlight.dtype.kind != "b"):
         raise ValueError("Некорректная маска подсветки")
-    projected, order = screen_projection(triangles, center, radius, yaw, elevation, zoom, width, height, margin)
+    projected, order = screen_projection(triangles, center, radius, yaw, elevation, zoom, width, height, margin, offset)
     coordinates = projected[order].reshape(-1, 6).tolist()
     colors = shades[order].tolist()
     image = Image.new("RGB", (width, height), background)

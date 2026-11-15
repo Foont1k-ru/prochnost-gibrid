@@ -1697,12 +1697,27 @@ def test_3d_wire_preview_selection_camera_playback_and_invalidation(window, qtbo
     QApplication.sendEvent(view, QMouseEvent(QEvent.Type.MouseButtonRelease, QPointF(130, 110), Qt.MouseButton.LeftButton,
                                               Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier))
     assert view.yaw != start_yaw and view.elevation != start_elevation
+    QApplication.sendEvent(view, QMouseEvent(QEvent.Type.MouseButtonPress, QPointF(100, 100), Qt.MouseButton.RightButton,
+                                              Qt.MouseButton.RightButton, Qt.KeyboardModifier.NoModifier))
+    QApplication.sendEvent(view, QMouseEvent(QEvent.Type.MouseMove, QPointF(140, 80), Qt.MouseButton.NoButton,
+                                              Qt.MouseButton.RightButton, Qt.KeyboardModifier.NoModifier))
+    QApplication.sendEvent(view, QMouseEvent(QEvent.Type.MouseButtonRelease, QPointF(140, 80), Qt.MouseButton.RightButton,
+                                              Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier))
+    assert (view.pan_x, view.pan_y) == (40, -20)
+    QApplication.sendEvent(view, QMouseEvent(QEvent.Type.MouseButtonPress, QPointF(100, 100), Qt.MouseButton.LeftButton,
+                                              Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier))
+    QApplication.sendEvent(view, QMouseEvent(QEvent.Type.MouseMove, QPointF(100, 300), Qt.MouseButton.NoButton,
+                                              Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier))
+    QApplication.sendEvent(view, QMouseEvent(QEvent.Type.MouseButtonRelease, QPointF(100, 300), Qt.MouseButton.LeftButton,
+                                              Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier))
+    assert view.elevation > 1.35 and not view.grab().isNull()
     QApplication.sendEvent(view, QWheelEvent(QPointF(100, 100), QPointF(100, 100), QPoint(0, 0), QPoint(0, 120),
                                              Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier,
                                              Qt.ScrollPhase.NoScrollPhase, False))
     assert view.zoom > 1
     dialog._reset_camera.click()
     assert view.yaw == start_yaw and view.elevation == start_elevation and view.zoom == 1
+    assert (view.pan_x, view.pan_y) == (0., 0.)
     dialog._playback.toggle()
     dialog._playback.advance()
     assert view.frame and view.frame.travel_mm == 1
@@ -3232,6 +3247,19 @@ def test_cad_preview_fast_mode_settles_and_caches(qtbot, monkeypatch):
     view._finish_moving()
     view.grab()
     assert calls[-1] == len(mesh.triangles) and view._highlight[0]
+    pan_press = QMouseEvent(QEvent.Type.MouseButtonPress, QPointF(100, 100), Qt.MouseButton.RightButton,
+                            Qt.MouseButton.RightButton, Qt.KeyboardModifier.NoModifier)
+    pan_move = QMouseEvent(QEvent.Type.MouseMove, QPointF(120, 110), Qt.MouseButton.NoButton,
+                           Qt.MouseButton.RightButton, Qt.KeyboardModifier.NoModifier)
+    pan_release = QMouseEvent(QEvent.Type.MouseButtonRelease, QPointF(120, 110), Qt.MouseButton.RightButton,
+                              Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier)
+    QApplication.sendEvent(view, pan_press)
+    QApplication.sendEvent(view, pan_move)
+    view.grab()
+    assert view._moving and calls[-1] == len(view._fast_triangles) and (view.pan_x, view.pan_y) == (20, 10)
+    QApplication.sendEvent(view, pan_release)
+    view.grab()
+    assert not view._moving and calls[-1] == len(mesh.triangles) and view._highlight[0]
     QApplication.sendEvent(view, wheel)
     view.set_mesh(None)
     assert not view._moving and not view._settle.isActive() and view._frame is None
@@ -3377,3 +3405,76 @@ def test_measurement_follows_explicit_through_highlight(qtbot):
     qtbot.mouseClick(view, Qt.MouseButton.LeftButton, pos=QPoint(view.width() // 2, view.height() // 2))
     assert points[-1][1] == pytest.approx(0.)
     assert view._through  # Сквозное отображение отмечается непосредственно над моделью.
+
+
+def test_cad_orbit_and_pan_preserve_clicks_measurements_and_markers(qtbot):
+    import numpy as np
+    import pytest
+    from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+    from PySide6.QtWidgets import QApplication
+
+    from suspensionlab.core.cad_mesh import CadMesh
+    from suspensionlab.core.cad_raster import screen_projection
+    from suspensionlab.ui.canvas.cad_preview import CadPreview
+
+    triangles = np.array([[[-10., 0., -10.], [10., 0., -10.], [0., 0., 10.]]])
+    mesh = CadMesh(triangles, 1, part_names=("Прочие", "Деталь"), triangle_parts=np.array([1]))
+    view = CadPreview()
+    qtbot.addWidget(view)
+    view.resize(400, 300)
+    view.show()
+    view.set_mesh(mesh)
+    view.yaw = view.elevation = 0.
+    view.set_measure_mode(True)
+    points = []
+    view.point_picked.connect(points.append)
+    center = QPoint(view.width() // 2, view.height() // 2)
+    qtbot.mouseClick(view, Qt.MouseButton.LeftButton, pos=center)
+    assert len(points) == 1
+    view.set_markers((points[0],))
+    view.grab()
+    initial_key = view._frame_key
+    for button in (Qt.MouseButton.RightButton, Qt.MouseButton.MiddleButton):
+        start, end = QPointF(100, 100), QPointF(125, 85)
+        QApplication.sendEvent(view, QMouseEvent(QEvent.Type.MouseButtonPress, start, button,
+                                                  button, Qt.KeyboardModifier.NoModifier))
+        QApplication.sendEvent(view, QMouseEvent(QEvent.Type.MouseMove, end, Qt.MouseButton.NoButton,
+                                                  button, Qt.KeyboardModifier.NoModifier))
+        QApplication.sendEvent(view, QMouseEvent(QEvent.Type.MouseButtonRelease, end, button,
+                                                  Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier))
+    assert (view.pan_x, view.pan_y) == pytest.approx((50., -30.))
+    assert len(points) == 1 and view.yaw == 0 and view.elevation == 0
+    assert not view._moving and view._pan_drag is None
+    view.grab()
+    assert view._frame_key != initial_key
+    width, height = round(view.width() * view.devicePixelRatioF()), round(view.height() * view.devicePixelRatioF())
+    marker = np.repeat(np.array(points[:1])[:, None, :], 3, axis=1)
+    before, _ = screen_projection(marker, view._center, view._radius, 0, 0, 1, width, height)
+    after, _ = screen_projection(marker, view._center, view._radius, 0, 0, 1, width, height,
+                                 offset=view._pixel_offset(width, height))
+    assert after - before == pytest.approx(np.broadcast_to(view._pixel_offset(width, height), after.shape))
+    qtbot.mouseClick(view, Qt.MouseButton.LeftButton, pos=center + QPoint(50, -30))
+    assert len(points) == 2 and points[1] == pytest.approx(points[0], abs=1e-8)
+    assert view._markers == (points[0],) and np.array_equal(mesh.triangles, triangles)
+    selected = []
+    view.triangle_picked.connect(selected.append)
+    view.set_measure_mode(False)
+    qtbot.mouseClick(view, Qt.MouseButton.LeftButton, pos=center + QPoint(50, -30))
+    assert selected == [0] and len(points) == 2
+    view.resize(500, 400)
+    new_center = QPoint(view.width() // 2, view.height() // 2)
+    qtbot.mouseClick(view, Qt.MouseButton.LeftButton, pos=new_center + QPoint(50, -30))
+    assert selected == [0, 0]
+    # Вертикальное вращение проходит через полюс; это не изменение координат сетки.
+    a, b = QPointF(100, 100), QPointF(100, 300)
+    QApplication.sendEvent(view, QMouseEvent(QEvent.Type.MouseButtonPress, a, Qt.MouseButton.LeftButton,
+                                              Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier))
+    QApplication.sendEvent(view, QMouseEvent(QEvent.Type.MouseMove, b, Qt.MouseButton.NoButton,
+                                              Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier))
+    QApplication.sendEvent(view, QMouseEvent(QEvent.Type.MouseButtonRelease, b, Qt.MouseButton.LeftButton,
+                                              Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier))
+    assert view.elevation == pytest.approx(2.) and len(points) == 2
+    view.reset_camera()
+    assert (view.pan_x, view.pan_y, view.zoom, view.yaw, view.elevation) == pytest.approx((0., 0., 1., -0.65, 0.35))
+    assert view._markers == (points[0],) and np.array_equal(mesh.triangles, triangles)

@@ -37,6 +37,8 @@ class CadPreview(QWidget):
         self._radius = 1.
         self._drag: QPointF | None = None
         self._press: QPointF | None = None
+        self._pan_drag: QPointF | None = None
+        self._pan_button: Qt.MouseButton | None = None
         self._dragging = False
         self._pick_allowed = False
         self._moving = False
@@ -61,6 +63,8 @@ class CadPreview(QWidget):
         self._moving = False
         self._drag = None
         self._press = None
+        self._pan_drag = None
+        self._pan_button = None
         self._dragging = False
         self._frame_key = None
         self._frame = None
@@ -90,17 +94,23 @@ class CadPreview(QWidget):
 
     def reset_camera(self) -> None:
         self.yaw, self.elevation, self.zoom = -0.65, 0.35, 1.0
+        self.pan_x, self.pan_y = 0., 0.
         self._drag = None
         self._press = None
+        self._pan_drag = None
+        self._pan_button = None
         self._dragging = False
         self._settle.stop()
         self._moving = False
         self.update()
 
     def _finish_moving(self) -> None:
-        if self._drag is None and self._moving:
+        if self._drag is None and self._pan_drag is None and self._moving:
             self._moving = False
             self.update()
+
+    def _pixel_offset(self, width: int, height: int) -> tuple[float, float]:
+        return self.pan_x * width / max(1, self.width()), self.pan_y * height / max(1, self.height())
 
     def paintEvent(self, event) -> None:  # noqa: N802
         painter = QPainter(self)
@@ -117,14 +127,15 @@ class CadPreview(QWidget):
         background = self.palette().base().color()
         rgb = (background.red(), background.green(), background.blue())
         fast = self._moving and self._fast_triangles is not self._triangles
-        key = (width, height, ratio, rgb, self.yaw, self.elevation, self.zoom, fast)
+        offset = self._pixel_offset(width, height)
+        key = (width, height, ratio, rgb, self.yaw, self.elevation, self.zoom, fast, offset)
         if key != self._frame_key:
             triangles = self._fast_triangles if fast else self._triangles
             shades = self._fast_shades if fast else self._shades
             highlight = self._fast_highlight if fast else self._highlight
             image = rasterize(triangles, shades, self._center, self._radius, self.yaw, self.elevation,
                               self.zoom, width, height, rgb, margin=24 * ratio,
-                              highlight=highlight, through=self._through)
+                              highlight=highlight, through=self._through, offset=offset)
             data = image.tobytes()
             self._frame = QImage(data, width, height, width * 3, QImage.Format.Format_RGB888).copy()
             self._frame_key = key
@@ -133,7 +144,7 @@ class CadPreview(QWidget):
         if self._markers:
             marker_triangles = np.repeat(np.asarray(self._markers)[:, None, :], 3, axis=1)
             screen, _ = screen_projection(marker_triangles, self._center, self._radius, self.yaw, self.elevation,
-                                          self.zoom, width, height, margin=24 * ratio)
+                                          self.zoom, width, height, margin=24 * ratio, offset=offset)
             positions = [QPointF(float(p[0, 0]) * self.width() / width, float(p[0, 1]) * self.height() / height)
                          for p in screen]
             pen = QPen(QColor(245, 55, 45), 2)
@@ -161,7 +172,12 @@ class CadPreview(QWidget):
                 painter.drawText(8, line, tr("cad_preview.measure_overlay"))
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
-        if event.button() == Qt.MouseButton.LeftButton:
+        if event.button() in (Qt.MouseButton.MiddleButton, Qt.MouseButton.RightButton) and self._drag is None and self._pan_drag is None:
+            self._settle.stop()
+            self._pan_drag = event.position()
+            self._pan_button = event.button()
+            event.accept()
+        elif event.button() == Qt.MouseButton.LeftButton and self._pan_drag is None:
             self._settle.stop()
             self._drag = self._press = event.position()
             self._dragging = False
@@ -172,7 +188,15 @@ class CadPreview(QWidget):
             super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:  # noqa: N802
-        if self._drag is not None and self._press is not None and event.buttons() & Qt.MouseButton.LeftButton:
+        if self._pan_drag is not None and self._pan_button is not None and event.buttons() & self._pan_button:
+            current = event.position()
+            delta, self._pan_drag = current - self._pan_drag, current
+            self.pan_x += delta.x()
+            self.pan_y += delta.y()
+            self._moving = True
+            self.update()
+            event.accept()
+        elif self._drag is not None and self._press is not None and event.buttons() & Qt.MouseButton.LeftButton:
             current = event.position()
             if not self._dragging:
                 if (current - self._press).manhattanLength() < QApplication.startDragDistance():
@@ -181,7 +205,7 @@ class CadPreview(QWidget):
                 self._dragging = True
             delta, self._drag = current - self._drag, current
             self.yaw = remainder(self.yaw + delta.x() * 0.01, 2 * pi)
-            self.elevation = max(-1.35, min(1.35, self.elevation + delta.y() * 0.01))
+            self.elevation = remainder(self.elevation + delta.y() * 0.01, 2 * pi)
             self._moving = True
             self.update()
             event.accept()
@@ -189,7 +213,12 @@ class CadPreview(QWidget):
             super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802
-        if event.button() == Qt.MouseButton.LeftButton:
+        if self._pan_button is not None and event.button() == self._pan_button:
+            self._pan_drag = None
+            self._pan_button = None
+            self._finish_moving()
+            event.accept()
+        elif event.button() == Qt.MouseButton.LeftButton and self._pan_drag is None:
             position = event.position()
             clicked = (self._press is not None and not self._dragging and self._pick_allowed and
                        (position - self._press).manhattanLength() < QApplication.startDragDistance())
@@ -204,12 +233,14 @@ class CadPreview(QWidget):
                 y = int(position.y() * height / max(1, self.height()))
                 index = pick_triangle(self._triangles, self._center, self._radius, self.yaw, self.elevation,
                                       self.zoom, width, height, x, y, margin=24 * ratio,
-                                      highlight=self._highlight, through=self._through)
+                                      highlight=self._highlight, through=self._through,
+                                      offset=self._pixel_offset(width, height))
                 if self._measure_mode:
                     point = None
                     if index is not None:
                         projected, _ = screen_projection(self._triangles[index:index + 1], self._center, self._radius,
-                                                         self.yaw, self.elevation, self.zoom, width, height, 24 * ratio)
+                                                         self.yaw, self.elevation, self.zoom, width, height, 24 * ratio,
+                                                         offset=self._pixel_offset(width, height))
                         point = point_on_projected_triangle(self._triangles[index], projected[0],
                                                             position.x() * width / max(1, self.width()),
                                                             position.y() * height / max(1, self.height()))
