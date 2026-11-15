@@ -305,3 +305,55 @@ def test_fast_mesh_retains_highlight_separately_from_unselected_triangles():
     assert np.any(~fast_highlight) and np.array_equal(mesh.triangles, triangles)
     with pytest.raises(ValueError):
         interaction_geometry(mesh, np.ones(len(triangles), dtype=np.int32))
+
+
+def test_pick_matches_drawn_pixel_and_explicit_through_overlay():
+    from suspensionlab.core.cad_raster import pick_triangle
+
+    triangles = np.array([[[-2, 0, -2], [2, 0, -2], [0, 0, 2]],
+                          [[-2, -1, -2], [2, -1, -2], [0, -1, 2]]], dtype=float)
+    args = (triangles, np.zeros(3), 3, 0, 0, 1, 100, 100)
+    assert pick_triangle(*args, 50, 50) == 1
+    assert pick_triangle(*args, 50, 50, highlight=np.array([True, False]), through=True) == 0
+    assert pick_triangle(*args, 0, 0) is None
+    assert pick_triangle(*args, -1, 0) is None
+    assert pick_triangle(*args, 100, 50) is None
+    with pytest.raises(ValueError):
+        pick_triangle(*args, 50, 50, highlight=np.array([1, 0]))
+
+
+def test_pick_agrees_with_full_image_rasterization_including_triangle_edges():
+    from PIL import Image, ImageDraw
+
+    from suspensionlab.core.cad_raster import pick_triangle, screen_projection
+
+    rng = np.random.default_rng(44)
+    triangles = rng.uniform(-4, 4, (100, 3, 3))
+    # Один вырожденный треугольник рисуется как линия и тоже может быть выбран.
+    triangles[0, 2] = triangles[0, 1]
+    center = np.zeros(3)
+    radius = 6.
+    yaw, elevation, zoom = 0.6, -0.3, 1.3
+    width, height = 137, 103
+    points, order = screen_projection(triangles, center, radius, yaw, elevation, zoom, width, height)
+    selected = np.arange(len(triangles)) % 7 == 0
+    coordinates = points.reshape(-1, 6).tolist()
+    for through in (False, True):
+        image = Image.new("RGB", (width, height), (0, 0, 0))
+        draw = ImageDraw.Draw(image)
+        def draw_id(index, draw=draw):
+            identifier = int(index) + 1
+            draw.polygon(coordinates[index], fill=(0, (identifier >> 8) & 255, identifier & 255))
+        for index in order:
+            draw_id(index)
+        if through:
+            for index in order[selected[order]]:
+                draw_id(index)
+        samples = [(int(x), int(y)) for x, y in zip(rng.integers(0, width, 300), rng.integers(0, height, 300), strict=True)]
+        samples += [(int(x), int(y)) for x, y in points.reshape(-1, 2) if 0 <= x < width and 0 <= y < height]
+        for x, y in samples:
+            r, g, b = image.getpixel((x, y))
+            identifier = (r << 16) | (g << 8) | b
+            actual = pick_triangle(triangles, center, radius, yaw, elevation, zoom, width, height, x, y,
+                                   highlight=selected, through=through)
+            assert actual == (identifier - 1 if identifier else None), (x, y, through)

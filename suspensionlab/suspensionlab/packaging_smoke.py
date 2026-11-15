@@ -128,6 +128,7 @@ def run_packaging_check() -> None:
     import numpy as np
 
     from .core.cad_mesh import CadMesh
+    from .core.cad_raster import pick_triangle
     from .ui.canvas.cad_preview import CadPreview
 
     preview = CadPreview()
@@ -137,6 +138,9 @@ def run_packaging_check() -> None:
     _require(not preview.grab().isNull() and preview._frame is not None and preview._through,
              "CAD-просмотр с подсветкой не отрисован")
     preview.close()
+    sample = np.array([[[-2., 0., -2.], [2., 0., -2.], [0., 0., 2.]]])
+    _require(pick_triangle(sample, np.zeros(3), 3., 0., 0., 1., 100, 100, 50, 50) == 0,
+             "Выбор детали CAD-просмотра недоступен")
     with TemporaryDirectory(prefix="suspensionlab-package-check-") as directory:
         temporary = Path(directory)
         settings = QSettings(str(temporary / "settings.ini"), QSettings.Format.IniFormat)

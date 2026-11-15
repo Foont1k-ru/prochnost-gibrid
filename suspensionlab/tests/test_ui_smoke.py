@@ -3236,3 +3236,58 @@ def test_cad_preview_fast_mode_settles_and_caches(qtbot, monkeypatch):
     view.set_mesh(None)
     assert not view._moving and not view._settle.isActive() and view._frame is None
     assert view._highlight is None and view._fast_highlight is None and not view._through
+
+
+def test_click_cad_assembly_selects_occurrence_but_drag_does_not(qtbot):
+    import numpy as np
+    from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+    from PySide6.QtWidgets import QApplication
+
+    from suspensionlab.core.cad_mesh import CadMesh
+    from suspensionlab.core.cad_raster import screen_projection
+    from suspensionlab.ui.cad_preview_dialog import CadPreviewDialog
+
+    base = np.array([[-3., 0, -3], [3, 0, -3], [0, 0, 3]])
+    triangles = np.stack([base + (x, 0, 0) for x in (-12, 0, 12)])
+    mesh = CadMesh(triangles, 3, 0, 1, ("Прочие", "Деталь"), np.array([1, 1, 0]),
+                   (0, 1, 1), np.array([1, 2, 0]))
+    dialog = CadPreviewDialog()
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog._show_mesh(mesh)
+    view = dialog._view
+    view.yaw, view.elevation = 0., 0.
+    ratio = view.devicePixelRatioF()
+    width, height = round(view.width() * ratio), round(view.height() * ratio)
+    projected, _ = screen_projection(mesh.triangles, view._center, view._radius, 0, 0, 1, width, height, 24 * ratio)
+    centers = [QPoint(round(p[0] / ratio), round(p[1] / ratio)) for p in projected.mean(axis=1)]
+    qtbot.mouseClick(view, Qt.MouseButton.LeftButton, pos=centers[0])
+    assert dialog._parts.currentData() == 1 and dialog._instances.currentData() == 1
+    assert dialog._context.isChecked() and view.mesh is mesh
+    assert np.array_equal(view._highlight, [True, False, False])
+    qtbot.mouseClick(view, Qt.MouseButton.LeftButton, pos=centers[1])
+    assert dialog._instances.currentData() == 2
+    assert np.array_equal(view._highlight, [False, True, False])
+    qtbot.mouseClick(view, Qt.MouseButton.LeftButton, pos=QPoint(1, 1))
+    assert dialog._instances.currentData() == 2  # Фон не меняет выбор.
+    qtbot.mouseClick(view, Qt.MouseButton.LeftButton, pos=centers[2])
+    assert dialog._parts.currentData() == 0 and dialog._instances.currentData() == 0
+    assert np.array_equal(view._highlight, [False, False, True])
+    # Движение мыши вращает камеру и не выбирает деталь под конечной точкой.
+    previous = view.yaw
+    a, b = QPointF(centers[2]), QPointF(centers[2] + QPoint(30, 12))
+    QApplication.sendEvent(view, QMouseEvent(QEvent.Type.MouseButtonPress, a, Qt.MouseButton.LeftButton,
+                                              Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier))
+    QApplication.sendEvent(view, QMouseEvent(QEvent.Type.MouseMove, b, Qt.MouseButton.NoButton,
+                                              Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier))
+    QApplication.sendEvent(view, QMouseEvent(QEvent.Type.MouseButtonRelease, b, Qt.MouseButton.LeftButton,
+                                              Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier))
+    assert view.yaw != previous and dialog._parts.currentData() == 0
+    # В изолированной сетке больше нет сопоставления с исходными треугольниками.
+    dialog._context.setChecked(False)
+    assert view.mesh is not mesh and view.mesh.triangle_parts is None
+    dialog._pick_triangle(0)
+    assert dialog._parts.currentData() == 0 and not dialog._context.isChecked()
+    dialog._parts.setCurrentIndex(0)
+    assert view.mesh is mesh and view._highlight is None

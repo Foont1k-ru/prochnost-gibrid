@@ -103,6 +103,7 @@ class CadPreviewDialog(QDialog):
         self._through.toggled.connect(self._select_instance)
         layout.addWidget(self._through)
         self._view = CadPreview(self)
+        self._view.triangle_picked.connect(self._pick_triangle)
         self._reset.clicked.connect(self._view.reset_camera)
         layout.addWidget(self._view, 1)
         self._status = QLabel(tr("cad_preview.empty"), self)
@@ -182,7 +183,7 @@ class CadPreviewDialog(QDialog):
         self._instances.blockSignals(False)
         self._instances.setEnabled(False)
 
-    def _select_part(self) -> None:
+    def _populate_instances(self) -> None:
         self._clear_instances()
         if self._mesh is None:
             return
@@ -196,6 +197,31 @@ class CadPreviewDialog(QDialog):
                     self._instances.addItem(tr("cad_preview.instance_number", number=number), instance)
             self._instances.blockSignals(False)
             self._instances.setEnabled(number > 0)
+
+    def _select_part(self) -> None:
+        self._populate_instances()
+        self._select_instance()
+
+    def _pick_triangle(self, index: int) -> None:
+        mesh = self._mesh
+        if mesh is None or self._view.mesh is not mesh or mesh.triangle_parts is None or not 0 <= index < len(mesh.triangles):
+            return
+        group = int(mesh.triangle_parts[index])
+        instance = int(mesh.triangle_instances[index]) if mesh.triangle_instances is not None else 0
+        part_index = self._parts.findData(group)
+        if part_index < 0:
+            return
+        self._parts.blockSignals(True)
+        self._parts.setCurrentIndex(part_index)
+        self._parts.blockSignals(False)
+        self._populate_instances()
+        instance_index = self._instances.findData(instance)
+        self._instances.blockSignals(True)
+        self._instances.setCurrentIndex(max(0, instance_index))
+        self._instances.blockSignals(False)
+        self._context.blockSignals(True)
+        self._context.setChecked(True)
+        self._context.blockSignals(False)
         self._select_instance()
 
     def _select_instance(self) -> None:

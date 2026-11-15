@@ -4,17 +4,19 @@ from __future__ import annotations
 from math import pi, remainder
 
 import numpy as np
-from PySide6.QtCore import QPointF, Qt, QTimer
+from PySide6.QtCore import QPointF, Qt, QTimer, Signal
 from PySide6.QtGui import QImage, QPainter
-from PySide6.QtWidgets import QWidget
+from PySide6.QtWidgets import QApplication, QWidget
 
 from ...core.cad_interaction import interaction_geometry
 from ...core.cad_mesh import CadMesh
-from ...core.cad_raster import rasterize, triangle_shades
+from ...core.cad_raster import pick_triangle, rasterize, triangle_shades
 from ...i18n import tr
 
 
 class CadPreview(QWidget):
+    triangle_picked = Signal(int)
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setMinimumSize(320, 280)
@@ -29,6 +31,9 @@ class CadPreview(QWidget):
         self._center = np.zeros(3)
         self._radius = 1.
         self._drag: QPointF | None = None
+        self._press: QPointF | None = None
+        self._dragging = False
+        self._pick_allowed = False
         self._moving = False
         self._frame_key: tuple | None = None
         self._frame: QImage | None = None
@@ -50,6 +55,8 @@ class CadPreview(QWidget):
         self._settle.stop()
         self._moving = False
         self._drag = None
+        self._press = None
+        self._dragging = False
         self._frame_key = None
         self._frame = None
         if mesh is None:
@@ -70,6 +77,8 @@ class CadPreview(QWidget):
     def reset_camera(self) -> None:
         self.yaw, self.elevation, self.zoom = -0.65, 0.35, 1.0
         self._drag = None
+        self._press = None
+        self._dragging = False
         self._settle.stop()
         self._moving = False
         self.update()
@@ -117,14 +126,22 @@ class CadPreview(QWidget):
     def mousePressEvent(self, event) -> None:  # noqa: N802
         if event.button() == Qt.MouseButton.LeftButton:
             self._settle.stop()
-            self._drag = event.position()
+            self._drag = self._press = event.position()
+            self._dragging = False
+            # Нельзя выбирать по упрощённому кадру с другой геометрией.
+            self._pick_allowed = not self._moving or self._fast_triangles is self._triangles
             event.accept()
         else:
             super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:  # noqa: N802
-        if self._drag is not None and event.buttons() & Qt.MouseButton.LeftButton:
+        if self._drag is not None and self._press is not None and event.buttons() & Qt.MouseButton.LeftButton:
             current = event.position()
+            if not self._dragging:
+                if (current - self._press).manhattanLength() < QApplication.startDragDistance():
+                    event.accept()
+                    return
+                self._dragging = True
             delta, self._drag = current - self._drag, current
             self.yaw = remainder(self.yaw + delta.x() * 0.01, 2 * pi)
             self.elevation = max(-1.35, min(1.35, self.elevation + delta.y() * 0.01))
@@ -136,8 +153,23 @@ class CadPreview(QWidget):
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802
         if event.button() == Qt.MouseButton.LeftButton:
-            self._drag = None
+            position = event.position()
+            clicked = (self._press is not None and not self._dragging and self._pick_allowed and
+                       (position - self._press).manhattanLength() < QApplication.startDragDistance())
+            self._drag = self._press = None
+            self._dragging = False
             self._finish_moving()
+            if (clicked and self.mesh is not None and self.mesh.triangle_parts is not None and
+                    0 <= position.x() < self.width() and 0 <= position.y() < self.height()):
+                ratio = self.devicePixelRatioF()
+                width, height = max(1, round(self.width() * ratio)), max(1, round(self.height() * ratio))
+                x = int(position.x() * width / max(1, self.width()))
+                y = int(position.y() * height / max(1, self.height()))
+                index = pick_triangle(self._triangles, self._center, self._radius, self.yaw, self.elevation,
+                                      self.zoom, width, height, x, y, margin=24 * ratio,
+                                      highlight=self._highlight, through=self._through)
+                if index is not None:
+                    self.triangle_picked.emit(index)
             event.accept()
         else:
             super().mouseReleaseEvent(event)
