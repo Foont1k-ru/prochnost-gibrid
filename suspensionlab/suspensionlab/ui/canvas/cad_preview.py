@@ -5,17 +5,20 @@ from math import pi, remainder
 
 import numpy as np
 from PySide6.QtCore import QPointF, Qt, QTimer, Signal
-from PySide6.QtGui import QImage, QPainter
+from PySide6.QtGui import QColor, QImage, QPainter, QPen
 from PySide6.QtWidgets import QApplication, QWidget
 
 from ...core.cad_interaction import interaction_geometry
+from ...core.cad_measurement import point_on_projected_triangle
 from ...core.cad_mesh import CadMesh
-from ...core.cad_raster import pick_triangle, rasterize, triangle_shades
+from ...core.cad_raster import pick_triangle, rasterize, screen_projection, triangle_shades
 from ...i18n import tr
 
 
 class CadPreview(QWidget):
     triangle_picked = Signal(int)
+    point_picked = Signal(object)
+    point_missed = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -28,6 +31,8 @@ class CadPreview(QWidget):
         self._highlight: np.ndarray | None = None
         self._fast_highlight: np.ndarray | None = None
         self._through = False
+        self._measure_mode = False
+        self._markers: tuple[tuple[float, float, float], ...] = ()
         self._center = np.zeros(3)
         self._radius = 1.
         self._drag: QPointF | None = None
@@ -74,6 +79,15 @@ class CadPreview(QWidget):
                                  else triangle_shades(self._fast_triangles))
         self.update()
 
+    def set_measure_mode(self, enabled: bool) -> None:
+        self._measure_mode = enabled
+
+    def set_markers(self, points: tuple[tuple[float, float, float], ...]) -> None:
+        if len(points) > 2 or any(len(point) != 3 or not all(np.isfinite(v) for v in point) for point in points):
+            raise ValueError("Некорректные метки")
+        self._markers = tuple((float(p[0]), float(p[1]), float(p[2])) for p in points)
+        self.update()
+
     def reset_camera(self) -> None:
         self.yaw, self.elevation, self.zoom = -0.65, 0.35, 1.0
         self._drag = None
@@ -116,12 +130,35 @@ class CadPreview(QWidget):
             self._frame_key = key
         if self._frame is not None:
             painter.drawImage(self.rect(), self._frame)
-        if fast or self._through:
+        if self._markers:
+            marker_triangles = np.repeat(np.asarray(self._markers)[:, None, :], 3, axis=1)
+            screen, _ = screen_projection(marker_triangles, self._center, self._radius, self.yaw, self.elevation,
+                                          self.zoom, width, height, margin=24 * ratio)
+            positions = [QPointF(float(p[0, 0]) * self.width() / width, float(p[0, 1]) * self.height() / height)
+                         for p in screen]
+            pen = QPen(QColor(245, 55, 45), 2)
+            painter.setPen(pen)
+            if len(positions) == 2:
+                pen.setStyle(Qt.PenStyle.DashLine)
+                painter.setPen(pen)
+                painter.drawLine(positions[0], positions[1])
+                pen.setStyle(Qt.PenStyle.SolidLine)
+                painter.setPen(pen)
+            painter.setBrush(QColor(255, 245, 125))
+            for label, pos in zip(("A", "B"), positions, strict=False):
+                painter.drawEllipse(pos, 5, 5)
+                painter.drawText(pos + QPointF(7, -6), label)
+        if fast or self._through or self._markers:
             painter.setPen(self.palette().text().color())
+            line = 20
             if fast:
-                painter.drawText(8, 20, tr("cad_preview.fast_view"))
+                painter.drawText(8, line, tr("cad_preview.fast_view"))
+                line += 20
             if self._through:
-                painter.drawText(8, 40 if fast else 20, tr("cad_preview.through_view"))
+                painter.drawText(8, line, tr("cad_preview.through_view"))
+                line += 20
+            if self._markers:
+                painter.drawText(8, line, tr("cad_preview.measure_overlay"))
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
         if event.button() == Qt.MouseButton.LeftButton:
@@ -159,7 +196,7 @@ class CadPreview(QWidget):
             self._drag = self._press = None
             self._dragging = False
             self._finish_moving()
-            if (clicked and self.mesh is not None and self.mesh.triangle_parts is not None and
+            if (clicked and self.mesh is not None and (self._measure_mode or self.mesh.triangle_parts is not None) and
                     0 <= position.x() < self.width() and 0 <= position.y() < self.height()):
                 ratio = self.devicePixelRatioF()
                 width, height = max(1, round(self.width() * ratio)), max(1, round(self.height() * ratio))
@@ -168,7 +205,19 @@ class CadPreview(QWidget):
                 index = pick_triangle(self._triangles, self._center, self._radius, self.yaw, self.elevation,
                                       self.zoom, width, height, x, y, margin=24 * ratio,
                                       highlight=self._highlight, through=self._through)
-                if index is not None:
+                if self._measure_mode:
+                    point = None
+                    if index is not None:
+                        projected, _ = screen_projection(self._triangles[index:index + 1], self._center, self._radius,
+                                                         self.yaw, self.elevation, self.zoom, width, height, 24 * ratio)
+                        point = point_on_projected_triangle(self._triangles[index], projected[0],
+                                                            position.x() * width / max(1, self.width()),
+                                                            position.y() * height / max(1, self.height()))
+                    if point is None:
+                        self.point_missed.emit()
+                    else:
+                        self.point_picked.emit(point)
+                elif index is not None:
                     self.triangle_picked.emit(index)
             event.accept()
         else:

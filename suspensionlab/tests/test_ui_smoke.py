@@ -3291,3 +3291,89 @@ def test_click_cad_assembly_selects_occurrence_but_drag_does_not(qtbot):
     assert dialog._parts.currentData() == 0 and not dialog._context.isChecked()
     dialog._parts.setCurrentIndex(0)
     assert view.mesh is mesh and view._highlight is None
+
+
+def test_cad_two_point_measurement_is_temporary_and_works_in_isolation(qtbot, window):
+    import numpy as np
+    import pytest
+    from PySide6.QtCore import QPoint, Qt
+
+    from suspensionlab.core.cad_measurement import measurement_distance, point_on_projected_triangle
+    from suspensionlab.core.cad_mesh import CadMesh
+    from suspensionlab.core.cad_raster import screen_projection
+    from suspensionlab.ui.cad_preview_dialog import CadPreviewDialog
+
+    window.controller.new_project("ring")
+    before = window.controller.project.to_dict()
+    triangle = np.array([[[-10., 0., -10.], [10., 0., -10.], [0., 0., 10.]]])
+    mesh = CadMesh(triangle, 1, part_names=("Прочие", "Деталь"), triangle_parts=np.array([1]))
+    dialog = CadPreviewDialog(window)
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog._show_mesh(mesh)
+    dialog._parts.setCurrentIndex(dialog._parts.findData(1))
+    assert dialog._view.mesh is not mesh and dialog._view.mesh.triangle_parts is None
+    view = dialog._view
+    view.yaw, view.elevation = 0., 0.
+    ratio = view.devicePixelRatioF()
+    width, height = round(view.width() * ratio), round(view.height() * ratio)
+    projected, _ = screen_projection(view.mesh.triangles, view._center, view._radius, 0, 0, 1, width, height, 24 * ratio)
+    targets = [np.array(weights) @ projected[0] for weights in ([0.4, 0.4, 0.2], [0.1, 0.2, 0.7])]
+    positions = [QPoint(round(p[0] * view.width() / width), round(p[1] * view.height() / height)) for p in targets]
+    expected = [point_on_projected_triangle(triangle[0], projected[0], pos.x() * width / view.width(),
+                                            pos.y() * height / view.height()) for pos in positions]
+    assert all(point is not None for point in expected)
+    dialog._measure.setChecked(True)
+    qtbot.mouseClick(view, Qt.MouseButton.LeftButton, pos=positions[0])
+    assert len(dialog._measurement_points) == 1
+    assert dialog._measurement_points[0] == pytest.approx(expected[0], abs=1e-8)
+    assert len(view._markers) == 1 and "не для расчёта" in dialog._measurement.text()
+    qtbot.mouseClick(view, Qt.MouseButton.LeftButton, pos=positions[1])
+    assert dialog._measurement_points[1] == pytest.approx(expected[1], abs=1e-8)
+    assert len(view._markers) == 2 and "Расстояние A–B" in dialog._measurement.text()
+    distance = measurement_distance(*dialog._measurement_points)
+    assert f"{distance:.2f}" in dialog._measurement.text()
+    assert not view.grab().isNull()
+    qtbot.mouseClick(view, Qt.MouseButton.LeftButton, pos=QPoint(1, 1))
+    assert len(dialog._measurement_points) == 2 and "Точка не определена" in dialog._measurement.text()
+    qtbot.mouseClick(view, Qt.MouseButton.LeftButton, pos=positions[0])
+    assert len(dialog._measurement_points) == 1  # Третья точка начинает новую пару.
+    dialog._parts.setCurrentIndex(0)
+    assert len(view._markers) == 1 and view.mesh is mesh  # Метки — в исходной системе.
+    dialog._clear_measure.click()
+    assert not dialog._measurement_points and not view._markers and not dialog._clear_measure.isEnabled()
+    dialog._measure.setChecked(False)
+    assert not view._measure_mode
+    assert window.controller.project.to_dict() == before
+    dialog._add_measurement_point((1., 2., 3.))
+    assert view._markers
+    dialog._show_error("read")
+    assert not dialog._measure.isEnabled() and not view._markers and not dialog._measurement_points
+
+
+def test_measurement_follows_explicit_through_highlight(qtbot):
+    import numpy as np
+    import pytest
+    from PySide6.QtCore import QPoint, Qt
+
+    from suspensionlab.core.cad_mesh import CadMesh
+    from suspensionlab.ui.canvas.cad_preview import CadPreview
+
+    triangles = np.array([[[-4., 0., -4.], [4., 0., -4.], [0., 0., 4.]],
+                          [[-4., -1., -4.], [4., -1., -4.], [0., -1., 4.]]])
+    mesh = CadMesh(triangles, 2, part_names=("прочие", "деталь"), triangle_parts=np.array([1, 1]))
+    view = CadPreview()
+    qtbot.addWidget(view)
+    view.resize(400, 300)
+    view.show()
+    points = []
+    view.point_picked.connect(points.append)
+    view.set_measure_mode(True)
+    view.yaw = view.elevation = 0.
+    view.set_mesh(mesh, np.array([True, False]), through=False)
+    qtbot.mouseClick(view, Qt.MouseButton.LeftButton, pos=QPoint(view.width() // 2, view.height() // 2))
+    assert points[-1][1] == pytest.approx(-1.)
+    view.set_mesh(mesh, np.array([True, False]), through=True)
+    qtbot.mouseClick(view, Qt.MouseButton.LeftButton, pos=QPoint(view.width() // 2, view.height() // 2))
+    assert points[-1][1] == pytest.approx(0.)
+    assert view._through  # Сквозное отображение отмечается непосредственно над моделью.

@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
-from PySide6.QtCore import QThread, Signal
+from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from ..core.cad_measurement import measurement_distance
 from ..core.cad_mesh import CadMesh
 from ..core.cad_transport import CadJob, CadPreviewError
 from ..i18n import tr
@@ -51,6 +52,7 @@ class CadPreviewDialog(QDialog):
         self._path: Path | None = None
         self._mesh: CadMesh | None = None
         self._instance_counts: np.ndarray | None = None
+        self._measurement_points: list[tuple[float, float, float]] = []
         layout = QVBoxLayout(self)
         notice = QLabel(tr("cad_preview.notice"), self)
         notice.setWordWrap(True)
@@ -102,13 +104,31 @@ class CadPreviewDialog(QDialog):
         self._through.setEnabled(False)
         self._through.toggled.connect(self._select_instance)
         layout.addWidget(self._through)
+        measure_row = QHBoxLayout()
+        self._measure = QCheckBox(tr("cad_preview.measure_mode"), self)
+        self._measure.setEnabled(False)
+        self._clear_measure = QPushButton(tr("cad_preview.measure_clear"), self)
+        self._clear_measure.setEnabled(False)
+        self._clear_measure.clicked.connect(self._clear_measurement)
+        measure_row.addWidget(self._measure)
+        measure_row.addStretch(1)
+        measure_row.addWidget(self._clear_measure)
+        layout.addLayout(measure_row)
         self._view = CadPreview(self)
+        self._measure.toggled.connect(self._view.set_measure_mode)
+        self._view.point_picked.connect(self._add_measurement_point)
+        self._view.point_missed.connect(self._measurement_missed)
         self._view.triangle_picked.connect(self._pick_triangle)
         self._reset.clicked.connect(self._view.reset_camera)
         layout.addWidget(self._view, 1)
         self._status = QLabel(tr("cad_preview.empty"), self)
         self._status.setWordWrap(True)
         layout.addWidget(self._status)
+        self._measurement = QLabel(tr("cad_preview.measure_warning"), self)
+        self._measurement.setWordWrap(True)
+        self._measurement.setMinimumHeight(self._measurement.fontMetrics().lineSpacing() * 4)
+        self._measurement.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        layout.addWidget(self._measurement)
         self._buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close, self)
         self._buttons.rejected.connect(self.reject)
         layout.addWidget(self._buttons)
@@ -126,6 +146,9 @@ class CadPreviewDialog(QDialog):
         if self._reader is not None:
             return
         self._path = path
+        self._measure.setChecked(False)
+        self._measure.setEnabled(False)
+        self._clear_measurement()
         self._mesh = None
         self._instance_counts = None
         self._parts.blockSignals(True)
@@ -152,6 +175,7 @@ class CadPreviewDialog(QDialog):
 
     def _show_mesh(self, mesh: CadMesh) -> None:
         self._mesh = mesh
+        self._measure.setEnabled(True)
         self._instance_counts = (np.bincount(mesh.triangle_instances, minlength=len(mesh.instance_groups))
                                  if mesh.triangle_instances is not None else None)
         self._parts.blockSignals(True)
@@ -175,6 +199,36 @@ class CadPreviewDialog(QDialog):
                                     triangles=len(mesh.triangles)))
         else:
             self._status.setText(tr("cad_preview.loaded", faces=mesh.face_count, triangles=len(mesh.triangles)))
+
+    def _update_measurement(self, missed: bool = False) -> None:
+        lines = [tr("cad_preview.measure_warning")]
+        values = []
+        for label, point in zip(("A", "B"), self._measurement_points, strict=False):
+            coords = ", ".join(f"{value:.2f}" for value in point)
+            values.append(tr("cad_preview.measure_point", label=label, coords=coords))
+        if len(self._measurement_points) == 2:
+            length = measurement_distance(*self._measurement_points)
+            values.append(tr("cad_preview.measure_distance", value=f"{length:.2f}"))
+        if values:
+            lines.append("   ·   ".join(values))
+        if missed:
+            lines.append(tr("cad_preview.measure_missed"))
+        self._measurement.setText("\n".join(lines))
+        self._clear_measure.setEnabled(bool(self._measurement_points))
+        self._view.set_markers(tuple(self._measurement_points))
+
+    def _clear_measurement(self) -> None:
+        self._measurement_points.clear()
+        self._update_measurement()
+
+    def _add_measurement_point(self, point: tuple[float, float, float]) -> None:
+        if len(self._measurement_points) == 2:
+            self._measurement_points.clear()
+        self._measurement_points.append(point)
+        self._update_measurement()
+
+    def _measurement_missed(self) -> None:
+        self._update_measurement(missed=True)
 
     def _clear_instances(self) -> None:
         self._instances.blockSignals(True)
@@ -247,6 +301,9 @@ class CadPreviewDialog(QDialog):
             self._view.set_mesh(self._mesh.isolated(group))
 
     def _show_error(self, code: str) -> None:
+        self._measure.setChecked(False)
+        self._measure.setEnabled(False)
+        self._clear_measurement()
         self._mesh = None
         self._instance_counts = None
         self._parts.setEnabled(False)

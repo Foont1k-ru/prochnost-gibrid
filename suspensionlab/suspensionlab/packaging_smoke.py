@@ -127,6 +127,7 @@ def run_packaging_check() -> None:
     # Проверяем именно GUI-отрисовку и наличие растеризатора в упаковке.
     import numpy as np
 
+    from .core.cad_measurement import measurement_distance, point_on_projected_triangle
     from .core.cad_mesh import CadMesh
     from .core.cad_raster import pick_triangle
     from .ui.canvas.cad_preview import CadPreview
@@ -141,6 +142,9 @@ def run_packaging_check() -> None:
     sample = np.array([[[-2., 0., -2.], [2., 0., -2.], [0., 0., 2.]]])
     _require(pick_triangle(sample, np.zeros(3), 3., 0., 0., 1., 100, 100, 50, 50) == 0,
              "Выбор детали CAD-просмотра недоступен")
+    selected = point_on_projected_triangle(sample[0], np.array([[0., 0.], [2., 0.], [0., 2.]]), 1., 0.)
+    _require(selected is not None and measurement_distance(selected, (0., 0., -2.)) == 0.,
+             "Замер по сетке недоступен")
     with TemporaryDirectory(prefix="suspensionlab-package-check-") as directory:
         temporary = Path(directory)
         settings = QSettings(str(temporary / "settings.ini"), QSettings.Format.IniFormat)
