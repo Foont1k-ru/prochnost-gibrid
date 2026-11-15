@@ -195,6 +195,9 @@ def run_packaging_check() -> None:
         dialog._damper_min.setValue(205)
         dialog._damper_max.setValue(325)
         _require(dialog._copy_damper.isEnabled(), "Перенос длин из проекта недоступен")
+        dialog._run.click()
+        _require("Точек на упоре или за ним: 2" in dialog._damper_range.toPlainText(),
+                 "Сводка подбора амортизатора не выявила конфликт")
         dialog._static_button.click()
         _require(dialog._static_export.isEnabled() and dialog._static_report is not None,
                  "Не получен отчёт статики")

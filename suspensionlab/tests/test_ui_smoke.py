@@ -3478,3 +3478,30 @@ def test_cad_orbit_and_pan_preserve_clicks_measurements_and_markers(qtbot):
     view.reset_camera()
     assert (view.pan_x, view.pan_y, view.zoom, view.yaw, view.elevation) == pytest.approx((0., 0., 1., -0.65, 0.35))
     assert view._markers == (points[0],) and np.array_equal(mesh.triangles, triangles)
+
+
+def test_damper_range_tab_and_invalidation(window, qtbot):
+    from suspensionlab.ui.analysis_dialog import AnalysisDialog
+
+    window.controller.new_project("ring")
+    before = window.controller.project.to_dict()
+    dialog = AnalysisDialog(window.controller, window)
+    qtbot.addWidget(dialog)
+    dialog._from.setValue(-1)
+    dialog._to.setValue(1)
+    dialog._run.click()
+    assert "не включён" in dialog._damper_range.toPlainText()
+    dialog._damper.setChecked(True)
+    dialog._run.click()
+    text = dialog._damper_range.toPlainText()
+    assert "3 из 3" in text and "Упоры не заданы" in text
+    assert "Наименьшая длина" in text and "Наибольшая длина" in text
+    dialog._damper_min.setValue(200)
+    assert "рассчитайте ход" in dialog._damper_range.toPlainText()
+    dialog._damper_max.setValue(325)
+    dialog._run.click()
+    assert "Точек на упоре или за ним: 3" in dialog._damper_range.toPlainText()
+    assert "Обнаружен упор" in dialog._damper_range.toPlainText()
+    assert window.controller.project.to_dict() == before
+    dialog._side.setCurrentIndex(1)
+    assert "рассчитайте ход" in dialog._damper_range.toPlainText()

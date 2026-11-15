@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
 
 from ..core.analysis import CornerSample, analyze_corner
 from ..core.damper import DamperForcePoint, LinearDamperCharacteristic, evaluate_linear_damping
+from ..core.damper_range import summarize_damper_range
 from ..core.double_wishbone import DoubleWishbone
 from ..core.pose_view import PoseView, pose_view
 from ..core.sample_summary import corner_summary
@@ -50,6 +51,7 @@ from .canvas.sweep_plot import SweepPlot
 from .component_transfer import transferable_damper_lengths
 from .controller import AppController
 from .damper_conversion_dialog import MAX_DAMPING_COEFFICIENT, DamperConversionDialog
+from .damper_range_text import damper_range_text
 from .table_export import make_plot_report, make_report, make_table_report, save_table_dialog
 from .widgets.playback import PlaybackControls
 from .widgets.sample_summary import SampleSummary
@@ -214,6 +216,9 @@ class AnalysisDialog(QDialog):
         self._summary = SampleSummary(self)
         self._summary.rowSelected.connect(lambda row: self._table.setCurrentCell(row, 0))
         self._view_tabs.addTab(self._summary, tr("summary.tab"))
+        self._damper_range = QTextEdit(self)
+        self._damper_range.setReadOnly(True)
+        self._view_tabs.addTab(self._damper_range, tr("damper_range.tab"))
         self._explanation = QTextEdit(self)
         self._explanation.setReadOnly(True)
         self._view_tabs.addTab(self._explanation, tr("analysis.tab_explain"))
@@ -309,6 +314,7 @@ class AnalysisDialog(QDialog):
         self._playback_reasons = []
         self._plot.set_points(())
         self._summary.set_samples(())
+        self._damper_range.setPlainText(tr("damper_range.empty"))
         self._preview.clear()
         self._preview3d.clear()
         self._preview_status.setText(tr("analysis.preview_empty"))
@@ -629,6 +635,13 @@ class AnalysisDialog(QDialog):
                 item.setToolTip(text)
                 self._table.setItem(row, column, item)
         self._summary.set_samples(corner_summary(result))
+        if self._damper.isChecked():
+            lengths = [(point.travel_mm, sample.damper.length_mm if sample is not None and sample.damper is not None
+                        and sample.damper.error is None else None)
+                       for point, sample in zip(result.sweep.points, result.samples, strict=True)]
+            self._damper_range.setPlainText(damper_range_text(summarize_damper_range(lengths, damper_limits)))
+        else:
+            self._damper_range.setPlainText(tr("damper_range.disabled"))
         if failures:
             first_error = next((point.error for point in result.sweep.points if point.error is not None), None)
             LOG.warning("Расчёт хода: нерешённых строк %d; первый отказ: %s", failures, first_error or "не указан")
