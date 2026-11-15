@@ -4,10 +4,12 @@ from __future__ import annotations
 from collections.abc import Callable
 from math import isfinite
 
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFormLayout,
+    QHBoxLayout,
     QLabel,
     QLineEdit,
     QPushButton,
@@ -19,10 +21,13 @@ from PySide6.QtWidgets import (
 from ..core.spring_candidate import SpringCandidate, SpringComparison, compare_spring_candidate
 from ..export.csv_report import CSVReport
 from ..i18n import tr
+from .spring_candidate_points_dialog import SpringCandidatePointsDialog
 from .table_export import save_table_dialog
 
 
 class SpringCandidateDialog(QDialog):
+    rowSelected = Signal(int)
+
     def __init__(self, points: tuple[tuple[float, float | None], ...], reference_installed_mm: float,
                  context: str, parent: QWidget | None = None, *,
                  report_factory: Callable[[SpringComparison], CSVReport] | None = None) -> None:
@@ -34,6 +39,7 @@ class SpringCandidateDialog(QDialog):
         self.comparison: SpringComparison | None = None
         self._report_factory = report_factory
         self.report: CSVReport | None = None
+        self._details_dialog: SpringCandidatePointsDialog | None = None
         notice = QLabel(tr("spring_candidate.notice"), self)
         notice.setWordWrap(True)
         source = QLabel(context, self)
@@ -48,6 +54,8 @@ class SpringCandidateDialog(QDialog):
         self._compare.clicked.connect(self._calculate)
         self._result = QTextEdit(self)
         self._result.setReadOnly(True)
+        self._details = QPushButton(tr("spring_candidate.details.button"), self)
+        self._details.clicked.connect(self._open_details)
         self._export = QPushButton(tr("spring_candidate.report.button"), self)
         self._export.clicked.connect(self._save_report)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close, self)
@@ -59,13 +67,19 @@ class SpringCandidateDialog(QDialog):
         layout.addLayout(form)
         layout.addWidget(self._compare)
         layout.addWidget(self._result, 1)
-        layout.addWidget(self._export)
+        actions = QHBoxLayout()
+        actions.addWidget(self._details)
+        actions.addWidget(self._export)
+        layout.addLayout(actions)
         layout.addWidget(buttons)
+        self.finished.connect(lambda _result: self._close_details())
         self._clear()
 
     def _clear(self, *_args: object) -> None:
+        self._close_details()
         self.comparison = None
         self.report = None
+        self._details.setEnabled(False)
         self._export.setEnabled(False)
         self._result.setPlainText(tr("spring_candidate.empty"))
 
@@ -96,9 +110,39 @@ class SpringCandidateDialog(QDialog):
             try:
                 self.report = self._report_factory(comparison)
                 self._export.setEnabled(True)
+                self._details.setEnabled(True)
             except (ValueError, UnicodeError) as error:
                 lines.append(tr("spring_candidate.report.unavailable", reason=str(error)))
         self._result.setPlainText("\n\n".join(lines))
+
+    def _close_details(self) -> None:
+        if self._details_dialog is not None:
+            dialog = self._details_dialog
+            self._details_dialog = None
+            dialog.reject()
+
+    def _open_details(self) -> None:
+        if self.comparison is None or self.report is None:
+            return
+        if self._details_dialog is not None:
+            self._details_dialog.raise_()
+            self._details_dialog.activateWindow()
+            return
+        dialog = SpringCandidatePointsDialog(self.comparison, self.report, self)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        self._details_dialog = dialog
+        dialog.rowSelected.connect(self._select_row)
+        dialog.finished.connect(lambda _result: self._forget_details(dialog))
+        dialog.show()
+
+    def _forget_details(self, dialog: SpringCandidatePointsDialog) -> None:
+        if self._details_dialog is dialog:
+            self._details_dialog = None
+
+    def _select_row(self, row: int) -> None:
+        if self.comparison is not None and 0 <= row < len(self.comparison.points):
+            self.rowSelected.emit(row)
+            self.accept()
 
     def _save_report(self) -> None:
         if self.report is not None:

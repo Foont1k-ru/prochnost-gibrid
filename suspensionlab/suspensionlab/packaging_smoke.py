@@ -258,7 +258,18 @@ def run_packaging_check() -> None:
         spring_csv = write_csv_report(spring_candidate.report, temporary / "spring-candidate.csv")
         _require(len(spring_candidate.report.rows) == 2 and spring_csv.read_bytes().startswith(b"\xef\xbb\xbf"),
                  "CSV сравнения пружины не записан")
+        _require(spring_candidate._details.isEnabled(), "Просмотр точек сравнения пружины недоступен")
+        spring_candidate._details.click()
+        spring_detail = spring_candidate._details_dialog
+        _require(spring_detail is not None and spring_detail._table.rowCount() == 2,
+                 "Точки сравнения пружины не открылись")
+        assert spring_detail is not None
+        spring_detail._filter.setCurrentIndex(spring_detail._filter.findData("missing"))
+        _require(spring_detail._table.isRowHidden(0) and spring_detail._table.isRowHidden(1),
+                 "Фильтр точек пружины работает неправильно")
         spring_candidate._fields["installed"].setText("315")
+        _require(spring_candidate._details_dialog is None and not spring_candidate._details.isEnabled(),
+                 "Устаревшие точки пружины не очищены")
         _require(spring_candidate.report is None and not spring_candidate._export.isEnabled(),
                  "Устаревший отчёт пружины не очищен")
         spring_candidate.reject()

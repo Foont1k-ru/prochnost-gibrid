@@ -916,8 +916,17 @@ class AnalysisDialog(QDialog):
         dialog = SpringCandidateDialog(source, self._spring_length.value(), context, self, report_factory=report_factory)
         dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         self._spring_candidate_dialog = dialog
+        dialog.rowSelected.connect(lambda row: self._select_spring_candidate_row(dialog, row))
         dialog.finished.connect(lambda _result: self._forget_spring_candidate(dialog))
         dialog.show()
+
+    def _select_spring_candidate_row(self, dialog: SpringCandidateDialog, row: int) -> None:
+        if (self._spring_candidate_dialog is not dialog or dialog.comparison is None
+                or not 0 <= row < len(self._samples)):
+            return
+        self._view_tabs.setCurrentIndex(0)
+        self._table.setCurrentCell(row, 0)
+        self._show_row(row)
 
     def _forget_spring_candidate(self, dialog: SpringCandidateDialog) -> None:
         if self._spring_candidate_dialog is dialog:

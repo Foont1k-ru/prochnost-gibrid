@@ -4269,3 +4269,67 @@ def test_spring_candidate_csv_snapshot_export_and_stale_invalidation(window, qtb
     window.controller.modelChanged.emit()
     assert dialog._spring_candidate_dialog is None and not dialog._spring_compare_button.isEnabled()
     assert window.controller.project.to_dict() == before
+
+
+def test_spring_candidate_points_filter_and_switch_to_original(window, qtbot):
+    from suspensionlab.ui.analysis_dialog import AnalysisDialog
+
+    window.controller.new_project("ring")
+    original = window.controller.project.to_dict()
+    dialog = AnalysisDialog(window.controller, window)
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog._spring.setChecked(True)
+    dialog._spring_length.setValue(320)
+    dialog._from.setValue(0)
+    dialog._to.setValue(2)
+    dialog._run.click()
+    dialog._spring_compare_button.click()
+    candidate = dialog._spring_candidate_dialog
+    for key, value in (("free", "350"), ("installed", "310"), ("coil", "120"),
+                       ("coil_reserve", "10"), ("compression_reserve", "5")):
+        candidate._fields[key].setText(value)
+    candidate._compare.click()
+    assert candidate._details.isEnabled()
+    candidate._details.click()
+    detail = candidate._details_dialog
+    assert detail is not None and detail._table.rowCount() == 3
+    detail._filter.setCurrentIndex(detail._filter.findData("missing"))
+    assert all(detail._table.isRowHidden(row) for row in range(3)) and not detail._choose.isEnabled()
+    detail._filter.setCurrentIndex(detail._filter.findData("clear"))
+    assert all(not detail._table.isRowHidden(row) for row in range(3))
+    detail._table.setCurrentCell(2, 0)
+    assert detail._choose.isEnabled() and detail._table.item(2, 2).toolTip() == candidate.report.rows[2][2]
+    detail._choose.click()
+    assert dialog._table.currentRow() == 2 and dialog._view_tabs.currentIndex() == 0
+    assert dialog._spring_candidate_dialog is None
+    assert window.controller.project.to_dict() == original
+
+
+def test_spring_candidate_points_hide_stale_snapshot(window, qtbot):
+    from suspensionlab.ui.analysis_dialog import AnalysisDialog
+
+    window.controller.new_project("ring")
+    dialog = AnalysisDialog(window.controller, window)
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog._spring.setChecked(True)
+    dialog._spring_length.setValue(320)
+    dialog._from.setValue(0)
+    dialog._to.setValue(1)
+    dialog._run.click()
+    dialog._spring_compare_button.click()
+    candidate = dialog._spring_candidate_dialog
+    for key, value in (("free", "350"), ("installed", "310"), ("coil", "120"),
+                       ("coil_reserve", "10"), ("compression_reserve", "5")):
+        candidate._fields[key].setText(value)
+    candidate._compare.click()
+    candidate._details.click()
+    assert candidate._details_dialog is not None
+    candidate._fields["free"].setText("340")
+    assert candidate._details_dialog is None and not candidate._details.isEnabled()
+    candidate._compare.click()
+    candidate._details.click()
+    assert candidate._details_dialog is not None
+    dialog._to.setValue(2)
+    assert dialog._spring_candidate_dialog is None and not dialog._spring_compare_button.isEnabled()
