@@ -86,3 +86,31 @@ def test_missing_elements_and_invalid_geometry():
     project.front.wheel.width_mm = 0
     with pytest.raises(ValueError):
         pose_scene(model, pose, project.front, frame)
+
+
+@pytest.mark.parametrize("side", ["left", "right"])
+@pytest.mark.parametrize("travel", [-10, 0, 10])
+def test_selectable_points_match_calculated_pose(side, travel):
+    from suspensionlab.core.scene3d import POINT_CODES
+
+    axle = load_template("ring").front
+    model = DoubleWishbone(axle, side)
+    pose = model.solve(travel)
+    frame = pose_view(model, pose, axle, spring=True, damper=True)
+    scene = pose_scene(model, pose, axle, frame)
+    assert tuple(key for key, _ in scene.points) == POINT_CODES
+    for key in ("uca_f_in", "uca_r_in", "lca_f_in", "lca_r_in", "tierod_in"):
+        assert scene.point(key) == pytest.approx(model.points[key])
+    for key in ("ubj", "lbj", "tierod_out"):
+        assert scene.point(key) == pytest.approx(pose.point(model.points[key], model.center0))
+    assert scene.point("wheel_center") == pytest.approx(pose.center)
+    assert scene.point("spring_lo") == pytest.approx(frame.spring[0])
+    assert scene.point("spring_up") == pytest.approx(frame.spring[1])
+    assert scene.point("damper_lo") == pytest.approx(frame.damper[0])
+    assert scene.point("damper_up") == pytest.approx(frame.damper[1])
+    assert scene.point("missing") is None
+    no_elements = pose_scene(model, pose, axle, pose_view(model, pose, axle, spring=False, damper=False))
+    assert all(no_elements.point(key) is None for key in ("spring_lo", "spring_up", "damper_lo", "damper_up"))
+    assert scene_bounds([Scene3D(0, (), (("point", (1, 2, 3)),))]) == ((1, 2, 3), 1)
+    with pytest.raises(ValueError):
+        scene_bounds([Scene3D(0, (), (("point", (nan, 0, 0)),))])

@@ -25,6 +25,7 @@ class Scene3DPreview(QWidget):
         self.frame: Scene3D | None = None
         self.bounds: tuple[Point, float] | None = None
         self.message = tr("analysis.preview_empty")
+        self.selected_point: str | None = None
         self._drag: QPointF | None = None
         self._pan_drag: QPointF | None = None
         self._pan_button: Qt.MouseButton | None = None
@@ -47,6 +48,10 @@ class Scene3DPreview(QWidget):
         self._drag = None
         self._pan_drag = None
         self._pan_button = None
+        self.update()
+
+    def select_point(self, code: str | None) -> None:
+        self.selected_point = code
         self.update()
 
     def configure(self, frames: list[Scene3D]) -> None:
@@ -80,6 +85,15 @@ class Scene3DPreview(QWidget):
             painter.setPen(QPen(QColor(_COLORS[segment.kind]), 1.5 if segment.kind == "wheel" else 2.5))
             painter.drawLine(QPointF(self.width() / 2 + self.pan_x + a[0] * scale, self.height() / 2 + 8 + self.pan_y - a[1] * scale),
                              QPointF(self.width() / 2 + self.pan_x + b[0] * scale, self.height() / 2 + 8 + self.pan_y - b[1] * scale))
+        point = self.frame.point(self.selected_point) if self.selected_point else None
+        if point is not None:
+            x, y = project_orthographic(point, center, self.yaw, self.elevation)
+            pos = QPointF(self.width() / 2 + self.pan_x + x * scale,
+                          self.height() / 2 + 8 + self.pan_y - y * scale)
+            painter.setPen(QPen(QColor("#211a00"), 2))
+            painter.setBrush(QColor("#ffd43b"))
+            painter.drawEllipse(pos, 6, 6)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.setPen(self.palette().text().color())
         painter.drawText(QRectF(8, 4, self.width() - 16, 22), int(Qt.AlignmentFlag.AlignLeft),
                          tr("analysis.scene3d.travel", travel=f"{self.frame.travel_mm:+.2f}"))

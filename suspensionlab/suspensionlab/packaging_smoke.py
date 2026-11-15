@@ -184,6 +184,11 @@ def run_packaging_check() -> None:
         dialog._camera_views.actions_by_view["front"].trigger()
         _require((dialog._preview3d.yaw, dialog._preview3d.elevation) == camera_view_angles("front")
                  and not dialog._preview3d.grab().isNull(), "Стандартные направления 3D-каркаса недоступны")
+        dialog._point_choice.setCurrentIndex(dialog._point_choice.findData("ubj"))
+        app.processEvents()
+        _require(dialog._preview3d.frame is not None and dialog._preview3d.frame.point("ubj") is not None
+                 and "X" in dialog._point_info.text(), "Выделение расчётной точки недоступно")
+        dialog._point_choice.setCurrentIndex(0)
         dialog._parameters_toggle.click()
         app.processEvents()
         _require(not dialog._parameters.isVisible() and dialog._preview3d.height() >= 250

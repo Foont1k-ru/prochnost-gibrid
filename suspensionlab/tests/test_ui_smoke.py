@@ -3824,3 +3824,93 @@ def test_analysis_layout_scroll_maximize_and_parameter_toggle(window, qtbot, siz
     QApplication.processEvents()
     assert not dialog.isMaximized()
     assert window.controller.project.to_dict() == before
+
+
+def test_3d_selected_point_tracks_rows_camera_missing_and_invalidation(window, qtbot):
+    from PySide6.QtWidgets import QApplication
+
+    from suspensionlab.core.scene3d import project_orthographic
+    from suspensionlab.ui.analysis_dialog import AnalysisDialog
+
+    controller = window.controller
+    controller.new_project("ring")
+    before = controller.project.to_dict()
+    dialog = AnalysisDialog(controller, window)
+    qtbot.addWidget(dialog)
+    dialog.resize(1200, 700)
+    dialog.show()
+    dialog._from.setValue(0)
+    dialog._to.setValue(2)
+    dialog._run.click()
+    dialog._preview_mode.setCurrentIndex(1)
+    choice = dialog._point_choice
+    choice.setCurrentIndex(choice.findData("ubj"))
+    QApplication.processEvents()
+    view = dialog._preview3d
+    assert view.selected_point == "ubj"
+    first = view.frame.point("ubj")
+    assert first is not None and f"Z {first[2]:+.2f}" in dialog._point_info.text()
+    # Метка рисуется поверх каркаса, а не только хранится в данных.
+    view.set_standard_view("front")
+    view.pan_x, view.pan_y, view.zoom = 15, -10, 1.1
+    center, radius = view.bounds
+    x, y = project_orthographic(first, center, view.yaw, view.elevation)
+    scale = max(1.0, min(view.width() - 36, view.height() - 70)) / (2 * radius) * view.zoom
+    px = view.width() / 2 + view.pan_x + x * scale
+    py = view.height() / 2 + 8 + view.pan_y - y * scale
+    image = view.grab().toImage()
+    ratio = image.devicePixelRatio()
+    color = image.pixelColor(round(px * ratio), round(py * ratio))
+    assert color.red() > 230 and color.green() > 170 and color.blue() < 100
+    dialog._table.setCurrentCell(2, 0)
+    second = view.frame.point("ubj")
+    assert second != first and f"Z {second[2]:+.2f}" in dialog._point_info.text()
+    choice.setCurrentIndex(choice.findData("spring_lo"))
+    assert "недоступна" in dialog._point_info.text()
+    dialog._preview_mode.setCurrentIndex(0)
+    assert dialog._point_controls.isHidden() and dialog._point_info.isHidden()
+    dialog._preview_mode.setCurrentIndex(1)
+    assert not dialog._point_info.isHidden()
+    dialog._frames3d[2] = None
+    dialog._show_row(2)
+    assert view.frame is None and "недоступна" in dialog._point_info.text()
+    dialog._to.setValue(3)
+    assert view.frame is None and "недоступна" in dialog._point_info.text()
+    assert dialog._table.rowCount() == 0
+    choice.setCurrentIndex(0)
+    assert view.selected_point is None and dialog._point_info.isHidden()
+    assert controller.project.to_dict() == before
+
+
+def test_3d_optional_mounts_and_right_side(window, qtbot):
+    from suspensionlab.ui.analysis_dialog import AnalysisDialog
+
+    window.controller.new_project("ring")
+    dialog = AnalysisDialog(window.controller, window)
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog._side.setCurrentIndex(dialog._side.findData("right"))
+    dialog._from.setValue(0)
+    dialog._to.setValue(1)
+    dialog._spring.setChecked(True)
+    dialog._spring_length.setValue(320)
+    dialog._damper.setChecked(True)
+    dialog._run.click()
+    dialog._preview_mode.setCurrentIndex(1)
+    for code in ("spring_lo", "spring_up", "damper_lo", "damper_up", "wheel_center"):
+        dialog._point_choice.setCurrentIndex(dialog._point_choice.findData(code))
+        point = dialog._preview3d.frame.point(code)
+        assert point is not None
+        assert f"Y {point[1]:+.2f}" in dialog._point_info.text()
+        assert point[1] < 0  # правая сторона зеркальна относительно сохранённой левой
+    dialog._point_choice.setCurrentIndex(dialog._point_choice.findData("wheel_center"))
+    previous_z = dialog._preview3d.frame.point("wheel_center")[2]
+    dialog._table.setCurrentCell(1, 0)
+    point = dialog._preview3d.frame.point("wheel_center")
+    assert point[2] == pytest.approx(previous_z + 1)
+    assert f"Z {point[2]:+.2f}" in dialog._point_info.text()
+    dialog._damper.setChecked(False)
+    assert "недоступна" in dialog._point_info.text()
+    dialog._run.click()
+    assert dialog._preview3d.frame is not None
+    assert f"Z {dialog._preview3d.frame.point('wheel_center')[2]:+.2f}" in dialog._point_info.text()

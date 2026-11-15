@@ -13,6 +13,8 @@ from .metrics import _wheel_directions
 from .pose_view import Point, PoseView
 
 SegmentKind = Literal["arm", "knuckle", "steering", "spring", "damper", "wheel"]
+POINT_CODES = ("wheel_center", "uca_f_in", "uca_r_in", "ubj", "lca_f_in", "lca_r_in", "lbj",
+               "tierod_in", "tierod_out", "spring_lo", "spring_up", "damper_lo", "damper_up")
 
 
 @dataclass(frozen=True)
@@ -26,6 +28,10 @@ class Segment3D:
 class Scene3D:
     travel_mm: float
     segments: tuple[Segment3D, ...]
+    points: tuple[tuple[str, Point], ...] = ()
+
+    def point(self, code: str) -> Point | None:
+        return next((point for key, point in self.points if key == code), None)
 
 
 def _point(values: np.ndarray) -> Point:
@@ -43,6 +49,8 @@ def pose_scene(model: DoubleWishbone, pose: Pose, axle: Axle, frame: PoseView) -
         raise ValueError("Радиус и ширина колеса должны быть положительными и конечными")
     if frame.travel_mm != pose.travel_mm:
         raise ValueError("Кадр и положение относятся к разным ходам")
+    steering_in = _point(model.points["tierod_in"])
+    steering_out = _point(pose.point(model.points["tierod_out"], model.center0))
     segments = [
         Segment3D(frame.upper_front, frame.upper_ball, "arm"),
         Segment3D(frame.upper_rear, frame.upper_ball, "arm"),
@@ -51,8 +59,7 @@ def pose_scene(model: DoubleWishbone, pose: Pose, axle: Axle, frame: PoseView) -
         Segment3D(frame.lower_rear, frame.lower_ball, "arm"),
         Segment3D(frame.lower_front, frame.lower_rear, "arm"),
         Segment3D(frame.upper_ball, frame.lower_ball, "knuckle"),
-        Segment3D(_point(model.points["tierod_in"]),
-                  _point(pose.point(model.points["tierod_out"], model.center0)), "steering"),
+        Segment3D(steering_in, steering_out, "steering"),
     ]
     if frame.spring is not None:
         segments.append(Segment3D(*frame.spring, "spring"))
@@ -72,12 +79,22 @@ def pose_scene(model: DoubleWishbone, pose: Pose, axle: Axle, frame: PoseView) -
         rings.append(ring)
         segments.extend(Segment3D(ring[i], ring[(i + 1) % n], "wheel") for i in range(n))
     segments.extend(Segment3D(rings[0][i], rings[1][i], "wheel") for i in range(0, n, 4))
-    return Scene3D(frame.travel_mm, tuple(segments))
+    points: list[tuple[str, Point]] = [
+        ("wheel_center", frame.center), ("uca_f_in", frame.upper_front), ("uca_r_in", frame.upper_rear),
+        ("ubj", frame.upper_ball), ("lca_f_in", frame.lower_front), ("lca_r_in", frame.lower_rear),
+        ("lbj", frame.lower_ball), ("tierod_in", steering_in), ("tierod_out", steering_out),
+    ]
+    if frame.spring is not None:
+        points.extend((("spring_lo", frame.spring[0]), ("spring_up", frame.spring[1])))
+    if frame.damper is not None:
+        points.extend((("damper_lo", frame.damper[0]), ("damper_up", frame.damper[1])))
+    return Scene3D(frame.travel_mm, tuple(segments), tuple(points))
 
 
 def scene_bounds(scenes: list[Scene3D]) -> tuple[Point, float] | None:
     """Сфера охватывает все кадры и не меняет масштаб при выборе хода/камеры."""
     points = [p for scene in scenes for segment in scene.segments for p in (segment.start, segment.end)]
+    points.extend(point for scene in scenes for _, point in scene.points)
     if not points:
         return None
     if not all(isfinite(value) for point in points for value in point):

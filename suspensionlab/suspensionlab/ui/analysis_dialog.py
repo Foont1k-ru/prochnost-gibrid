@@ -39,7 +39,7 @@ from ..core.damper_range import CandidateComparison, compare_candidate, summariz
 from ..core.double_wishbone import DoubleWishbone
 from ..core.pose_view import PoseView, pose_view
 from ..core.sample_summary import corner_summary
-from ..core.scene3d import Scene3D, pose_scene
+from ..core.scene3d import POINT_CODES, Scene3D, pose_scene
 from ..core.stroke import StrokeLimits
 from ..core.sweep import travel_grid
 from ..core.sweep_plot import PLOT_METRICS, sweep_plot_points
@@ -186,6 +186,27 @@ class AnalysisDialog(QDialog):
         view_controls.addWidget(self._camera_views)
         view_controls.addWidget(self._reset_camera)
         preview_layout.addLayout(view_controls)
+        self._point_controls = QWidget(self)
+        point_layout = QHBoxLayout(self._point_controls)
+        point_layout.setContentsMargins(0, 0, 0, 0)
+        point_layout.addWidget(QLabel(tr("analysis.scene3d.point_label"), self))
+        self._point_choice = QComboBox(self)
+        self._point_choice.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self._point_choice.setMinimumContentsLength(12)
+        self._point_choice.addItem(tr("analysis.scene3d.point_none"), None)
+        for code in POINT_CODES:
+            self._point_choice.addItem(tr(f"hp.{code}.name"), code)
+        self._point_choice.setToolTip(tr("analysis.scene3d.point_tip"))
+        point_layout.addWidget(self._point_choice, 1)
+        self._point_choice.currentIndexChanged.connect(self._update_point_annotation)
+        self._point_controls.setVisible(False)
+        self._preview_mode.currentIndexChanged.connect(lambda index: self._point_controls.setVisible(index == 1))
+        preview_layout.addWidget(self._point_controls)
+        self._point_info = QLabel(self)
+        self._point_info.setWordWrap(True)
+        self._point_info.hide()
+        preview_layout.addWidget(self._point_info)
+        self._preview_mode.currentIndexChanged.connect(self._update_point_annotation)
         preview_layout.addWidget(self._preview_views, 1)
         self._scene_notice = QLabel(tr("analysis.scene3d.notice"), self)
         self._scene_notice.setWordWrap(True)
@@ -375,6 +396,21 @@ class AnalysisDialog(QDialog):
         box.setValue(value)
         return box
 
+    def _update_point_annotation(self, *_args: object) -> None:
+        code = self._point_choice.currentData()
+        self._preview3d.select_point(code if isinstance(code, str) else None)
+        self._point_info.setVisible(bool(code) and self._preview_mode.currentIndex() == 1)
+        if not isinstance(code, str):
+            self._point_info.clear()
+            return
+        scene = self._preview3d.frame
+        point = scene.point(code) if scene is not None else None
+        if point is None or self._preview3d.bounds is None:
+            self._point_info.setText(tr("analysis.scene3d.point_unavailable"))
+        else:
+            self._point_info.setText(tr("analysis.scene3d.point_coordinates", x=f"{point[0]:+.2f}",
+                                        y=f"{point[1]:+.2f}", z=f"{point[2]:+.2f}"))
+
     def _clear_results(self) -> None:
         self._playback.set_count(0)
         self._export_button.setEnabled(False)
@@ -393,6 +429,7 @@ class AnalysisDialog(QDialog):
         self._clear_candidate()
         self._preview.clear()
         self._preview3d.clear()
+        self._update_point_annotation()
         self._preview_status.setText(tr("analysis.preview_empty"))
         self._slider.setEnabled(False)
         self._previous.setEnabled(False)
@@ -828,6 +865,7 @@ class AnalysisDialog(QDialog):
         if not 0 <= row < len(self._frames):
             self._playback.observe_row(row)
             self._preview3d.show_frame(None, tr("analysis.scene3d.unavailable"))
+            self._update_point_annotation()
             self._preview.frame = None
             self._preview.message = tr("analysis.preview_no_pose")
             self._preview.update()
@@ -838,6 +876,7 @@ class AnalysisDialog(QDialog):
         self._slider.blockSignals(False)
         scene = self._frames3d[row] if row < len(self._frames3d) else None
         self._preview3d.show_frame(scene, tr("analysis.scene3d.unavailable"))
+        self._update_point_annotation()
         frame = self._frames[row]
         if frame is None:
             # Сохраняем общий масштаб для возможного выбора следующей строки.
