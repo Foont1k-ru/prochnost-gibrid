@@ -7,6 +7,7 @@ from PIL import Image, ImageDraw
 from .cad_mesh import project_points
 
 COLORS = [(v * 3 // 4, v * 9 // 10, v) for v in range(256)]
+HIGHLIGHT_COLORS = [(min(255, v + 50), v * 2 // 3, v // 6) for v in range(256)]
 
 
 def triangle_shades(triangles: np.ndarray) -> np.ndarray:
@@ -18,8 +19,11 @@ def triangle_shades(triangles: np.ndarray) -> np.ndarray:
 
 def rasterize(triangles: np.ndarray, shades: np.ndarray, center: np.ndarray, radius: float,
               yaw: float, elevation: float, zoom: float, width: int, height: int,
-              background: tuple[int, int, int], margin: float = 24.) -> Image.Image:
+              background: tuple[int, int, int], margin: float = 24.,
+              highlight: np.ndarray | None = None, through: bool = False) -> Image.Image:
     """Ортографический приближённый просмотр с сортировкой по средней глубине."""
+    if highlight is not None and (highlight.shape != (len(triangles),) or highlight.dtype.kind != "b"):
+        raise ValueError("Некорректная маска подсветки")
     projected, order = project_points(triangles, center, yaw, elevation)
     scale = max(1., min(width - margin, height - margin)) / (2 * radius) * zoom
     projected[:, :, 0] = width / 2 + projected[:, :, 0] * scale
@@ -28,6 +32,16 @@ def rasterize(triangles: np.ndarray, shades: np.ndarray, center: np.ndarray, rad
     colors = shades[order].tolist()
     image = Image.new("RGB", (width, height), background)
     draw = ImageDraw.Draw(image)
-    for points, shade in zip(coordinates, colors, strict=True):
-        draw.polygon(points, fill=COLORS[shade])
+    if highlight is None:
+        for points, shade in zip(coordinates, colors, strict=True):
+            draw.polygon(points, fill=COLORS[shade])
+    else:
+        selected = highlight[order].tolist()
+        for points, shade, chosen in zip(coordinates, colors, selected, strict=True):
+            draw.polygon(points, fill=(HIGHLIGHT_COLORS if chosen else COLORS)[shade])
+        if through:
+            # Нарочито поверх всех деталей — это проекция, не физическое перекрытие.
+            for points, shade, chosen in zip(coordinates, colors, selected, strict=True):
+                if chosen:
+                    draw.polygon(points, fill=HIGHLIGHT_COLORS[shade])
     return image

@@ -171,6 +171,18 @@ def test_cad_preview_load_rotate_and_cancel_without_project_changes(window, qtbo
     assert np.array_equal(dialog._view.mesh.triangles, grouped_triangles[:1])
     dialog._instances.setCurrentIndex(dialog._instances.findData(2))
     assert np.array_equal(dialog._view.mesh.triangles, grouped_triangles[1:2])
+    dialog._context.setChecked(True)
+    assert dialog._view.mesh is grouped and dialog._context.isEnabled() and dialog._through.isEnabled()
+    assert np.array_equal(dialog._view._highlight, [False, True, False, False])
+    assert not dialog._view._through and not dialog._view.grab().isNull()
+    dialog._through.setChecked(True)
+    assert dialog._view._through and not dialog._view.grab().isNull()
+    dialog._instances.setCurrentIndex(0)
+    assert np.array_equal(dialog._view._highlight, [True, True, True, False])
+    dialog._context.setChecked(False)
+    assert not dialog._through.isEnabled() and dialog._view._highlight is None
+    dialog._instances.setCurrentIndex(dialog._instances.findData(2))
+    assert np.array_equal(dialog._view.mesh.triangles, grouped_triangles[1:2])
     dialog._instances.setCurrentIndex(0)
     assert np.array_equal(dialog._view.mesh.triangles, grouped_triangles[:3])
     assert "восстановлено для просмотра 1" in dialog._status.text()
@@ -178,6 +190,7 @@ def test_cad_preview_load_rotate_and_cancel_without_project_changes(window, qtbo
     assert not dialog._instances.isEnabled() and len(dialog._view.mesh.triangles) == 1
     dialog._parts.setCurrentIndex(0)
     assert dialog._view.mesh is grouped and not dialog._instances.isEnabled()
+    assert not dialog._context.isEnabled() and not dialog._through.isEnabled()
     view = dialog._view
     old_yaw = view.yaw
     QApplication.sendEvent(view, QMouseEvent(QEvent.Type.MouseButtonPress, QPointF(100, 100), Qt.MouseButton.LeftButton,
@@ -3208,6 +3221,18 @@ def test_cad_preview_fast_mode_settles_and_caches(qtbot, monkeypatch):
     qtbot.waitUntil(lambda: not view._moving, timeout=3000)
     view.grab()
     assert calls[-1] == len(mesh.triangles)
+    highlight = np.zeros(len(mesh.triangles), dtype=bool)
+    highlight[0] = True
+    view.set_mesh(mesh, highlight, through=True)
+    highlight[0] = False
+    assert view._highlight[0] and view._through and np.any(view._fast_highlight)
+    view._moving = True
+    view.grab()
+    assert calls[-1] == len(view._fast_triangles)
+    view._finish_moving()
+    view.grab()
+    assert calls[-1] == len(mesh.triangles) and view._highlight[0]
     QApplication.sendEvent(view, wheel)
     view.set_mesh(None)
     assert not view._moving and not view._settle.isActive() and view._frame is None
+    assert view._highlight is None and view._fast_highlight is None and not view._through

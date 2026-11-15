@@ -263,3 +263,45 @@ def test_transport_rejects_bad_instance_mapping(monkeypatch, tmp_path):
     monkeypatch.setattr(cad_transport.subprocess, "Popen", spawn)
     with pytest.raises(CadPreviewError, match="output"):
         CadJob().run(tmp_path / "fixture.step", 2)
+
+
+def test_highlight_obeys_depth_unless_through_is_explicit():
+    from suspensionlab.core.cad_raster import COLORS, HIGHLIGHT_COLORS, rasterize
+
+    # При нулевых углах камера направлена вдоль оси Y: y=-1 ближе к наблюдателю.
+    triangles = np.array([[[-2, 0, -2], [2, 0, -2], [0, 0, 2]],
+                          [[-2, -1, -2], [2, -1, -2], [0, -1, 2]]], dtype=float)
+    shades = np.array([105, 205], dtype=np.uint8)
+    selected = np.array([True, False])
+    args = (triangles, shades, np.zeros(3), 3, 0, 0, 1, 100, 100, (10, 20, 30))
+    normal = rasterize(*args, highlight=selected)
+    overlay = rasterize(*args, highlight=selected, through=True)
+    front = rasterize(*args, highlight=np.array([False, True]))
+    assert normal.getpixel((50, 50)) == COLORS[205]
+    assert overlay.getpixel((50, 50)) == HIGHLIGHT_COLORS[105]
+    assert front.getpixel((50, 50)) == HIGHLIGHT_COLORS[205]
+    assert overlay.getpixel((0, 0)) == (10, 20, 30)
+    with pytest.raises(ValueError):
+        rasterize(*args, highlight=np.array([1, 0]))
+    with pytest.raises(ValueError):
+        rasterize(*args, highlight=np.array([True]))
+
+
+def test_fast_mesh_retains_highlight_separately_from_unselected_triangles():
+    from suspensionlab.core.cad_interaction import interaction_geometry
+
+    x, y = np.meshgrid(np.arange(80), np.arange(80))
+    p = np.stack((x.ravel(), y.ravel(), np.zeros(x.size)), axis=1).astype(float)
+    first = np.stack((p, p + (1, 0, 0), p + (0, 1, 0)), axis=1)
+    second = np.stack((p + (1, 1, 0), p + (1, 0, 0), p + (0, 1, 0)), axis=1)
+    triangles = np.concatenate((first, second, first[:1]))
+    mesh = CadMesh(triangles, 1, part_names=("прочие", "рычаг"), triangle_parts=np.ones(len(triangles), dtype=int))
+    highlight = np.zeros(len(triangles), dtype=bool)
+    highlight[-1] = True  # Совпадает с другой, невыделенной гранью той же группы.
+    fast, fast_highlight = interaction_geometry(mesh, highlight)
+    assert len(fast) < len(mesh.triangles) and fast_highlight is not None
+    assert fast_highlight.dtype == bool and np.count_nonzero(fast_highlight) == 1
+    assert np.array_equal(fast[fast_highlight], triangles[-1:])
+    assert np.any(~fast_highlight) and np.array_equal(mesh.triangles, triangles)
+    with pytest.raises(ValueError):
+        interaction_geometry(mesh, np.ones(len(triangles), dtype=np.int32))

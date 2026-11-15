@@ -6,6 +6,7 @@ from pathlib import Path
 import numpy as np
 from PySide6.QtCore import QThread, Signal
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -93,6 +94,14 @@ class CadPreviewDialog(QDialog):
         self._instances.currentIndexChanged.connect(self._select_instance)
         instances_row.addWidget(self._instances, 1)
         layout.addLayout(instances_row)
+        self._context = QCheckBox(tr("cad_preview.highlight_context"), self)
+        self._context.setEnabled(False)
+        self._context.toggled.connect(self._select_instance)
+        layout.addWidget(self._context)
+        self._through = QCheckBox(tr("cad_preview.highlight_through"), self)
+        self._through.setEnabled(False)
+        self._through.toggled.connect(self._select_instance)
+        layout.addWidget(self._through)
         self._view = CadPreview(self)
         self._reset.clicked.connect(self._view.reset_camera)
         layout.addWidget(self._view, 1)
@@ -124,6 +133,8 @@ class CadPreviewDialog(QDialog):
         self._parts.blockSignals(False)
         self._parts.setEnabled(False)
         self._clear_instances()
+        self._context.setEnabled(False)
+        self._through.setEnabled(False)
         self._view.set_mesh(None)
         self._status.setText(tr("cad_preview.loading"))
         self._choose.setEnabled(False)
@@ -154,6 +165,8 @@ class CadPreviewDialog(QDialog):
         self._parts.blockSignals(False)
         self._parts.setEnabled(self._parts.count() > 1)
         self._clear_instances()
+        self._context.setEnabled(False)
+        self._through.setEnabled(False)
         self._view.set_mesh(mesh)
         if mesh.skipped_faces or mesh.recovered_faces:
             self._status.setText(tr("cad_preview.approximate", faces=mesh.face_count,
@@ -190,7 +203,17 @@ class CadPreviewDialog(QDialog):
             return
         group = self._parts.currentData()
         instance = self._instances.currentData()
-        if group == -1:
+        selected = isinstance(group, int) and group >= 0 and self._mesh.triangle_parts is not None
+        self._context.setEnabled(selected)
+        context = selected and self._context.isChecked()
+        self._through.setEnabled(context)
+        if context:
+            if isinstance(instance, int) and instance > 0 and self._mesh.triangle_instances is not None:
+                highlight = self._mesh.triangle_instances == instance
+            else:
+                highlight = self._mesh.triangle_parts == group
+            self._view.set_mesh(self._mesh, highlight, self._through.isChecked())
+        elif group == -1:
             self._view.set_mesh(self._mesh)
         elif isinstance(instance, int) and instance > 0:
             self._view.set_mesh(self._mesh.isolated_instance(instance))
@@ -202,6 +225,8 @@ class CadPreviewDialog(QDialog):
         self._instance_counts = None
         self._parts.setEnabled(False)
         self._clear_instances()
+        self._context.setEnabled(False)
+        self._through.setEnabled(False)
         self._view.set_mesh(None)
         self._status.setText(tr(f"cad_preview.error.{code}"))
 

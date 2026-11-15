@@ -132,8 +132,10 @@ def run_packaging_check() -> None:
 
     preview = CadPreview()
     preview.resize(320, 280)
-    preview.set_mesh(CadMesh(np.array([[[0, 0, 0], [10, 0, 0], [0, 0, 10]]]), 1))
-    _require(not preview.grab().isNull() and preview._frame is not None, "CAD-просмотр не отрисован")
+    preview.set_mesh(CadMesh(np.array([[[0, 0, 0], [10, 0, 0], [0, 0, 10]]]), 1),
+                     np.array([True]), through=True)
+    _require(not preview.grab().isNull() and preview._frame is not None and preview._through,
+             "CAD-просмотр с подсветкой не отрисован")
     preview.close()
     with TemporaryDirectory(prefix="suspensionlab-package-check-") as directory:
         temporary = Path(directory)

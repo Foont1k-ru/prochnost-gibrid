@@ -8,7 +8,7 @@ from PySide6.QtCore import QPointF, Qt, QTimer
 from PySide6.QtGui import QImage, QPainter
 from PySide6.QtWidgets import QWidget
 
-from ...core.cad_interaction import interaction_triangles
+from ...core.cad_interaction import interaction_geometry
 from ...core.cad_mesh import CadMesh
 from ...core.cad_raster import rasterize, triangle_shades
 from ...i18n import tr
@@ -23,6 +23,9 @@ class CadPreview(QWidget):
         self._fast_triangles = self._triangles
         self._shades = np.empty(0, dtype=np.uint8)
         self._fast_shades = self._shades
+        self._highlight: np.ndarray | None = None
+        self._fast_highlight: np.ndarray | None = None
+        self._through = False
         self._center = np.zeros(3)
         self._radius = 1.
         self._drag: QPointF | None = None
@@ -35,7 +38,14 @@ class CadPreview(QWidget):
         self._settle.timeout.connect(self._finish_moving)
         self.reset_camera()
 
-    def set_mesh(self, mesh: CadMesh | None) -> None:
+    def set_mesh(self, mesh: CadMesh | None, highlight: np.ndarray | None = None, through: bool = False) -> None:
+        if highlight is not None:
+            if mesh is None or highlight.shape != (len(mesh.triangles),) or highlight.dtype.kind != "b":
+                raise ValueError("Некорректная маска подсветки")
+            highlight = np.array(highlight, dtype=bool, copy=True)
+            highlight.flags.writeable = False
+        self._highlight = highlight
+        self._through = bool(through and highlight is not None)
         self.mesh = mesh
         self._settle.stop()
         self._moving = False
@@ -47,11 +57,12 @@ class CadPreview(QWidget):
             self._fast_triangles = self._triangles
             self._shades = np.empty(0, dtype=np.uint8)
             self._fast_shades = self._shades
+            self._fast_highlight = None
         else:
             self._triangles = mesh.triangles
             self._center, self._radius = mesh.bounds()
             self._shades = triangle_shades(self._triangles)
-            self._fast_triangles = interaction_triangles(mesh)
+            self._fast_triangles, self._fast_highlight = interaction_geometry(mesh, highlight)
             self._fast_shades = (self._shades if self._fast_triangles is self._triangles
                                  else triangle_shades(self._fast_triangles))
         self.update()
@@ -87,16 +98,21 @@ class CadPreview(QWidget):
         if key != self._frame_key:
             triangles = self._fast_triangles if fast else self._triangles
             shades = self._fast_shades if fast else self._shades
+            highlight = self._fast_highlight if fast else self._highlight
             image = rasterize(triangles, shades, self._center, self._radius, self.yaw, self.elevation,
-                              self.zoom, width, height, rgb, margin=24 * ratio)
+                              self.zoom, width, height, rgb, margin=24 * ratio,
+                              highlight=highlight, through=self._through)
             data = image.tobytes()
             self._frame = QImage(data, width, height, width * 3, QImage.Format.Format_RGB888).copy()
             self._frame_key = key
         if self._frame is not None:
             painter.drawImage(self.rect(), self._frame)
-        if fast:
+        if fast or self._through:
             painter.setPen(self.palette().text().color())
-            painter.drawText(8, 20, tr("cad_preview.fast_view"))
+            if fast:
+                painter.drawText(8, 20, tr("cad_preview.fast_view"))
+            if self._through:
+                painter.drawText(8, 40 if fast else 20, tr("cad_preview.through_view"))
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
         if event.button() == Qt.MouseButton.LeftButton:
