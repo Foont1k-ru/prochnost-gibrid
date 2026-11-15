@@ -4222,3 +4222,50 @@ def test_spring_candidate_independent_inputs_and_invalidation(window, qtbot):
     dialog.reject()
     assert dialog._spring_candidate_dialog is None
     assert controller.project.to_dict() == original
+
+
+def test_spring_candidate_csv_snapshot_export_and_stale_invalidation(window, qtbot, monkeypatch, tmp_path):
+    import csv
+
+    from PySide6.QtWidgets import QFileDialog
+
+    from suspensionlab.i18n import tr
+    from suspensionlab.ui.analysis_dialog import AnalysisDialog
+
+    window.controller.new_project("ring")
+    before = window.controller.project.to_dict()
+    dialog = AnalysisDialog(window.controller, window)
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog._spring.setChecked(True)
+    dialog._spring_length.setValue(320)
+    dialog._from.setValue(0)
+    dialog._to.setValue(2)
+    dialog._run.click()
+    dialog._spring_compare_button.click()
+    candidate = dialog._spring_candidate_dialog
+    assert candidate is not None and not candidate._export.isEnabled()
+    for key, value in (("free", "350"), ("installed", "310"), ("coil", "120"),
+                       ("coil_reserve", "10"), ("compression_reserve", "5")):
+        candidate._fields[key].setText(value)
+    candidate._compare.click()
+    assert candidate.report is not None and candidate._export.isEnabled()
+    report = candidate.report
+    assert len(report.rows) == 3
+    assert dict(report.metadata)[tr("spring_candidate.free")] == "350.0"
+    for row, source, point in zip(report.rows, dialog._spring_candidate_points, candidate.comparison.points, strict=True):
+        assert float(row[1]) == source[0] and float(row[2]) == source[1] and float(row[3]) == point.length_mm
+    path = tmp_path / "пружина"
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *args: (str(path), ""))
+    candidate._export.click()
+    with (tmp_path / "пружина.csv").open(encoding="utf-8-sig", newline="") as handle:
+        data = list(csv.reader(handle, delimiter=";"))
+    assert any(row and row[0] == tr("spring_candidate.report.column.row") for row in data)
+    candidate._fields["installed"].setText("315")
+    assert candidate.report is None and candidate.comparison is None and not candidate._export.isEnabled()
+    assert float(report.rows[0][3]) == 310.0
+    candidate._compare.click()
+    assert candidate.report is not None and float(candidate.report.rows[0][3]) == 315.0
+    window.controller.modelChanged.emit()
+    assert dialog._spring_candidate_dialog is None and not dialog._spring_compare_button.isEnabled()
+    assert window.controller.project.to_dict() == before

@@ -252,6 +252,15 @@ def run_packaging_check() -> None:
         spring_candidate._compare.click()
         _require(spring_candidate.comparison is not None and len(spring_candidate.comparison.points) == 2
                  and "Всего строк: 2" in spring_candidate._result.toPlainText(), "Сравнение пружины не выполнено")
+        _require(spring_candidate.report is not None and spring_candidate._export.isEnabled(),
+                 "Отчёт сравнения пружины недоступен")
+        assert spring_candidate.report is not None
+        spring_csv = write_csv_report(spring_candidate.report, temporary / "spring-candidate.csv")
+        _require(len(spring_candidate.report.rows) == 2 and spring_csv.read_bytes().startswith(b"\xef\xbb\xbf"),
+                 "CSV сравнения пружины не записан")
+        spring_candidate._fields["installed"].setText("315")
+        _require(spring_candidate.report is None and not spring_candidate._export.isEnabled(),
+                 "Устаревший отчёт пружины не очищен")
         spring_candidate.reject()
         _require(dialog._spring_candidate_dialog is None, "Окно сравнения пружины не закрыто")
         _require("Точек на упоре или за ним: 2" in dialog._damper_range.toPlainText(),

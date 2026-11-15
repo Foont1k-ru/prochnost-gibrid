@@ -1,6 +1,7 @@
 """Отдельная предварительная проверка кандидата без изменения проекта."""
 from __future__ import annotations
 
+from collections.abc import Callable
 from math import isfinite
 
 from PySide6.QtWidgets import (
@@ -16,18 +17,23 @@ from PySide6.QtWidgets import (
 )
 
 from ..core.spring_candidate import SpringCandidate, SpringComparison, compare_spring_candidate
+from ..export.csv_report import CSVReport
 from ..i18n import tr
+from .table_export import save_table_dialog
 
 
 class SpringCandidateDialog(QDialog):
     def __init__(self, points: tuple[tuple[float, float | None], ...], reference_installed_mm: float,
-                 context: str, parent: QWidget | None = None) -> None:
+                 context: str, parent: QWidget | None = None, *,
+                 report_factory: Callable[[SpringComparison], CSVReport] | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle(tr("spring_candidate.title"))
         self.resize(680, 620)
         self._points = points
         self._reference_installed = reference_installed_mm
         self.comparison: SpringComparison | None = None
+        self._report_factory = report_factory
+        self.report: CSVReport | None = None
         notice = QLabel(tr("spring_candidate.notice"), self)
         notice.setWordWrap(True)
         source = QLabel(context, self)
@@ -42,6 +48,8 @@ class SpringCandidateDialog(QDialog):
         self._compare.clicked.connect(self._calculate)
         self._result = QTextEdit(self)
         self._result.setReadOnly(True)
+        self._export = QPushButton(tr("spring_candidate.report.button"), self)
+        self._export.clicked.connect(self._save_report)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close, self)
         buttons.button(QDialogButtonBox.StandardButton.Close).setText(tr("analysis.close"))
         buttons.rejected.connect(self.reject)
@@ -51,11 +59,14 @@ class SpringCandidateDialog(QDialog):
         layout.addLayout(form)
         layout.addWidget(self._compare)
         layout.addWidget(self._result, 1)
+        layout.addWidget(self._export)
         layout.addWidget(buttons)
         self._clear()
 
     def _clear(self, *_args: object) -> None:
         self.comparison = None
+        self.report = None
+        self._export.setEnabled(False)
         self._result.setPlainText(tr("spring_candidate.empty"))
 
     def _calculate(self) -> None:
@@ -81,4 +92,14 @@ class SpringCandidateDialog(QDialog):
                 index, point = first
                 lines.append(tr(f"spring_candidate.first.{key}", row=index, travel=f"{point.travel_mm:+.2f}"))
         lines.append(tr("spring_candidate.result_notice"))
+        if self._report_factory is not None:
+            try:
+                self.report = self._report_factory(comparison)
+                self._export.setEnabled(True)
+            except (ValueError, UnicodeError) as error:
+                lines.append(tr("spring_candidate.report.unavailable", reason=str(error)))
         self._result.setPlainText("\n\n".join(lines))
+
+    def _save_report(self) -> None:
+        if self.report is not None:
+            save_table_dialog(self, self.report)

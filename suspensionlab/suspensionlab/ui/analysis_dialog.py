@@ -40,6 +40,7 @@ from ..core.double_wishbone import DoubleWishbone
 from ..core.pose_view import PoseView, pose_view
 from ..core.sample_summary import corner_summary
 from ..core.scene3d import POINT_CODES, Scene3D, pose_scene
+from ..core.spring_candidate import SpringComparison
 from ..core.spring_range import SpringRange, summarize_spring_range
 from ..core.stroke import StrokeLimits
 from ..core.sweep import travel_grid
@@ -47,6 +48,7 @@ from ..core.sweep_plot import PLOT_METRICS, sweep_plot_points
 from ..export.csv_report import CSVReport
 from ..export.damper_candidate_report import candidate_report_rows
 from ..export.point_positions_report import point_position_rows
+from ..export.spring_candidate_report import spring_candidate_report_rows
 from ..export.static_report import static_report_rows
 from ..i18n import tr
 from .analysis_explanation import explain_corner_sample, explain_static_sample
@@ -893,7 +895,25 @@ class AnalysisDialog(QDialog):
         self._playback.pause_for_view_change()
         context = tr("spring_candidate.context", axis=self._role.currentText(), side=self._side.currentText(),
                      reference=repr(self._spring_length.value()))
-        dialog = SpringCandidateDialog(self._spring_candidate_points, self._spring_length.value(), context, self)
+        items = [self._table.item(row, 8) for row in range(self._table.rowCount())]
+        if len(items) != len(self._spring_candidate_points) or any(item is None for item in items):
+            QMessageBox.warning(self, tr("export.error_title"), tr("export.error", reason=tr("export.no_results")))
+            return
+        states = tuple(item.text() for item in items if item is not None)
+        source = self._spring_candidate_points
+        parameters = self._report_parameters()
+        def report_factory(comparison: SpringComparison) -> CSVReport:
+            columns, rows = spring_candidate_report_rows(comparison, source, states)
+            candidate = comparison.candidate
+            values = (candidate.free_mm, candidate.installed_mm, candidate.coil_bind_mm,
+                      candidate.coil_reserve_mm, candidate.compression_reserve_mm)
+            fields = ("free", "installed", "coil", "coil_reserve", "compression_reserve")
+            inputs = [(tr(f"spring_candidate.{key}"), repr(value)) for key, value in zip(fields, values, strict=True)]
+            return make_report(self.controller, tr("spring_candidate.report.kind"),
+                               [*parameters, *inputs, (tr("spring_candidate.report.scope_label"),
+                                                       tr("spring_candidate.report.scope"))],
+                               columns, rows, precision_text=tr("spring_candidate.report.precision"))
+        dialog = SpringCandidateDialog(source, self._spring_length.value(), context, self, report_factory=report_factory)
         dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         self._spring_candidate_dialog = dialog
         dialog.finished.connect(lambda _result: self._forget_spring_candidate(dialog))
