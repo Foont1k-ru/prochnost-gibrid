@@ -80,7 +80,7 @@ def test_worker_saves_partial_count(monkeypatch, tmp_path):
     from suspensionlab.core import cad_worker
 
     source, output, report = (tmp_path / name for name in ("a.step", "mesh.npz", "status.json"))
-    monkeypatch.setattr(cad_worker, "create_mesh", lambda path, deviation: (np.zeros((1, 3, 3)), 3, 2, 1, ("неизвестно",), np.array([0])))
+    monkeypatch.setattr(cad_worker, "create_mesh", lambda path, deviation: (np.zeros((1, 3, 3)), 3, 2, 1, ("неизвестно",), np.array([0]), (0,), np.array([0])))
     assert cad_worker.main([str(source), str(output), str(report), "2"]) == 0
     with np.load(output, allow_pickle=False) as data:
         assert list(data["faces"]) == [3] and list(data["skipped"]) == [2] and list(data["recovered"]) == [1]
@@ -101,7 +101,8 @@ def test_transport_preserves_and_validates_missing_faces(monkeypatch, tmp_path):
             output, report = Path(command[-3]), Path(command[-2])
             np.savez_compressed(output, triangles=np.zeros((1, 3, 3)),
                                 faces=np.array([3]), skipped=np.array([skipped]), recovered=np.array([1]),
-                                names=np.array(["неизвестно"]), groups=np.array([0]))
+                                names=np.array(["неизвестно"]), groups=np.array([0]),
+                                instance_groups=np.array([0]), instances=np.array([0]))
             report.write_text(json.dumps({"status": "ok"}), encoding="utf-8")
             return DummyProcess()
         return run
@@ -204,3 +205,61 @@ def test_raster_draws_nearest_triangle_and_honors_background():
                       0, 0, 1, 100, 100, (10, 20, 30))
     assert image.getpixel((0, 0)) == (10, 20, 30)
     assert image.getpixel((50, 50)) == (205 * 3 // 4, 205 * 9 // 10, 205)
+
+
+def test_instance_validation_and_isolation():
+    triangles = np.array([[[0., 0, 0], [1, 0, 0], [0, 1, 0]],
+                          [[10., 0, 0], [11, 0, 0], [10, 1, 0]],
+                          [[20., 0, 0], [21, 0, 0], [20, 1, 0]]])
+    groups = np.array([1, 1, 0])
+    instances = np.array([1, 2, 0])
+    mesh = CadMesh(triangles, 3, 0, 1, ("Прочие", "Деталь"), groups, (0, 1, 1), instances)
+    instances[:] = 0
+    assert not mesh.triangle_instances.flags.writeable
+    assert mesh.isolated_instance(1).triangles == pytest.approx(triangles[:1])
+    assert mesh.isolated_instance(2).triangles == pytest.approx(triangles[1:2])
+    assert mesh.isolated(1).triangles == pytest.approx(triangles[:2])
+    assert mesh.isolated_instance(1).recovered_faces == 1
+    for value in (0, 3):
+        with pytest.raises(ValueError):
+            mesh.isolated_instance(value)
+    for parents, mapping in [
+        ((0, 1), np.array([1, 2, 0])),
+        ((0, 1, 1), np.array([-1, 2, 0])),
+        ((0, 1, 1), np.array([1., 2., 0.])),
+        ((0, 1, 1), np.array([1, 2])),
+        ((1, 1, 1), np.array([1, 2, 0])),
+        ((0, 1, 2), np.array([1, 2, 0])),
+        ((0, 1, 0), np.array([1, 2, 0])),
+        ((0, 1, 1), np.array([1, 2, 1])),  # instance doesn't match group 0
+    ]:
+        with pytest.raises(ValueError):
+            CadMesh(triangles, 3, 0, 0, ("Прочие", "Деталь"), groups, parents, mapping)
+    with pytest.raises(ValueError):
+        CadMesh(triangles, 3, instance_groups=(0,), triangle_instances=np.array([0, 0, 0]))
+    with pytest.raises(ValueError):
+        CadMesh(triangles, 3, instance_groups=(0,))
+
+
+def test_transport_rejects_bad_instance_mapping(monkeypatch, tmp_path):
+    import json
+    from pathlib import Path
+
+    from suspensionlab.core import cad_transport
+
+    class DummyProcess:
+        def wait(self, timeout=None):
+            return 0
+
+    def spawn(command, **kwargs):
+        output, report = Path(command[-3]), Path(command[-2])
+        np.savez_compressed(output, triangles=np.zeros((1, 3, 3)), faces=np.array([1]),
+                            skipped=np.array([0]), recovered=np.array([0]),
+                            names=np.array(["Прочие", "Деталь"]), groups=np.array([0]),
+                            instance_groups=np.array([0, 1]), instances=np.array([1]))
+        report.write_text(json.dumps({"status": "ok"}), encoding="utf-8")
+        return DummyProcess()
+
+    monkeypatch.setattr(cad_transport.subprocess, "Popen", spawn)
+    with pytest.raises(CadPreviewError, match="output"):
+        CadJob().run(tmp_path / "fixture.step", 2)

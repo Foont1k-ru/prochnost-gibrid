@@ -104,6 +104,10 @@ def run_cad_check() -> None:
                  len(np.unique(mesh.triangle_parts)) == 1 and mesh.triangle_parts[0] != 0 and
                  len(mesh.isolated(int(mesh.triangle_parts[0])).triangles) == len(mesh.triangles),
                  "Неверные группы деталей тестового STEP")
+        _require(mesh.triangle_instances is not None and len(np.unique(mesh.triangle_instances)) == 1 and
+                 mesh.triangle_instances[0] != 0 and
+                 len(mesh.isolated_instance(int(mesh.triangle_instances[0])).triangles) == len(mesh.triangles),
+                 "Неверные экземпляры тестового STEP")
 
 
 def run_packaging_check() -> None:

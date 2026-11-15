@@ -77,6 +77,20 @@ def test_generated_step_nested_and_repeated_occurrences_against_cad(tmp_path):
     groups = np.unique(mesh.triangle_parts)
     assert len(groups) == 1 and groups[0] != 0
     assert len(mesh.isolated(int(groups[0])).triangles) == len(mesh.triangles)
+    assert mesh.triangle_instances is not None
+    instances = np.unique(mesh.triangle_instances)
+    assert len(instances) == 2 and 0 not in instances
+    assert all(mesh.instance_groups[int(i)] == int(groups[0]) for i in instances)
+    measured_bounds = []
+    for instance in instances:
+        isolated = mesh.isolated_instance(int(instance)).triangles.reshape(-1, 3)
+        measured_bounds.append((isolated.min(axis=0), isolated.max(axis=0)))
+    for placement in (parent.Multiplied(first), parent.Multiplied(second)):
+        corners = np.array([expected_point(placement, (x, y, z)) for x in (0., 2.)
+                            for y in (0., 3.) for z in (0., 5.)])
+        expected = (corners.min(axis=0), corners.max(axis=0))
+        assert sum(np.allclose(low, expected[0], atol=1e-6, rtol=0) and
+                   np.allclose(high, expected[1], atol=1e-6, rtol=0) for low, high in measured_bounds) == 1
     bounds_points = []
     for placement in (parent.Multiplied(first), parent.Multiplied(second)):
         for x in (0., 2.):
@@ -138,7 +152,7 @@ def test_missing_faces_are_counted_not_silently_accepted(tmp_path, monkeypatch):
 
     monkeypatch.setattr(cad_worker, "_face_triangulation", miss_first)
     monkeypatch.setattr(cad_worker, "_retry_face_triangulation", lambda face, location: None)
-    triangles, faces, skipped, recovered, names, groups = cad_worker.create_mesh(path, 2.)
+    triangles, faces, skipped, recovered, names, groups, instance_groups, instances = cad_worker.create_mesh(path, 2.)
     assert (faces, skipped, recovered, calls) == (12, 1, 0, 12)
     assert len(triangles) == 22
     monkeypatch.setattr(cad_worker, "_face_triangulation", lambda face, location: None)
@@ -158,7 +172,7 @@ def test_retry_can_recover_missing_face(tmp_path, monkeypatch):
         return None if calls == 1 else original(face, location)
 
     monkeypatch.setattr(cad_worker, "_face_triangulation", miss_first)
-    triangles, faces, skipped, recovered, names, groups = cad_worker.create_mesh(path, 2.)
+    triangles, faces, skipped, recovered, names, groups, instance_groups, instances = cad_worker.create_mesh(path, 2.)
     assert (faces, skipped, recovered) == (12, 0, 0)
     assert len(triangles) >= 24 and calls == 13
 
@@ -169,7 +183,7 @@ def test_grouping_limits_fall_back_to_unidentified_without_losing_geometry(tmp_p
     path = tmp_path / "limited.step"
     write_cad_assembly(path)
     monkeypatch.setattr(cad_parts, "MAX_GROUP_FACES", 2)
-    triangles, faces, skipped, recovered, names, groups = create_mesh(path, 2.)
+    triangles, faces, skipped, recovered, names, groups, instance_groups, instances = create_mesh(path, 2.)
     assert (faces, skipped, recovered) == (12, 0, 0)
     assert len(triangles) >= 24 and names == ("Без имени / прочие",)
     assert np.all(groups == 0)
@@ -222,3 +236,50 @@ def test_distinct_solids_and_free_face_are_grouped_without_losing_geometry():
         explorer.Next()
     assert len(names) == 3 and len(groups) == 13
     assert set(groups[:6]) == {1} and set(groups[6:12]) == {2} and groups[12] == 0
+
+
+def test_coincident_instances_are_not_assigned_arbitrarily():
+    from OCP.TopAbs import TopAbs_ShapeEnum
+    from OCP.TopExp import TopExp_Explorer
+
+    from suspensionlab.core.cad_instances import collect_instances
+    from suspensionlab.core.cad_parts import face_group
+
+    document = TDocStd_Document(TCollection_ExtendedString("MDTV-XCAF"))
+    tool = XCAFDoc_DocumentTool.ShapeTool_s(document.Main())
+    root = tool.NewShape()
+    part = tool.NewShape()
+    tool.SetShape(part, BRepPrimAPI_MakeBox(2., 3., 5.).Shape())
+    tool.AddComponent(root, part, TopLoc_Location())
+    tool.AddComponent(root, part, TopLoc_Location())
+    tool.UpdateAssemblies()
+    shape = tool.GetOneShape()
+    # Избегаем чтения имён из недосериализованного тестового XCAF-документа.
+    part_faces = {}
+    explorer = TopExp_Explorer(shape, TopAbs_ShapeEnum.TopAbs_FACE)
+    while explorer.More():
+        face = explorer.Current()
+        part_faces.setdefault(hash(face), []).append((face, 1))
+        explorer.Next()
+    parents, instance_faces = collect_instances(tool, part_faces)
+    assert len(parents) == 3 and parents[1] == parents[2] != 0
+    explorer = TopExp_Explorer(shape, TopAbs_ShapeEnum.TopAbs_FACE)
+    seen = 0
+    while explorer.More():
+        assert face_group(explorer.Current(), part_faces) == parents[1]
+        assert face_group(explorer.Current(), instance_faces) == 0
+        seen += 1
+        explorer.Next()
+    assert seen == 12
+
+
+def test_instance_limit_preserves_group_but_disables_instance_assignment(tmp_path, monkeypatch):
+    from suspensionlab.core import cad_instances
+
+    path = tmp_path / "instances.step"
+    write_cad_assembly(path)
+    monkeypatch.setattr(cad_instances, "MAX_INSTANCES", 2)
+    triangles, faces, skipped, recovered, names, groups, parents, instances = create_mesh(path, 2.)
+    assert (faces, skipped, recovered) == (12, 0, 0)
+    assert len(triangles) >= 24 and np.all(groups > 0)
+    assert parents == (0,) and np.all(instances == 0)

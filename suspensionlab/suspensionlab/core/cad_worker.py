@@ -11,6 +11,7 @@ from pathlib import Path
 
 import numpy as np
 
+from .cad_instances import collect_instances
 from .cad_mesh import MAX_COORDINATE, MAX_TRIANGLES
 from .cad_parts import collect_part_groups, face_group
 from .cad_recovery import recover_revolution_face
@@ -37,7 +38,7 @@ def _retry_face_triangulation(face, location):
     return _face_triangulation(face, location)
 
 
-def create_mesh(path: Path, deviation: float) -> tuple[np.ndarray, int, int, int, tuple[str, ...], np.ndarray]:
+def create_mesh(path: Path, deviation: float) -> tuple[np.ndarray, int, int, int, tuple[str, ...], np.ndarray, tuple[int, ...], np.ndarray]:
     """OCCT самостоятельно читает сборочные положения; наши кандидаты не применяются."""
     if not path.is_file() or path.stat().st_size > MAX_BYTES or path.stat().st_size == 0:
         raise CadWorkerError("file_size")
@@ -71,12 +72,14 @@ def create_mesh(path: Path, deviation: float) -> tuple[np.ndarray, int, int, int
     if shape.IsNull():
         raise CadWorkerError("no_shape")
     names, face_groups = collect_part_groups(tool, shape)
+    instance_groups, instance_faces = collect_instances(tool, face_groups)
     mesher = BRepMesh_IncrementalMesh(shape, deviation, False, 0.7, False)
     if not mesher.IsDone():
         raise CadWorkerError("mesh")
     explorer = TopExp_Explorer(shape, TopAbs_ShapeEnum.TopAbs_FACE)
     chunks: list[np.ndarray] = []
     group_chunks: list[np.ndarray] = []
+    instance_chunks: list[np.ndarray] = []
     faces = total = skipped = recovered = 0
     while explorer.More():
         faces += 1
@@ -117,12 +120,18 @@ def create_mesh(path: Path, deviation: float) -> tuple[np.ndarray, int, int, int
         if np.any(indices < 0) or np.any(indices >= len(nodes)):
             raise CadWorkerError("mesh")
         chunks.append(nodes[indices])
-        group_chunks.append(np.full(number_triangles, face_group(face, face_groups), dtype=np.int32))
+        group = face_group(face, face_groups)
+        instance = face_group(face, instance_faces)
+        if instance and instance_groups[instance] != group:
+            instance = 0
+        group_chunks.append(np.full(number_triangles, group, dtype=np.int32))
+        instance_chunks.append(np.full(number_triangles, instance, dtype=np.int32))
         total += number_triangles
         explorer.Next()
     if not chunks:
         raise CadWorkerError("no_faces")
-    return np.concatenate(chunks, axis=0), faces, skipped, recovered, names, np.concatenate(group_chunks)
+    return (np.concatenate(chunks, axis=0), faces, skipped, recovered, names, np.concatenate(group_chunks),
+            instance_groups, np.concatenate(instance_chunks))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -131,11 +140,12 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     source, output, report = map(Path, args[:3])
     try:
-        triangles, faces, skipped, recovered, names, groups = create_mesh(source, float(args[3]))
+        triangles, faces, skipped, recovered, names, groups, instance_groups, instances = create_mesh(source, float(args[3]))
         np.savez_compressed(output, triangles=triangles, faces=np.array([faces], dtype=np.int64),
                             skipped=np.array([skipped], dtype=np.int64),
                             recovered=np.array([recovered], dtype=np.int64),
-                            names=np.asarray(names, dtype="U128"), groups=groups)
+                            names=np.asarray(names, dtype="U128"), groups=groups,
+                            instance_groups=np.asarray(instance_groups, dtype=np.int32), instances=instances)
         report.write_text(json.dumps({"status": "ok"}), encoding="utf-8")
         return 0
     except CadWorkerError as error:

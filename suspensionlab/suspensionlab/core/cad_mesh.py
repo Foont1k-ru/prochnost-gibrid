@@ -6,6 +6,7 @@ from math import cos, sin
 
 import numpy as np
 
+from .cad_instances import MAX_INSTANCES
 from .cad_parts import MAX_PART_GROUPS, MAX_PART_NAME
 
 MAX_TRIANGLES = 100_000
@@ -22,6 +23,8 @@ class CadMesh:
     recovered_faces: int = 0
     part_names: tuple[str, ...] = ()
     triangle_parts: np.ndarray | None = None
+    instance_groups: tuple[int, ...] = ()
+    triangle_instances: np.ndarray | None = None
 
     def __post_init__(self) -> None:
         try:
@@ -51,6 +54,35 @@ class CadMesh:
             parts.flags.writeable = False
             object.__setattr__(self, "triangle_parts", parts)
             object.__setattr__(self, "part_names", tuple(self.part_names))
+
+        if self.triangle_instances is None:
+            if self.instance_groups:
+                raise ValueError("Нет сопоставления экземпляров")
+        else:
+            instances = np.asarray(self.triangle_instances)
+            parents = np.asarray(self.instance_groups)
+            if (self.triangle_parts is None or instances.shape != (len(mesh),) or
+                    instances.dtype.kind not in "iu" or parents.ndim != 1 or
+                    parents.dtype.kind not in "iu" or not 0 < len(parents) <= MAX_INSTANCES or
+                    parents[0] != 0 or np.any(parents[1:] <= 0) or np.any(parents >= len(self.part_names)) or
+                    np.any(instances < 0) or np.any(instances >= len(parents))):
+                raise ValueError("Некорректные экземпляры деталей")
+            assigned = instances != 0
+            if np.any(parents[instances[assigned]] != self.triangle_parts[assigned]):
+                raise ValueError("Экземпляр не соответствует группе")
+            instances = np.array(instances, dtype=np.int32, copy=True)
+            instances.flags.writeable = False
+            object.__setattr__(self, "triangle_instances", instances)
+            object.__setattr__(self, "instance_groups", tuple(int(x) for x in parents))
+
+    def isolated_instance(self, instance: int) -> CadMesh:
+        """Отфильтровать один предварительно распознанный экземпляр."""
+        if self.triangle_instances is None or not 0 < instance < len(self.instance_groups):
+            raise ValueError("Экземпляр не найден")
+        selected = self.triangles[self.triangle_instances == instance]
+        if not len(selected):
+            raise ValueError("В экземпляре нет треугольников")
+        return CadMesh(selected, self.face_count, self.skipped_faces, self.recovered_faces)
 
     def isolated(self, group: int) -> CadMesh:
         """Только отображение группы; счётчики относятся ко всей исходной модели."""
