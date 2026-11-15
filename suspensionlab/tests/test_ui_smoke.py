@@ -3770,3 +3770,57 @@ def test_step_standard_views_preserve_selection_measurements_and_pick(window, qt
     dialog._reset.click()
     assert (view.yaw, view.elevation, view.zoom, view.pan_x, view.pan_y) == (-0.65, 0.35, 1., 0., 0.)
     assert view._markers == ((0., 0., 0.),) and window.controller.project.to_dict() == before
+
+
+@pytest.mark.parametrize("size", [(1200, 700), (800, 600)])
+def test_analysis_layout_scroll_maximize_and_parameter_toggle(window, qtbot, size):
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QApplication
+
+    from suspensionlab.ui.analysis_dialog import AnalysisDialog
+
+    window.controller.new_project("ring")
+    before = window.controller.project.to_dict()
+    dialog = AnalysisDialog(window.controller, window)
+    qtbot.addWidget(dialog)
+    dialog.resize(*size)
+    dialog.show()
+    dialog._from.setValue(0)
+    dialog._to.setValue(1)
+    dialog._run.click()
+    dialog._preview_mode.setCurrentIndex(1)
+    QApplication.processEvents()
+    assert dialog.windowFlags() & Qt.WindowType.WindowMaximizeButtonHint
+    assert dialog._table.rowCount() == 2
+    assert dialog._scroll.verticalScrollBar().maximum() > 0
+    frame = dialog._preview3d.frame
+    assert frame is not None
+    for show_parameters in (True, False, True, False):
+        if dialog._parameters_toggle.isChecked() != show_parameters:
+            dialog._parameters_toggle.click()
+        QApplication.processEvents()
+        assert dialog._parameters.isVisible() == show_parameters
+        assert dialog._preview3d.frame is frame
+        assert dialog._table.rowCount() == 2
+        preview = dialog._preview3d
+        notice = dialog._scene_notice
+        viewport = dialog._scroll.viewport()
+        preview_top = preview.mapTo(viewport, preview.rect().topLeft()).y()
+        notice_top = notice.mapTo(viewport, notice.rect().topLeft()).y()
+        assert preview.height() >= 250
+        assert notice_top >= preview_top + preview.height()
+        assert dialog._preview_views.height() >= preview.height()
+    dialog._scroll.verticalScrollBar().setValue(dialog._scroll.verticalScrollBar().maximum())
+    QApplication.processEvents()
+    viewport = dialog._scroll.viewport()
+    preview_top = dialog._preview3d.mapTo(viewport, dialog._preview3d.rect().topLeft()).y()
+    playback_bottom = dialog._playback.mapTo(viewport, dialog._playback.rect().bottomLeft()).y()
+    assert preview_top >= 0 and playback_bottom < viewport.height()
+    dialog.showMaximized()
+    QApplication.processEvents()
+    assert dialog.isMaximized()
+    assert dialog._preview3d.frame is frame
+    dialog.showNormal()
+    QApplication.processEvents()
+    assert not dialog.isMaximized()
+    assert window.controller.project.to_dict() == before

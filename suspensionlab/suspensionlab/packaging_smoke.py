@@ -184,6 +184,15 @@ def run_packaging_check() -> None:
         dialog._camera_views.actions_by_view["front"].trigger()
         _require((dialog._preview3d.yaw, dialog._preview3d.elevation) == camera_view_angles("front")
                  and not dialog._preview3d.grab().isNull(), "Стандартные направления 3D-каркаса недоступны")
+        dialog._parameters_toggle.click()
+        app.processEvents()
+        _require(not dialog._parameters.isVisible() and dialog._preview3d.height() >= 250
+                 and bool(dialog.windowFlags() & Qt.WindowType.WindowMaximizeButtonHint),
+                 "Размер или управление окном 3D-просмотра недоступны")
+        dialog._parameters_toggle.click()
+        app.processEvents()
+        _require(dialog._parameters.isVisible() and dialog._table.rowCount() == 2,
+                 "Параметры расчёта не восстановлены")
         camber = dialog._table.item(0, 1)
         if camber is None:
             raise RuntimeError("Не отображён развал")

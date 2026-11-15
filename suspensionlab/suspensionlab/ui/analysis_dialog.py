@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSlider,
     QSplitter,
     QStackedWidget,
@@ -27,6 +28,7 @@ from PySide6.QtWidgets import (
     QTableWidgetItem,
     QTabWidget,
     QTextEdit,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -67,6 +69,7 @@ class AnalysisDialog(QDialog):
 
     def __init__(self, controller: AppController, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self.setWindowFlag(Qt.WindowType.WindowMaximizeButtonHint, True)
         self.controller = controller
         self.setWindowTitle(tr("analysis.title"))
         self.resize(1200, 700)
@@ -280,6 +283,7 @@ class AnalysisDialog(QDialog):
         self._view_tabs.addTab(self._static_view, tr("analysis.static.tab"))
         self._view_tabs.currentChanged.connect(self._playback.pause_for_view_change)
         self._split = QSplitter(Qt.Orientation.Horizontal, self)
+        self._split.setChildrenCollapsible(False)
         self._split.addWidget(self._table)
         self._split.addWidget(self._view_tabs)
         self._split.setSizes([700, 500])
@@ -303,12 +307,26 @@ class AnalysisDialog(QDialog):
         row.addWidget(self._export_button)
         row.addStretch()
         row.addWidget(buttons)
-        layout = QVBoxLayout(self)
-        layout.addWidget(self._notice)
-        layout.addLayout(fields)
+        # Прокрутка сохраняет минимальные размеры содержимого на небольших экранах,
+        # а отдельная кнопка позволяет освободить место, не сбрасывая параметры.
+        self._scroll = QScrollArea(self)
+        self._scroll.setWidgetResizable(True)
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.addWidget(self._notice)
+        self._parameters_toggle = QToolButton(self)
+        self._parameters_toggle.setCheckable(True)
+        self._parameters_toggle.setChecked(True)
+        self._parameters_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        content_layout.addWidget(self._parameters_toggle, 0, Qt.AlignmentFlag.AlignLeft)
+        self._parameters = QWidget(self)
+        parameters_layout = QVBoxLayout(self._parameters)
+        parameters_layout.setContentsMargins(0, 0, 0, 0)
+        parameters_layout.addLayout(fields)
         self._spring_project_hint = QLabel(self)
         self._spring_project_hint.setWordWrap(True)
-        layout.addWidget(self._spring_project_hint)
+        parameters_layout.addWidget(self._spring_project_hint)
         dynamics = QHBoxLayout()
         dynamics.addWidget(self._damping)
         for key, edit in (("velocity", self._velocity), ("compression", self._compression), ("rebound", self._rebound)):
@@ -316,12 +334,18 @@ class AnalysisDialog(QDialog):
             dynamics.addWidget(edit)
         dynamics.addWidget(self._convert_damping)
         dynamics.addStretch()
-        layout.addLayout(dynamics)
+        parameters_layout.addLayout(dynamics)
         self._damping_source_hint = QLabel(self)
         self._damping_source_hint.setWordWrap(True)
-        layout.addWidget(self._damping_source_hint)
-        layout.addWidget(self._status)
-        layout.addWidget(self._split, 1)
+        parameters_layout.addWidget(self._damping_source_hint)
+        content_layout.addWidget(self._parameters)
+        self._parameters_toggle.toggled.connect(self._set_parameters_visible)
+        self._set_parameters_visible(True)
+        content_layout.addWidget(self._status)
+        content_layout.addWidget(self._split, 1)
+        self._scroll.setWidget(content)
+        layout = QVBoxLayout(self)
+        layout.addWidget(self._scroll, 1)
         layout.addLayout(row)
 
         for combo in (self._role, self._side):
@@ -337,6 +361,11 @@ class AnalysisDialog(QDialog):
         controller.modelChanged.connect(self._invalidate)
         controller.projectReplaced.connect(self._invalidate)
         self._invalidate()
+
+    def _set_parameters_visible(self, visible: bool) -> None:
+        self._parameters.setVisible(visible)
+        self._parameters_toggle.setText(tr("analysis.parameters_hide" if visible else "analysis.parameters_show"))
+        self._parameters_toggle.setArrowType(Qt.ArrowType.DownArrow if visible else Qt.ArrowType.RightArrow)
 
     def _number(self, minimum: float, maximum: float, value: float, step: float) -> QDoubleSpinBox:
         box = QDoubleSpinBox(self)
