@@ -198,6 +198,13 @@ def run_packaging_check() -> None:
         dialog._run.click()
         _require("Точек на упоре или за ним: 2" in dialog._damper_range.toPlainText(),
                  "Сводка подбора амортизатора не выявила конфликт")
+        dialog._candidate_min.setText("200")
+        dialog._candidate_max.setText("500")
+        dialog._candidate_reserve.setText("10")
+        dialog._candidate_compare.click()
+        _require("На упоре или за ним: 0" in dialog._candidate_result.toPlainText()
+                 and "запас меньше заданного: 0" in dialog._candidate_result.toPlainText()
+                 and dialog._table.rowCount() == 2, "Сравнение кандидата не выполнено")
         dialog._static_button.click()
         _require(dialog._static_export.isEnabled() and dialog._static_report is not None,
                  "Не получен отчёт статики")

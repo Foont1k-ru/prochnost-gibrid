@@ -33,7 +33,7 @@ from PySide6.QtWidgets import (
 
 from ..core.analysis import CornerSample, analyze_corner
 from ..core.damper import DamperForcePoint, LinearDamperCharacteristic, evaluate_linear_damping
-from ..core.damper_range import summarize_damper_range
+from ..core.damper_range import compare_candidate, summarize_damper_range
 from ..core.double_wishbone import DoubleWishbone
 from ..core.pose_view import PoseView, pose_view
 from ..core.sample_summary import corner_summary
@@ -51,7 +51,7 @@ from .canvas.sweep_plot import SweepPlot
 from .component_transfer import transferable_damper_lengths
 from .controller import AppController
 from .damper_conversion_dialog import MAX_DAMPING_COEFFICIENT, DamperConversionDialog
-from .damper_range_text import damper_range_text
+from .damper_range_text import candidate_text, damper_range_text
 from .table_export import make_plot_report, make_report, make_table_report, save_table_dialog
 from .widgets.playback import PlaybackControls
 from .widgets.sample_summary import SampleSummary
@@ -218,7 +218,29 @@ class AnalysisDialog(QDialog):
         self._view_tabs.addTab(self._summary, tr("summary.tab"))
         self._damper_range = QTextEdit(self)
         self._damper_range.setReadOnly(True)
-        self._view_tabs.addTab(self._damper_range, tr("damper_range.tab"))
+        self._candidate_min = QLineEdit(self)
+        self._candidate_max = QLineEdit(self)
+        self._candidate_reserve = QLineEdit(self)
+        for edit in (self._candidate_min, self._candidate_max, self._candidate_reserve):
+            edit.setPlaceholderText(tr("damper_candidate.required"))
+            edit.textChanged.connect(self._clear_candidate)
+        form = QFormLayout()
+        form.addRow(tr("damper_candidate.minimum"), self._candidate_min)
+        form.addRow(tr("damper_candidate.maximum"), self._candidate_max)
+        form.addRow(tr("damper_candidate.reserve"), self._candidate_reserve)
+        self._candidate_compare = QPushButton(tr("damper_candidate.compare"), self)
+        self._candidate_compare.clicked.connect(self._compare_candidate)
+        self._candidate_result = QTextEdit(self)
+        self._candidate_result.setReadOnly(True)
+        self._candidate_points: list[tuple[float, float | None]] | None = None
+        damper_tab = QWidget(self)
+        damper_layout = QVBoxLayout(damper_tab)
+        damper_layout.setContentsMargins(0, 0, 0, 0)
+        damper_layout.addWidget(self._damper_range, 1)
+        damper_layout.addLayout(form)
+        damper_layout.addWidget(self._candidate_compare)
+        damper_layout.addWidget(self._candidate_result, 1)
+        self._view_tabs.addTab(damper_tab, tr("damper_range.tab"))
         self._explanation = QTextEdit(self)
         self._explanation.setReadOnly(True)
         self._view_tabs.addTab(self._explanation, tr("analysis.tab_explain"))
@@ -315,6 +337,9 @@ class AnalysisDialog(QDialog):
         self._plot.set_points(())
         self._summary.set_samples(())
         self._damper_range.setPlainText(tr("damper_range.empty"))
+        self._candidate_points = None
+        self._candidate_compare.setEnabled(False)
+        self._clear_candidate()
         self._preview.clear()
         self._preview3d.clear()
         self._preview_status.setText(tr("analysis.preview_empty"))
@@ -640,6 +665,8 @@ class AnalysisDialog(QDialog):
                         and sample.damper.error is None else None)
                        for point, sample in zip(result.sweep.points, result.samples, strict=True)]
             self._damper_range.setPlainText(damper_range_text(summarize_damper_range(lengths, damper_limits)))
+            self._candidate_points = lengths
+            self._candidate_compare.setEnabled(any(length is not None for _, length in lengths))
         else:
             self._damper_range.setPlainText(tr("damper_range.disabled"))
         if failures:
@@ -657,6 +684,25 @@ class AnalysisDialog(QDialog):
             index = min(range(len(travels)), key=lambda i: abs(travels[i]))
             self._table.setCurrentCell(index, 0)
             self._show_row(index)
+
+    def _clear_candidate(self, *_args: object) -> None:
+        self._candidate_result.setPlainText(tr("damper_candidate.empty"))
+
+    def _compare_candidate(self) -> None:
+        if self._candidate_points is None or not self._candidate_compare.isEnabled():
+            return
+        try:
+            def parse(edit: QLineEdit) -> float:
+                value = float(edit.text().strip().replace(",", "."))
+                if not isfinite(value) or not 0 <= value <= 2000:
+                    raise ValueError
+                return value
+            limits = StrokeLimits(parse(self._candidate_min), parse(self._candidate_max))
+            result = compare_candidate(self._candidate_points, limits, parse(self._candidate_reserve))
+        except (ValueError, OverflowError):
+            self._candidate_result.setPlainText(tr("damper_candidate.invalid"))
+            return
+        self._candidate_result.setPlainText(candidate_text(result, limits))
 
     def _show_row(self, row: int, *_args: object) -> None:
         self._plot.set_row(row)

@@ -54,3 +54,40 @@ def summarize_damper_range(points: list[tuple[float, float | None]],
     conflicts = sum(stroke_state(p.length_mm, limits).status != "inside" for p in available)
     return DamperRange(len(points), len(points) - len(available), shortest, longest,
                        shortest.length_mm - limits.compressed_mm, limits.extended_mm - longest.length_mm, conflicts)
+
+
+@dataclass(frozen=True)
+class CandidateComparison:
+    """Проверка альтернативных упоров по тем же точкам, без пересчёта поз."""
+
+    summary: DamperRange
+    reserve_mm: float
+    insufficient_reserve: int
+    first_stop: LengthPoint | None
+    first_insufficient: LengthPoint | None
+
+
+def compare_candidate(points: list[tuple[float, float | None]], limits: StrokeLimits,
+                      reserve_mm: float) -> CandidateComparison:
+    """Считает упоры и отдельно точки внутри упоров с запасом меньше заданного.
+
+    Запас ровно равный положительному требованию достаточен. При нулевом
+    требовании точка на упоре всё равно считается конфликтом. Статус определяется
+    по исходным числам, не по округлённым значениям в интерфейсе.
+    """
+    if not isfinite(reserve_mm) or reserve_mm < 0:
+        raise ValueError("Запас должен быть конечным и неотрицательным")
+    summary = summarize_damper_range(points, limits)
+    insufficient: list[LengthPoint] = []
+    stopped: list[LengthPoint] = []
+    for row, (travel, length) in enumerate(points):
+        if length is None:
+            continue
+        state = stroke_state(length, limits)
+        point = LengthPoint(row, travel, length)
+        if state.status != "inside":
+            stopped.append(point)
+        elif min(state.compression_clearance_mm, state.extension_clearance_mm) < reserve_mm:
+            insufficient.append(point)
+    return CandidateComparison(summary, reserve_mm, len(insufficient),
+                               stopped[0] if stopped else None, insufficient[0] if insufficient else None)

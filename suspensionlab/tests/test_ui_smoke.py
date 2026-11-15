@@ -3505,3 +3505,43 @@ def test_damper_range_tab_and_invalidation(window, qtbot):
     assert window.controller.project.to_dict() == before
     dialog._side.setCurrentIndex(1)
     assert "рассчитайте ход" in dialog._damper_range.toPlainText()
+
+
+def test_damper_candidate_reuses_sweep_and_never_changes_project(window, qtbot):
+    from suspensionlab.ui.analysis_dialog import AnalysisDialog
+
+    window.controller.new_project("ring")
+    before = window.controller.project.to_dict()
+    dialog = AnalysisDialog(window.controller, window)
+    qtbot.addWidget(dialog)
+    dialog._from.setValue(-1)
+    dialog._to.setValue(1)
+    dialog._damper.setChecked(True)
+    dialog._damper_min.setValue(200)
+    dialog._damper_max.setValue(325)
+    assert not dialog._candidate_compare.isEnabled()
+    dialog._run.click()
+    assert dialog._table.rowCount() == 3 and dialog._candidate_compare.isEnabled()
+    old_rows = [dialog._table.item(i, 8).text() for i in range(3)]
+    old_summary = dialog._damper_range.toPlainText()
+    dialog._candidate_min.setText("200")
+    dialog._candidate_max.setText("500")
+    dialog._candidate_reserve.setText("10,0")
+    dialog._candidate_compare.click()
+    text = dialog._candidate_result.toPlainText()
+    assert "На упоре или за ним: 0" in text and "запас меньше заданного: 0" in text
+    assert [dialog._table.item(i, 8).text() for i in range(3)] == old_rows
+    assert dialog._damper_range.toPlainText() == old_summary
+    assert window.controller.project.to_dict() == before
+    dialog._candidate_max.setText("325")
+    assert "Укажите две длины" in dialog._candidate_result.toPlainText()
+    dialog._candidate_compare.click()
+    assert "На упоре или за ним: 3" in dialog._candidate_result.toPlainText()
+    dialog._candidate_reserve.setText("-1")
+    dialog._candidate_compare.click()
+    assert "Введите конечные числа" in dialog._candidate_result.toPlainText()
+    assert dialog._table.rowCount() == 3
+    dialog._side.setCurrentIndex(1)
+    assert not dialog._candidate_compare.isEnabled() and dialog._table.rowCount() == 0
+    assert "Укажите две длины" in dialog._candidate_result.toPlainText()
+    assert window.controller.project.to_dict() == before
