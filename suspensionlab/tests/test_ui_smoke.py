@@ -4010,3 +4010,92 @@ def test_3d_discrete_samples_are_not_joined_on_canvas(qtbot):
     view.show_frame(None)
     image = view.grab().toImage()
     assert image.pixelColor(x_right, center_y) != turquoise
+
+
+def test_point_positions_export_context_missing_switch_and_invalidation(window, qtbot, monkeypatch):
+    from suspensionlab.i18n import tr
+    from suspensionlab.ui import analysis_dialog
+
+    controller = window.controller
+    controller.new_project("ring")
+    original = controller.project.to_dict()
+    dialog = analysis_dialog.AnalysisDialog(controller, window)
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog._side.setCurrentIndex(dialog._side.findData("right"))
+    dialog._from.setValue(-1)
+    dialog._to.setValue(1)
+    dialog._run.click()
+    dialog._preview_mode.setCurrentIndex(1)
+    assert not dialog._point_export.isEnabled()
+    dialog._point_choice.setCurrentIndex(dialog._point_choice.findData("wheel_center"))
+    assert dialog._point_export.isEnabled()
+    report = dialog._make_point_report()
+    meta = dict(report.metadata)
+    assert "wheel_center" in meta[tr("analysis.scene3d.point_report.point")]
+    assert meta[tr("analysis.side")] == "правый"
+    assert "не измерение" in meta[tr("analysis.scene3d.point_report.scope_label")].lower()
+    assert len(report.rows) == 3
+    for row, scene, plot in zip(report.rows, dialog._frames3d, dialog._plot.points, strict=True):
+        assert float(row[1]) == plot.travel_mm
+        assert tuple(float(value) for value in row[2:5]) == scene.point("wheel_center")
+        assert float(row[3]) < 0
+    saved = []
+    monkeypatch.setattr(analysis_dialog, "save_table_dialog", lambda _parent, snapshot: saved.append(snapshot))
+    dialog._point_export.click()
+    assert saved and saved[0].rows == report.rows
+    dialog._frames3d[1] = None
+    missing = dialog._make_point_report()
+    assert missing.rows[1][2:5] == ("—", "—", "—")
+    assert missing.rows[1][5] == tr("analysis.scene3d.point_report.availability.frame_missing")
+    dialog._point_choice.setCurrentIndex(dialog._point_choice.findData("spring_lo"))
+    report = dialog._make_point_report()
+    assert all(row[2:5] == ("—", "—", "—") for row in report.rows)
+    assert report.rows[0][5] == tr("analysis.scene3d.point_report.availability.point_missing")
+    assert saved[0].rows[1][2:5] != ("—", "—", "—")  # независимый снимок
+    dialog._to.setValue(2)
+    assert not dialog._point_export.isEnabled()
+    with pytest.raises(ValueError):
+        dialog._make_point_report()
+    dialog._run.click()
+    assert dialog._point_export.isEnabled()
+    dialog._point_choice.setCurrentIndex(0)
+    assert not dialog._point_export.isEnabled()
+    assert controller.project.to_dict() == original
+
+
+def test_point_positions_csv_save_includes_conflict_and_project_change_clears(window, qtbot, tmp_path, monkeypatch):
+    import csv
+
+    from PySide6.QtWidgets import QFileDialog
+
+    from suspensionlab.i18n import tr
+    from suspensionlab.ui.analysis_dialog import AnalysisDialog
+
+    window.controller.new_project("ring")
+    dialog = AnalysisDialog(window.controller, window)
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog._from.setValue(0)
+    dialog._to.setValue(1)
+    dialog._damper.setChecked(True)
+    dialog._damper_min.setValue(205)
+    dialog._damper_max.setValue(325)
+    dialog._run.click()
+    dialog._preview_mode.setCurrentIndex(1)
+    dialog._point_choice.setCurrentIndex(dialog._point_choice.findData("damper_lo"))
+    assert dialog._point_export.isEnabled()
+    destination = tmp_path / "координаты"
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *args: (str(destination), ""))
+    dialog._point_export.click()
+    file = tmp_path / "координаты.csv"
+    with file.open(encoding="utf-8-sig", newline="") as stream:
+        data = list(csv.reader(stream, delimiter=";"))
+    header = data.index([tr(f"analysis.scene3d.point_report.column.{key}") for key in (
+        "row", "travel", "x", "y", "z", "availability", "state")])
+    rows = data[header + 1:]
+    assert len(rows) == 2
+    assert all(row[2] != "—" and row[6] == dialog._table.item(i, 8).text() for i, row in enumerate(rows))
+    assert any("упор" in row[6].lower() for row in rows)
+    window.controller.modelChanged.emit()
+    assert not dialog._point_export.isEnabled() and dialog._table.rowCount() == 0

@@ -45,6 +45,7 @@ from ..core.sweep import travel_grid
 from ..core.sweep_plot import PLOT_METRICS, sweep_plot_points
 from ..export.csv_report import CSVReport
 from ..export.damper_candidate_report import candidate_report_rows
+from ..export.point_positions_report import point_position_rows
 from ..export.static_report import static_report_rows
 from ..i18n import tr
 from .analysis_explanation import explain_corner_sample, explain_static_sample
@@ -198,6 +199,11 @@ class AnalysisDialog(QDialog):
             self._point_choice.addItem(tr(f"hp.{code}.name"), code)
         self._point_choice.setToolTip(tr("analysis.scene3d.point_tip"))
         point_layout.addWidget(self._point_choice, 1)
+        self._point_export = QPushButton(tr("analysis.scene3d.point_report.button"), self)
+        self._point_export.setToolTip(tr("analysis.scene3d.point_report.tip"))
+        self._point_export.setEnabled(False)
+        self._point_export.clicked.connect(self._export_point_positions)
+        point_layout.addWidget(self._point_export)
         self._point_controls.setVisible(False)
         self._preview_mode.currentIndexChanged.connect(lambda index: self._point_controls.setVisible(index == 1))
         preview_layout.addWidget(self._point_controls)
@@ -409,6 +415,9 @@ class AnalysisDialog(QDialog):
         self._point_info.setVisible(visible)
         self._point_samples.setVisible(visible)
         self._point_samples.setEnabled(selected and bool(self._frames3d) and self._preview3d.bounds is not None)
+        self._point_export.setEnabled(selected and bool(self._frames3d)
+                                      and len(self._frames3d) == self._table.rowCount()
+                                      and len(self._plot.points) == len(self._frames3d))
         if not selected:
             self._preview3d.set_sample_positions(())
             self._point_info.clear()
@@ -430,6 +439,32 @@ class AnalysisDialog(QDialog):
             if scene is None:
                 text += " " + tr("analysis.scene3d.samples_no_frame")
         self._point_info.setText(text)
+
+    def _make_point_report(self) -> CSVReport:
+        code = self._point_choice.currentData()
+        count = self._table.rowCount()
+        if (not isinstance(code, str) or not count or count != len(self._frames3d)
+                or count != len(self._plot.points)):
+            raise ValueError(tr("export.no_results"))
+        items = [self._table.item(row, 8) for row in range(count)]
+        if any(item is None for item in items):
+            raise ValueError(tr("export.no_results"))
+        columns, rows = point_position_rows(code, tuple(p.travel_mm for p in self._plot.points),
+                                             tuple(self._frames3d), tuple(item.text() for item in items if item is not None))
+        parameters = [*self._report_parameters(),
+                      (tr("analysis.scene3d.point_report.point"), tr(f"hp.{code}.name") + f" ({code})"),
+                      (tr("analysis.scene3d.point_report.scope_label"), tr("analysis.scene3d.point_report.scope"))]
+        return make_report(self.controller, tr("analysis.scene3d.point_report.kind"), parameters, columns, rows,
+                           precision_text=tr("analysis.scene3d.point_report.precision"))
+
+    def _export_point_positions(self) -> None:
+        self._playback.stop(tr("playback.paused"))
+        try:
+            report = self._make_point_report()
+        except (ValueError, UnicodeError) as error:
+            QMessageBox.warning(self, tr("export.error_title"), tr("export.error", reason=str(error)))
+            return
+        save_table_dialog(self, report)
 
     def _clear_results(self) -> None:
         self._playback.set_count(0)
