@@ -58,6 +58,7 @@ from .controller import AppController
 from .damper_candidate_dialog import DamperCandidateDialog
 from .damper_conversion_dialog import MAX_DAMPING_COEFFICIENT, DamperConversionDialog
 from .damper_range_text import candidate_text, damper_range_text
+from .spring_candidate_dialog import SpringCandidateDialog
 from .spring_range_text import spring_range_text
 from .table_export import make_plot_report, make_report, make_table_report, save_table_dialog
 from .widgets.camera_views import CameraViews
@@ -332,6 +333,13 @@ class AnalysisDialog(QDialog):
             button.clicked.connect(lambda _checked=False, field=key: self._go_spring_point(field))
             spring_actions.addWidget(button)
         spring_layout.addLayout(spring_actions)
+        self._spring_compare_button = QPushButton(tr("spring_candidate.open"), self)
+        self._spring_compare_button.setEnabled(False)
+        self._spring_compare_button.clicked.connect(self._open_spring_candidate)
+        spring_layout.addWidget(self._spring_compare_button)
+        self._spring_candidate_dialog: SpringCandidateDialog | None = None
+        self._spring_candidate_points: tuple[tuple[float, float | None], ...] = ()
+        self.finished.connect(lambda _result: self._close_spring_candidate())
         self._view_tabs.insertTab(4, spring_tab, tr("spring_range.tab"))
         self._view_tabs.currentChanged.connect(self._playback.pause_for_view_change)
         self._split = QSplitter(Qt.Orientation.Horizontal, self)
@@ -498,6 +506,9 @@ class AnalysisDialog(QDialog):
         self._playback_reasons = []
         self._plot.set_points(())
         self._summary.set_samples(())
+        self._close_spring_candidate()
+        self._spring_candidate_points = ()
+        self._spring_compare_button.setEnabled(False)
         self._spring_summary = None
         self._spring_range.setPlainText(tr("spring_range.empty"))
         for button in (self._spring_shortest, self._spring_longest, self._spring_first_free):
@@ -831,6 +842,9 @@ class AnalysisDialog(QDialog):
             spring_points = [(point.travel_mm, sample.spring.state if sample is not None and sample.spring is not None
                               and sample.spring.error is None else None)
                              for point, sample in zip(result.sweep.points, result.samples, strict=True)]
+            self._spring_candidate_points = tuple((travel, state.length_mm if state is not None else None)
+                                                  for travel, state in spring_points)
+            self._spring_compare_button.setEnabled(any(length is not None for _, length in self._spring_candidate_points))
             self._spring_summary = summarize_spring_range(spring_points, axle.spring.free_len_mm, coil_bind)
             self._spring_range.setPlainText(spring_range_text(self._spring_summary))
             self._spring_shortest.setEnabled(self._spring_summary.shortest is not None)
@@ -862,6 +876,32 @@ class AnalysisDialog(QDialog):
             index = min(range(len(travels)), key=lambda i: abs(travels[i]))
             self._table.setCurrentCell(index, 0)
             self._show_row(index)
+
+    def _close_spring_candidate(self) -> None:
+        if self._spring_candidate_dialog is not None:
+            dialog = self._spring_candidate_dialog
+            self._spring_candidate_dialog = None
+            dialog.reject()
+
+    def _open_spring_candidate(self) -> None:
+        if not self._spring_compare_button.isEnabled() or not self._spring_candidate_points:
+            return
+        if self._spring_candidate_dialog is not None:
+            self._spring_candidate_dialog.raise_()
+            self._spring_candidate_dialog.activateWindow()
+            return
+        self._playback.pause_for_view_change()
+        context = tr("spring_candidate.context", axis=self._role.currentText(), side=self._side.currentText(),
+                     reference=repr(self._spring_length.value()))
+        dialog = SpringCandidateDialog(self._spring_candidate_points, self._spring_length.value(), context, self)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        self._spring_candidate_dialog = dialog
+        dialog.finished.connect(lambda _result: self._forget_spring_candidate(dialog))
+        dialog.show()
+
+    def _forget_spring_candidate(self, dialog: SpringCandidateDialog) -> None:
+        if self._spring_candidate_dialog is dialog:
+            self._spring_candidate_dialog = None
 
     def _go_spring_point(self, field: str) -> None:
         summary = self._spring_summary

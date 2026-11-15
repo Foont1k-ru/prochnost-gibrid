@@ -241,6 +241,19 @@ def run_packaging_check() -> None:
         spring_row = dialog._spring_summary.shortest.row
         dialog._spring_shortest.click()
         _require(dialog._table.currentRow() == spring_row, "Переход к точке сводки пружины недоступен")
+        _require(dialog._spring_compare_button.isEnabled(), "Сравнение пружины недоступно")
+        dialog._spring_compare_button.click()
+        spring_candidate = dialog._spring_candidate_dialog
+        _require(spring_candidate is not None, "Окно сравнения пружины не открылось")
+        assert spring_candidate is not None
+        for key, value in (("free", "350"), ("installed", "310"), ("coil", "120"),
+                           ("coil_reserve", "10"), ("compression_reserve", "5")):
+            spring_candidate._fields[key].setText(value)
+        spring_candidate._compare.click()
+        _require(spring_candidate.comparison is not None and len(spring_candidate.comparison.points) == 2
+                 and "Всего строк: 2" in spring_candidate._result.toPlainText(), "Сравнение пружины не выполнено")
+        spring_candidate.reject()
+        _require(dialog._spring_candidate_dialog is None, "Окно сравнения пружины не закрыто")
         _require("Точек на упоре или за ним: 2" in dialog._damper_range.toPlainText(),
                  "Сводка подбора амортизатора не выявила конфликт")
         dialog._candidate_min.setText("200")

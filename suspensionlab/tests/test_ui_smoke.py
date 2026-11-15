@@ -4176,3 +4176,49 @@ def test_spring_range_missing_rows_and_exact_coil_contact(window, qtbot, monkeyp
     assert dialog._samples[0].spring.state.status == "coil_bind"
     assert not dialog._spring_first_free.isEnabled()
     assert summary.shortest.row != 1 and summary.longest.row != 1
+
+
+def test_spring_candidate_independent_inputs_and_invalidation(window, qtbot):
+    from suspensionlab.ui.analysis_dialog import AnalysisDialog
+
+    controller = window.controller
+    controller.new_project("ring")
+    original = controller.project.to_dict()
+    dialog = AnalysisDialog(controller, window)
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog._from.setValue(0)
+    dialog._to.setValue(1)
+    dialog._spring.setChecked(True)
+    dialog._spring_length.setValue(320)
+    dialog._run.click()
+    assert dialog._spring_compare_button.isEnabled()
+    old_lengths = tuple(p[1] for p in dialog._spring_candidate_points)
+    dialog._spring_compare_button.click()
+    candidate = dialog._spring_candidate_dialog
+    assert candidate is not None and candidate.isVisible()
+    assert all(not field.text() for field in candidate._fields.values())
+    candidate._compare.click()
+    assert candidate.comparison is None and "Проверьте" in candidate._result.toPlainText()
+    for name, value in (("free", "350"), ("installed", "310"), ("coil", "120"),
+                        ("coil_reserve", "10"), ("compression_reserve", "5")):
+        candidate._fields[name].setText(value)
+    candidate._compare.click()
+    assert candidate.comparison is not None
+    assert candidate.comparison.points[0].length_mm == pytest.approx(old_lengths[0] - 10)
+    assert "Всего строк: 2" in candidate._result.toPlainText()
+    assert "не доказывает выпадение или удержание" in candidate._result.toPlainText()
+    assert dialog._spring_length.value() == 320 and controller.project.to_dict() == original
+    candidate._fields["free"].setText("400")
+    assert candidate.comparison is None and "Введите" in candidate._result.toPlainText()
+    candidate._compare.click()
+    assert candidate.comparison is not None
+    dialog._to.setValue(2)
+    assert dialog._spring_candidate_dialog is None and not dialog._spring_compare_button.isEnabled()
+    dialog._run.click()
+    dialog._spring_compare_button.click()
+    reopened = dialog._spring_candidate_dialog
+    assert reopened is not None and reopened is not candidate
+    dialog.reject()
+    assert dialog._spring_candidate_dialog is None
+    assert controller.project.to_dict() == original
