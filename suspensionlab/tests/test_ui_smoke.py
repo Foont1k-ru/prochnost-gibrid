@@ -3702,3 +3702,71 @@ def test_damper_candidate_details_navigation_and_invalidation(window, qtbot):
     assert not details2.isVisible() and dialog._candidate_detail_dialog is None
     assert not dialog._candidate_details.isEnabled() and dialog._table.rowCount() == 0
     assert window.controller.project.to_dict() == before
+
+
+def test_standard_views_in_analysis_do_not_change_calculation(window, qtbot):
+    from suspensionlab.core.camera_views import CAMERA_VIEWS
+    from suspensionlab.ui.analysis_dialog import AnalysisDialog
+
+    window.controller.new_project("ring")
+    before = window.controller.project.to_dict()
+    dialog = AnalysisDialog(window.controller, window)
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog._from.setValue(-1)
+    dialog._to.setValue(1)
+    dialog._run.click()
+    view = dialog._preview3d
+    assert not dialog._camera_views.isEnabled()
+    dialog._preview_mode.setCurrentIndex(1)
+    assert dialog._camera_views.isEnabled()
+    frame, bounds = view.frame, view.bounds
+    data = tuple(dialog._table.item(i, 0).text() for i in range(3))
+    view.pan_x, view.pan_y, view.zoom = 25., -15., 1.5
+    for name, angles in CAMERA_VIEWS.items():
+        dialog._camera_views.actions_by_view[name].trigger()
+        assert (view.yaw, view.elevation) == angles
+        assert (view.pan_x, view.pan_y, view.zoom) == (25., -15., 1.5)
+        assert view.frame is frame and view.bounds == bounds and not view.grab().isNull()
+    assert tuple(dialog._table.item(i, 0).text() for i in range(3)) == data
+    assert window.controller.project.to_dict() == before
+    dialog._reset_camera.click()
+    assert (view.yaw, view.elevation, view.zoom, view.pan_x, view.pan_y) == (-0.65, 0.35, 1., 0., 0.)
+    dialog._preview_mode.setCurrentIndex(0)
+    assert not dialog._camera_views.isEnabled()
+
+
+def test_step_standard_views_preserve_selection_measurements_and_pick(window, qtbot):
+    import numpy as np
+    from PySide6.QtCore import QPoint, Qt
+
+    from suspensionlab.core.cad_mesh import CadMesh
+    from suspensionlab.core.camera_views import CAMERA_VIEWS
+    from suspensionlab.ui.cad_preview_dialog import CadPreviewDialog
+
+    before = window.controller.project.to_dict()
+    dialog = CadPreviewDialog(window)
+    qtbot.addWidget(dialog)
+    dialog.show()
+    view = dialog._view
+    # Треугольник YZ виден с направления +X.
+    triangles = np.array([[[0., -10., -10.], [0., 10., -10.], [0., 0., 10.]]])
+    mesh = CadMesh(triangles, 1, part_names=("Прочие", "Деталь"), triangle_parts=np.array([1]))
+    view.set_mesh(mesh, np.array([True]), through=True)
+    view.set_markers(((0., 0., 0.),))
+    view.pan_x, view.pan_y, view.zoom = 20., -10., 1.25
+    for name, angles in CAMERA_VIEWS.items():
+        dialog._camera_views.actions_by_view[name].trigger()
+        assert (view.yaw, view.elevation) == angles
+        assert (view.pan_x, view.pan_y, view.zoom) == (20., -10., 1.25)
+        assert view._markers == ((0., 0., 0.),) and view._through and view._highlight[0]
+        assert np.array_equal(mesh.triangles, triangles) and not view.grab().isNull()
+    dialog._camera_views.actions_by_view["front"].trigger()
+    picked = []
+    view.triangle_picked.connect(picked.append)
+    center = QPoint(view.width() // 2 + 20, view.height() // 2 - 10)
+    qtbot.mouseClick(view, Qt.MouseButton.LeftButton, pos=center)
+    assert picked == [0]
+    dialog._reset.click()
+    assert (view.yaw, view.elevation, view.zoom, view.pan_x, view.pan_y) == (-0.65, 0.35, 1., 0., 0.)
+    assert view._markers == ((0., 0., 0.),) and window.controller.project.to_dict() == before

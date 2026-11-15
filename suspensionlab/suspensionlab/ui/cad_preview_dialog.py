@@ -23,6 +23,7 @@ from ..core.cad_mesh import CadMesh
 from ..core.cad_transport import CadJob, CadPreviewError
 from ..i18n import tr
 from .canvas.cad_preview import CadPreview
+from .widgets.camera_views import CameraViews
 
 
 class _CadReader(QThread):
@@ -73,11 +74,13 @@ class CadPreviewDialog(QDialog):
         self._cancel.setEnabled(False)
         self._cancel.clicked.connect(self._cancel_read)
         self._reset = QPushButton(tr("cad_preview.reset"), self)
+        self._camera_views = CameraViews(self, cad=True)
         row.addWidget(self._choose)
         row.addWidget(QLabel(tr("cad_preview.deviation"), self))
         row.addWidget(self._deviation)
         row.addWidget(self._reload)
         row.addWidget(self._cancel)
+        row.addWidget(self._camera_views)
         row.addWidget(self._reset)
         layout.addLayout(row)
         parts_row = QHBoxLayout()
@@ -120,6 +123,7 @@ class CadPreviewDialog(QDialog):
         self._view.point_missed.connect(self._measurement_missed)
         self._view.triangle_picked.connect(self._pick_triangle)
         self._reset.clicked.connect(self._view.reset_camera)
+        self._camera_views.viewSelected.connect(self._view.set_standard_view)
         layout.addWidget(self._view, 1)
         self._status = QLabel(tr("cad_preview.empty"), self)
         self._status.setWordWrap(True)

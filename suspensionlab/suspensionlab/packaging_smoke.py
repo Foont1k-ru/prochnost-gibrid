@@ -132,7 +132,9 @@ def run_packaging_check() -> None:
     from .core.cad_measurement import measurement_distance, point_on_projected_triangle
     from .core.cad_mesh import CadMesh
     from .core.cad_raster import pick_triangle
+    from .core.camera_views import camera_view_angles
     from .ui.canvas.cad_preview import CadPreview
+    from .ui.widgets.camera_views import CameraViews
 
     preview = CadPreview()
     preview.resize(320, 280)
@@ -147,6 +149,13 @@ def run_packaging_check() -> None:
         app.sendEvent(preview, QMouseEvent(QEvent.Type.MouseButtonRelease, end, button, Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier))
     _require((preview.pan_x, preview.pan_y) == (25., 10.) and preview.elevation > 1.35 and not preview.grab().isNull(),
              "Управление камерой CAD-просмотра недоступно")
+    menu = CameraViews(cad=True)
+    menu.viewSelected.connect(preview.set_standard_view)
+    menu.actions_by_view["bottom"].trigger()
+    _require((preview.yaw, preview.elevation) == camera_view_angles("bottom")
+             and (preview.pan_x, preview.pan_y) == (25., 10.) and not preview.grab().isNull(),
+             "Стандартные направления CAD-просмотра недоступны")
+    menu.close()
     preview.reset_camera()
     _require((preview.pan_x, preview.pan_y) == (0., 0.), "Сброс камеры CAD-просмотра недоступен")
     preview.close()
@@ -171,6 +180,10 @@ def run_packaging_check() -> None:
         dialog._run.click()
         app.processEvents()
         _require(dialog._table.rowCount() == 2, "Таблица хода не рассчитана")
+        dialog._preview_mode.setCurrentIndex(1)
+        dialog._camera_views.actions_by_view["front"].trigger()
+        _require((dialog._preview3d.yaw, dialog._preview3d.elevation) == camera_view_angles("front")
+                 and not dialog._preview3d.grab().isNull(), "Стандартные направления 3D-каркаса недоступны")
         camber = dialog._table.item(0, 1)
         if camber is None:
             raise RuntimeError("Не отображён развал")

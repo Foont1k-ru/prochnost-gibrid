@@ -12,6 +12,7 @@ from ...core.cad_interaction import interaction_geometry
 from ...core.cad_measurement import point_on_projected_triangle
 from ...core.cad_mesh import CadMesh
 from ...core.cad_raster import pick_triangle, rasterize, screen_projection, triangle_shades
+from ...core.camera_views import camera_view_angles
 from ...i18n import tr
 
 
@@ -100,6 +101,20 @@ class CadPreview(QWidget):
         self._pan_drag = None
         self._pan_button = None
         self._dragging = False
+        self._settle.stop()
+        self._moving = False
+        self.update()
+
+    def set_standard_view(self, name: str) -> None:
+        """Изменяет направление в системе координат сетки, не её положение."""
+        yaw, elevation = camera_view_angles(name)
+        self.yaw, self.elevation = yaw, elevation
+        self._drag = None
+        self._press = None
+        self._pan_drag = None
+        self._pan_button = None
+        self._dragging = False
+        self._pick_allowed = False
         self._settle.stop()
         self._moving = False
         self.update()

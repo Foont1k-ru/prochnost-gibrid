@@ -55,6 +55,7 @@ from .damper_candidate_dialog import DamperCandidateDialog
 from .damper_conversion_dialog import MAX_DAMPING_COEFFICIENT, DamperConversionDialog
 from .damper_range_text import candidate_text, damper_range_text
 from .table_export import make_plot_report, make_report, make_table_report, save_table_dialog
+from .widgets.camera_views import CameraViews
 from .widgets.playback import PlaybackControls
 from .widgets.sample_summary import SampleSummary
 
@@ -156,8 +157,12 @@ class AnalysisDialog(QDialog):
         self._reset_camera = QPushButton(tr("analysis.scene3d.reset"), self)
         self._reset_camera.setEnabled(False)
         self._reset_camera.clicked.connect(self._preview3d.reset_camera)
+        self._camera_views = CameraViews(self)
+        self._camera_views.setEnabled(False)
+        self._camera_views.viewSelected.connect(self._preview3d.set_standard_view)
         self._preview_mode.currentIndexChanged.connect(self._preview_views.setCurrentIndex)
         self._preview_mode.currentIndexChanged.connect(lambda index: self._reset_camera.setEnabled(index == 1))
+        self._preview_mode.currentIndexChanged.connect(lambda index: self._camera_views.setEnabled(index == 1))
         self._preview_status = QLabel(tr("analysis.preview_empty"), self)
         self._preview_status.setWordWrap(True)
         self._slider = QSlider(Qt.Orientation.Horizontal, self)
@@ -175,6 +180,7 @@ class AnalysisDialog(QDialog):
         preview_layout.setContentsMargins(0, 0, 0, 0)
         view_controls = QHBoxLayout()
         view_controls.addWidget(self._preview_mode, 1)
+        view_controls.addWidget(self._camera_views)
         view_controls.addWidget(self._reset_camera)
         preview_layout.addLayout(view_controls)
         preview_layout.addWidget(self._preview_views, 1)

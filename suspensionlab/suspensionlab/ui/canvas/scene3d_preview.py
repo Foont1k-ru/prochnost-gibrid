@@ -7,6 +7,7 @@ from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import QWidget
 
+from ...core.camera_views import camera_view_angles
 from ...core.pose_view import Point
 from ...core.scene3d import Scene3D, project_orthographic, scene_bounds
 from ...i18n import tr
@@ -34,6 +35,15 @@ class Scene3DPreview(QWidget):
         self.elevation = 0.35
         self.zoom = 1.0
         self.pan_x, self.pan_y = 0., 0.
+        self._drag = None
+        self._pan_drag = None
+        self._pan_button = None
+        self.update()
+
+    def set_standard_view(self, name: str) -> None:
+        """Изменяет только направление, сохраняя масштаб и сдвиг."""
+        yaw, elevation = camera_view_angles(name)
+        self.yaw, self.elevation = yaw, elevation
         self._drag = None
         self._pan_drag = None
         self._pan_button = None
