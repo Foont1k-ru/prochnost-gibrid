@@ -205,6 +205,14 @@ def run_packaging_check() -> None:
         _require("На упоре или за ним: 0" in dialog._candidate_result.toPlainText()
                  and "запас меньше заданного: 0" in dialog._candidate_result.toPlainText()
                  and dialog._table.rowCount() == 2, "Сравнение кандидата не выполнено")
+        _require(dialog._candidate_export.isEnabled() and dialog._candidate_report is not None,
+                 "Отчёт кандидата недоступен")
+        assert dialog._candidate_report is not None
+        candidate_path = write_csv_report(dialog._candidate_report, temporary / "candidate.csv")
+        _require(candidate_path.read_bytes().startswith(b"\xef\xbb\xbf") and len(dialog._candidate_report.rows) == 2,
+                 "CSV сравнения кандидата не записан")
+        dialog._candidate_reserve.setText("15")
+        _require(not dialog._candidate_export.isEnabled(), "Отчёт кандидата не очищен после правки")
         dialog._static_button.click()
         _require(dialog._static_export.isEnabled() and dialog._static_report is not None,
                  "Не получен отчёт статики")

@@ -3545,3 +3545,108 @@ def test_damper_candidate_reuses_sweep_and_never_changes_project(window, qtbot):
     assert not dialog._candidate_compare.isEnabled() and dialog._table.rowCount() == 0
     assert "Укажите две длины" in dialog._candidate_result.toPlainText()
     assert window.controller.project.to_dict() == before
+
+
+def test_damper_candidate_export_snapshot_and_invalidation(window, qtbot, monkeypatch, tmp_path):
+    import csv
+
+    from suspensionlab.export.csv_report import write_csv_report
+    from suspensionlab.i18n import tr
+    from suspensionlab.ui import analysis_dialog
+
+    window.controller.new_project("ring")
+    before = window.controller.project.to_dict()
+    dialog = analysis_dialog.AnalysisDialog(window.controller, window)
+    qtbot.addWidget(dialog)
+    dialog._from.setValue(-1)
+    dialog._to.setValue(1)
+    dialog._damper.setChecked(True)
+    dialog._damper_min.setValue(200)
+    dialog._damper_max.setValue(325)
+    dialog._run.click()
+    dialog._candidate_min.setText("200")
+    dialog._candidate_max.setText("500")
+    dialog._candidate_reserve.setText("10")
+    assert not dialog._candidate_export.isEnabled()
+    dialog._candidate_compare.click()
+    assert dialog._candidate_report is not None and dialog._candidate_export.isEnabled()
+    report = dialog._candidate_report
+    metadata = dict(report.metadata)
+    assert metadata[tr("damper_candidate.maximum")] == "500.0"
+    assert metadata[tr("analysis.damper_max")] == "325.0"
+    assert metadata[tr("damper_candidate.report.stops")] == "0"
+    assert metadata[tr("damper_candidate.report.missing")] == "0"
+    assert metadata[tr("analysis.side")] == dialog._side.currentText()
+    assert len(report.rows) == 3 and all(row[-1] == tr("analysis.damper_status.above_extended") for row in report.rows)
+    length = float(report.rows[0][2])
+    assert float(report.rows[0][4]) == pytest.approx(500 - length, abs=1e-10)
+    saved = []
+    monkeypatch.setattr(analysis_dialog, "save_table_dialog", lambda parent, value: saved.append(value))
+    dialog._candidate_export.click()
+    assert saved == [report]
+    target = write_csv_report(report, tmp_path / "candidate.csv")
+    with target.open(encoding="utf-8-sig", newline="") as stream:
+        rows = list(csv.reader(stream, delimiter=";"))
+    assert list(report.columns) in rows and list(report.rows[0]) in rows
+    dialog._candidate_reserve.setText("20")
+    assert dialog._candidate_report is None and not dialog._candidate_export.isEnabled()
+    assert dialog._table.rowCount() == 3
+    dialog._candidate_compare.click()
+    assert dialog._candidate_export.isEnabled()
+    dialog._side.setCurrentIndex(1)
+    assert dialog._candidate_report is None and not dialog._candidate_export.isEnabled()
+    assert window.controller.project.to_dict() == before
+
+
+def test_damper_candidate_report_failure_does_not_keep_old_report(window, qtbot, monkeypatch):
+    from suspensionlab.ui import analysis_dialog
+
+    window.controller.new_project("ring")
+    dialog = analysis_dialog.AnalysisDialog(window.controller, window)
+    qtbot.addWidget(dialog)
+    dialog._from.setValue(0)
+    dialog._to.setValue(0)
+    dialog._damper.setChecked(True)
+    dialog._run.click()
+    dialog._candidate_min.setText("200")
+    dialog._candidate_max.setText("500")
+    dialog._candidate_reserve.setText("0")
+    dialog._candidate_compare.click()
+    assert dialog._candidate_report is not None
+    def fail(*_args, **_kwargs):
+        raise ValueError("тестовая ошибка")
+    monkeypatch.setattr(analysis_dialog, "make_report", fail)
+    dialog._candidate_compare.click()
+    assert dialog._candidate_report is None and not dialog._candidate_export.isEnabled()
+    assert "Отчёт недоступен" in dialog._candidate_result.toPlainText()
+    assert "На упоре или за ним: 0" in dialog._candidate_result.toPlainText()
+
+
+def test_damper_candidate_export_keeps_partial_missing_points(window, qtbot, monkeypatch):
+    from dataclasses import replace
+
+    from suspensionlab.i18n import tr
+    from suspensionlab.ui import analysis_dialog
+
+    window.controller.new_project("ring")
+    actual = analysis_dialog.analyze_corner
+    def partial(*args, **kwargs):
+        result = actual(*args, **kwargs)
+        return replace(result, samples=(result.samples[0], None, result.samples[2]))
+    monkeypatch.setattr(analysis_dialog, "analyze_corner", partial)
+    dialog = analysis_dialog.AnalysisDialog(window.controller, window)
+    qtbot.addWidget(dialog)
+    dialog._from.setValue(-1)
+    dialog._to.setValue(1)
+    dialog._damper.setChecked(True)
+    dialog._run.click()
+    dialog._candidate_min.setText("200")
+    dialog._candidate_max.setText("500")
+    dialog._candidate_reserve.setText("10")
+    dialog._candidate_compare.click()
+    report = dialog._candidate_report
+    assert report is not None
+    assert dict(report.metadata)[tr("damper_candidate.report.missing")] == "1"
+    assert report.rows[1][2:5] == ("—", "—", "—")
+    assert report.rows[1][5] == tr("damper_candidate.report.status.missing")
+    assert "сравнение неполное" in dialog._candidate_result.toPlainText()

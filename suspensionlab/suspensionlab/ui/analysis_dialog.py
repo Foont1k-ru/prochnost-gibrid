@@ -42,6 +42,7 @@ from ..core.stroke import StrokeLimits
 from ..core.sweep import travel_grid
 from ..core.sweep_plot import PLOT_METRICS, sweep_plot_points
 from ..export.csv_report import CSVReport
+from ..export.damper_candidate_report import candidate_report_rows
 from ..export.static_report import static_report_rows
 from ..i18n import tr
 from .analysis_explanation import explain_corner_sample, explain_static_sample
@@ -232,6 +233,10 @@ class AnalysisDialog(QDialog):
         self._candidate_compare.clicked.connect(self._compare_candidate)
         self._candidate_result = QTextEdit(self)
         self._candidate_result.setReadOnly(True)
+        self._candidate_export = QPushButton(tr("damper_candidate.report.button"), self)
+        self._candidate_export.setEnabled(False)
+        self._candidate_export.clicked.connect(self._export_candidate)
+        self._candidate_report: CSVReport | None = None
         self._candidate_points: list[tuple[float, float | None]] | None = None
         damper_tab = QWidget(self)
         damper_layout = QVBoxLayout(damper_tab)
@@ -240,6 +245,7 @@ class AnalysisDialog(QDialog):
         damper_layout.addLayout(form)
         damper_layout.addWidget(self._candidate_compare)
         damper_layout.addWidget(self._candidate_result, 1)
+        damper_layout.addWidget(self._candidate_export)
         self._view_tabs.addTab(damper_tab, tr("damper_range.tab"))
         self._explanation = QTextEdit(self)
         self._explanation.setReadOnly(True)
@@ -686,11 +692,15 @@ class AnalysisDialog(QDialog):
             self._show_row(index)
 
     def _clear_candidate(self, *_args: object) -> None:
+        self._candidate_report = None
+        self._candidate_export.setEnabled(False)
         self._candidate_result.setPlainText(tr("damper_candidate.empty"))
 
     def _compare_candidate(self) -> None:
         if self._candidate_points is None or not self._candidate_compare.isEnabled():
             return
+        self._candidate_report = None
+        self._candidate_export.setEnabled(False)
         try:
             def parse(edit: QLineEdit) -> float:
                 value = float(edit.text().strip().replace(",", "."))
@@ -702,7 +712,34 @@ class AnalysisDialog(QDialog):
         except (ValueError, OverflowError):
             self._candidate_result.setPlainText(tr("damper_candidate.invalid"))
             return
-        self._candidate_result.setPlainText(candidate_text(result, limits))
+        text = candidate_text(result, limits)
+        try:
+            source_items = [self._table.item(row, 8) for row in range(self._table.rowCount())]
+            if any(item is None for item in source_items):
+                raise ValueError(tr("export.no_results"))
+            source_states = tuple(item.text() for item in source_items if item is not None)
+            columns, rows = candidate_report_rows(result, source_states)
+            parameters = [*self._report_parameters(),
+                          (tr("damper_candidate.minimum"), repr(limits.compressed_mm)),
+                          (tr("damper_candidate.maximum"), repr(limits.extended_mm)),
+                          (tr("damper_candidate.reserve"), repr(result.reserve_mm)),
+                          (tr("damper_candidate.report.total"), str(result.summary.total)),
+                          (tr("damper_candidate.report.missing"), str(result.summary.missing)),
+                          (tr("damper_candidate.report.stops"), str(result.summary.conflicts)),
+                          (tr("damper_candidate.report.short"), str(result.insufficient_reserve)),
+                          (tr("damper_candidate.report.scope_label"), tr("damper_candidate.notice"))]
+            self._candidate_report = make_report(self.controller, tr("damper_candidate.report.kind"),
+                                                 parameters, columns, rows,
+                                                 precision_text=tr("damper_candidate.report.precision"))
+            self._candidate_export.setEnabled(True)
+        except (ValueError, UnicodeError) as error:
+            LOG.warning("Отчёт кандидата недоступен: %s", error)
+            text += "\n\n" + tr("damper_candidate.report.unavailable", reason=str(error))
+        self._candidate_result.setPlainText(text)
+
+    def _export_candidate(self) -> None:
+        if self._candidate_report is not None:
+            save_table_dialog(self, self._candidate_report)
 
     def _show_row(self, row: int, *_args: object) -> None:
         self._plot.set_row(row)

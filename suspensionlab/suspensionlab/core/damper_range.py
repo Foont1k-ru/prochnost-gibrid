@@ -3,8 +3,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from math import isfinite
+from typing import Literal
 
-from .stroke import StrokeLimits, stroke_state
+from .stroke import StrokeLimits, StrokeState, stroke_state
 
 
 @dataclass(frozen=True)
@@ -57,6 +58,16 @@ def summarize_damper_range(points: list[tuple[float, float | None]],
 
 
 @dataclass(frozen=True)
+class CandidatePoint:
+    """Статус одной исходной строки; недоступная длина не заменяется нулём."""
+
+    travel_mm: float
+    length_mm: float | None
+    stroke: StrokeState | None
+    status: Literal["missing", "stop", "reserve_short", "clear"]
+
+
+@dataclass(frozen=True)
 class CandidateComparison:
     """Проверка альтернативных упоров по тем же точкам, без пересчёта поз."""
 
@@ -65,6 +76,7 @@ class CandidateComparison:
     insufficient_reserve: int
     first_stop: LengthPoint | None
     first_insufficient: LengthPoint | None
+    points: tuple[CandidatePoint, ...]
 
 
 def compare_candidate(points: list[tuple[float, float | None]], limits: StrokeLimits,
@@ -80,14 +92,22 @@ def compare_candidate(points: list[tuple[float, float | None]], limits: StrokeLi
     summary = summarize_damper_range(points, limits)
     insufficient: list[LengthPoint] = []
     stopped: list[LengthPoint] = []
+    results: list[CandidatePoint] = []
     for row, (travel, length) in enumerate(points):
         if length is None:
+            results.append(CandidatePoint(travel, None, None, "missing"))
             continue
         state = stroke_state(length, limits)
         point = LengthPoint(row, travel, length)
         if state.status != "inside":
+            status: Literal["missing", "stop", "reserve_short", "clear"] = "stop"
             stopped.append(point)
         elif min(state.compression_clearance_mm, state.extension_clearance_mm) < reserve_mm:
+            status = "reserve_short"
             insufficient.append(point)
+        else:
+            status = "clear"
+        results.append(CandidatePoint(travel, length, state, status))
     return CandidateComparison(summary, reserve_mm, len(insufficient),
-                               stopped[0] if stopped else None, insufficient[0] if insufficient else None)
+                               stopped[0] if stopped else None, insufficient[0] if insufficient else None,
+                               tuple(results))
