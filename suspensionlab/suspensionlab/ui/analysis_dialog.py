@@ -40,6 +40,7 @@ from ..core.double_wishbone import DoubleWishbone
 from ..core.pose_view import PoseView, pose_view
 from ..core.sample_summary import corner_summary
 from ..core.scene3d import POINT_CODES, Scene3D, pose_scene
+from ..core.spring_range import SpringRange, summarize_spring_range
 from ..core.stroke import StrokeLimits
 from ..core.sweep import travel_grid
 from ..core.sweep_plot import PLOT_METRICS, sweep_plot_points
@@ -57,6 +58,7 @@ from .controller import AppController
 from .damper_candidate_dialog import DamperCandidateDialog
 from .damper_conversion_dialog import MAX_DAMPING_COEFFICIENT, DamperConversionDialog
 from .damper_range_text import candidate_text, damper_range_text
+from .spring_range_text import spring_range_text
 from .table_export import make_plot_report, make_report, make_table_report, save_table_dialog
 from .widgets.camera_views import CameraViews
 from .widgets.playback import PlaybackControls
@@ -313,6 +315,24 @@ class AnalysisDialog(QDialog):
         static_layout.addWidget(self._static_explanation, 1)
         static_layout.addWidget(self._static_export)
         self._view_tabs.addTab(self._static_view, tr("analysis.static.tab"))
+        spring_tab = QWidget(self)
+        spring_layout = QVBoxLayout(spring_tab)
+        spring_layout.setContentsMargins(0, 0, 0, 0)
+        self._spring_range = QTextEdit(self)
+        self._spring_range.setReadOnly(True)
+        spring_layout.addWidget(self._spring_range, 1)
+        self._spring_summary: SpringRange | None = None
+        spring_actions = QHBoxLayout()
+        self._spring_shortest = QPushButton(tr("spring_range.go_shortest"), self)
+        self._spring_longest = QPushButton(tr("spring_range.go_longest"), self)
+        self._spring_first_free = QPushButton(tr("spring_range.go_free"), self)
+        for button, key in ((self._spring_shortest, "shortest"), (self._spring_longest, "longest"),
+                            (self._spring_first_free, "first_free")):
+            button.setEnabled(False)
+            button.clicked.connect(lambda _checked=False, field=key: self._go_spring_point(field))
+            spring_actions.addWidget(button)
+        spring_layout.addLayout(spring_actions)
+        self._view_tabs.insertTab(4, spring_tab, tr("spring_range.tab"))
         self._view_tabs.currentChanged.connect(self._playback.pause_for_view_change)
         self._split = QSplitter(Qt.Orientation.Horizontal, self)
         self._split.setChildrenCollapsible(False)
@@ -478,6 +498,10 @@ class AnalysisDialog(QDialog):
         self._playback_reasons = []
         self._plot.set_points(())
         self._summary.set_samples(())
+        self._spring_summary = None
+        self._spring_range.setPlainText(tr("spring_range.empty"))
+        for button in (self._spring_shortest, self._spring_longest, self._spring_first_free):
+            button.setEnabled(False)
         self._damper_range.setPlainText(tr("damper_range.empty"))
         self._candidate_points = None
         self._candidate_compare.setEnabled(False)
@@ -803,6 +827,17 @@ class AnalysisDialog(QDialog):
                 item.setToolTip(text)
                 self._table.setItem(row, column, item)
         self._summary.set_samples(corner_summary(result))
+        if self._spring.isChecked():
+            spring_points = [(point.travel_mm, sample.spring.state if sample is not None and sample.spring is not None
+                              and sample.spring.error is None else None)
+                             for point, sample in zip(result.sweep.points, result.samples, strict=True)]
+            self._spring_summary = summarize_spring_range(spring_points, axle.spring.free_len_mm, coil_bind)
+            self._spring_range.setPlainText(spring_range_text(self._spring_summary))
+            self._spring_shortest.setEnabled(self._spring_summary.shortest is not None)
+            self._spring_longest.setEnabled(self._spring_summary.longest is not None)
+            self._spring_first_free.setEnabled(self._spring_summary.first_free is not None)
+        else:
+            self._spring_range.setPlainText(tr("spring_range.disabled"))
         if self._damper.isChecked():
             lengths = [(point.travel_mm, sample.damper.length_mm if sample is not None and sample.damper is not None
                         and sample.damper.error is None else None)
@@ -827,6 +862,15 @@ class AnalysisDialog(QDialog):
             index = min(range(len(travels)), key=lambda i: abs(travels[i]))
             self._table.setCurrentCell(index, 0)
             self._show_row(index)
+
+    def _go_spring_point(self, field: str) -> None:
+        summary = self._spring_summary
+        if summary is None or field not in ("shortest", "longest", "first_free"):
+            return
+        point = getattr(summary, field)
+        if point is not None and 0 <= point.row < self._table.rowCount():
+            self._table.setCurrentCell(point.row, 0)
+            self._view_tabs.setCurrentIndex(0)
 
     def _clear_candidate(self, *_args: object) -> None:
         self._candidate_report = None

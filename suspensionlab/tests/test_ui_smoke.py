@@ -4099,3 +4099,80 @@ def test_point_positions_csv_save_includes_conflict_and_project_change_clears(wi
     assert any("упор" in row[6].lower() for row in rows)
     window.controller.modelChanged.emit()
     assert not dialog._point_export.isEnabled() and dialog._table.rowCount() == 0
+
+
+def test_spring_range_summary_navigation_and_invalidation(window, qtbot):
+    from suspensionlab.ui.analysis_dialog import AnalysisDialog
+
+    controller = window.controller
+    controller.new_project("ring")
+    before = controller.project.to_dict()
+    dialog = AnalysisDialog(controller, window)
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog._from.setValue(-2)
+    dialog._to.setValue(2)
+    dialog._run.click()
+    assert "не включена" in dialog._spring_range.toPlainText()
+    assert not dialog._spring_shortest.isEnabled()
+    dialog._spring.setChecked(True)
+    dialog._spring_length.setValue(320)
+    dialog._coil_bind.setValue(115)
+    dialog._run.click()
+    summary = dialog._spring_summary
+    assert summary is not None and summary.total == 5 and summary.missing == 0
+    assert summary.shortest and summary.longest
+    assert summary.shortest.length_mm == min(s.spring.state.length_mm for s in dialog._samples)
+    assert summary.longest.length_mm == max(s.spring.state.length_mm for s in dialog._samples)
+    assert summary.coil_bind_count == sum(s.spring.state.status == "coil_bind" for s in dialog._samples)
+    assert "из 5; пропусков: 0" in dialog._spring_range.toPlainText()
+    assert "Свободная длина" in dialog._spring_range.toPlainText()
+    dialog._view_tabs.setCurrentWidget(dialog._spring_range.parentWidget())
+    dialog._spring_shortest.click()
+    assert dialog._table.currentRow() == summary.shortest.row and dialog._view_tabs.currentIndex() == 0
+    dialog._spring_longest.click()
+    assert dialog._table.currentRow() == summary.longest.row
+    if summary.first_free:
+        dialog._spring_first_free.click()
+        assert dialog._table.currentRow() == summary.first_free.row
+    dialog._coil_bind.setValue(0)
+    assert dialog._spring_summary is None and not dialog._spring_shortest.isEnabled()
+    assert "Включите" in dialog._spring_range.toPlainText()
+    dialog._run.click()
+    assert dialog._spring_summary.coil_bind_count is None
+    assert "не проверены" in dialog._spring_range.toPlainText()
+    controller.modelChanged.emit()
+    assert dialog._spring_summary is None and not dialog._spring_longest.isEnabled()
+    assert controller.project.to_dict() == before
+
+
+def test_spring_range_missing_rows_and_exact_coil_contact(window, qtbot, monkeypatch):
+    from dataclasses import replace
+
+    from suspensionlab.ui import analysis_dialog
+
+    window.controller.new_project("ring")
+    dialog = analysis_dialog.AnalysisDialog(window.controller, window)
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog._spring.setChecked(True)
+    dialog._spring_length.setValue(115)
+    dialog._coil_bind.setValue(115)
+    dialog._from.setValue(0)
+    dialog._to.setValue(2)
+    real = analysis_dialog.analyze_corner
+
+    def with_missing(*args, **kwargs):
+        result = real(*args, **kwargs)
+        return replace(result, samples=(result.samples[0], None, result.samples[2]))
+
+    monkeypatch.setattr(analysis_dialog, "analyze_corner", with_missing)
+    dialog._run.click()
+    summary = dialog._spring_summary
+    assert summary.total == 3 and summary.missing == 1
+    assert summary.coil_bind_count >= 1
+    assert "пропусков: 1" in dialog._spring_range.toPlainText()
+    assert "могут быть неполными" in dialog._spring_range.toPlainText()
+    assert dialog._samples[0].spring.state.status == "coil_bind"
+    assert not dialog._spring_first_free.isEnabled()
+    assert summary.shortest.row != 1 and summary.longest.row != 1

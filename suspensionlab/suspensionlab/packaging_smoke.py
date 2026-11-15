@@ -233,6 +233,14 @@ def run_packaging_check() -> None:
         dialog._damper_max.setValue(325)
         _require(dialog._copy_damper.isEnabled(), "Перенос длин из проекта недоступен")
         dialog._run.click()
+        _require(dialog._spring_summary is not None and dialog._spring_summary.total == 2
+                 and dialog._spring_summary.missing == 0 and dialog._spring_shortest.isEnabled()
+                 and "из 2; пропусков: 0" in dialog._spring_range.toPlainText(),
+                 "Сводка пружины недоступна")
+        assert dialog._spring_summary is not None and dialog._spring_summary.shortest is not None
+        spring_row = dialog._spring_summary.shortest.row
+        dialog._spring_shortest.click()
+        _require(dialog._table.currentRow() == spring_row, "Переход к точке сводки пружины недоступен")
         _require("Точек на упоре или за ним: 2" in dialog._damper_range.toPlainText(),
                  "Сводка подбора амортизатора не выявила конфликт")
         dialog._candidate_min.setText("200")
