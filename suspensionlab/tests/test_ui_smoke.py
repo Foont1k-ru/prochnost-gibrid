@@ -3914,3 +3914,99 @@ def test_3d_optional_mounts_and_right_side(window, qtbot):
     dialog._run.click()
     assert dialog._preview3d.frame is not None
     assert f"Z {dialog._preview3d.frame.point('wheel_center')[2]:+.2f}" in dialog._point_info.text()
+
+
+def test_3d_discrete_point_positions_update_and_clear(window, qtbot):
+    from PySide6.QtWidgets import QApplication
+
+    from suspensionlab.ui.analysis_dialog import AnalysisDialog
+
+    window.controller.new_project("ring")
+    before = window.controller.project.to_dict()
+    dialog = AnalysisDialog(window.controller, window)
+    qtbot.addWidget(dialog)
+    dialog.resize(1200, 700)
+    dialog.show()
+    dialog._from.setValue(-2)
+    dialog._to.setValue(2)
+    dialog._run.click()
+    dialog._preview_mode.setCurrentIndex(1)
+    choice = dialog._point_choice
+    checkbox = dialog._point_samples
+    assert checkbox.isHidden()
+    choice.setCurrentIndex(choice.findData("wheel_center"))
+    assert checkbox.isVisible() and checkbox.isEnabled() and not checkbox.isChecked()
+    checkbox.setChecked(True)
+    QApplication.processEvents()
+    view = dialog._preview3d
+    points = view.sample_positions
+    assert len(points) == 5
+    assert points == tuple(scene.point("wheel_center") for scene in dialog._frames3d)
+    assert "5 из 5" in dialog._point_info.text() and "промежутки не проверены" in dialog._point_info.text()
+    dialog._table.setCurrentCell(4, 0)
+    assert view.sample_positions == points and view.frame.point("wheel_center") == points[4]
+    view.set_standard_view("top")
+    view.pan_x, view.pan_y, view.zoom = 8., 13., 1.2
+    assert not view.grab().isNull() and view.sample_positions == points
+    choice.setCurrentIndex(choice.findData("uca_f_in"))
+    assert len(view.sample_positions) == 5 and len(set(view.sample_positions)) == 1
+    assert "метки могут совпадать" in dialog._point_info.text()
+    choice.setCurrentIndex(choice.findData("spring_lo"))
+    assert view.sample_positions == () and "0 из 5" in dialog._point_info.text()
+    choice.setCurrentIndex(choice.findData("wheel_center"))
+    dialog._frames3d[1] = None
+    dialog._show_row(4)
+    assert len(view.sample_positions) == 4 and "4 из 5" in dialog._point_info.text()
+    dialog._show_row(1)
+    assert view.frame is None and "метки не отображаются" in dialog._point_info.text()
+    dialog._preview_mode.setCurrentIndex(0)
+    assert checkbox.isHidden()
+    dialog._preview_mode.setCurrentIndex(1)
+    assert checkbox.isChecked() and not checkbox.isHidden()
+    dialog._to.setValue(3)
+    assert view.sample_positions == () and view.frame is None and not checkbox.isEnabled()
+    assert "из 5" not in dialog._point_info.text()
+    dialog._run.click()
+    assert len(view.sample_positions) == 6 and "6 из 6" in dialog._point_info.text()
+    checkbox.setChecked(False)
+    assert view.sample_positions == () and "из 6" not in dialog._point_info.text()
+    choice.setCurrentIndex(0)
+    assert checkbox.isHidden() and view.sample_positions == ()
+    assert window.controller.project.to_dict() == before
+
+
+def test_3d_discrete_samples_are_not_joined_on_canvas(qtbot):
+    from PySide6.QtWidgets import QApplication
+
+    from suspensionlab.core.scene3d import Scene3D
+    from suspensionlab.ui.canvas.scene3d_preview import Scene3DPreview
+
+    left, right = (-100., 0., 0.), (100., 0., 0.)
+    first = Scene3D(0, (), (("test", left),))
+    second = Scene3D(1, (), (("test", right),))
+    view = Scene3DPreview()
+    qtbot.addWidget(view)
+    view.resize(500, 300)
+    view.show()
+    view.configure([first, second])
+    view.show_frame(first)
+    view.set_standard_view("right")
+    view.select_point("test")
+    view.set_sample_positions((left, right))
+    QApplication.processEvents()
+    image = view.grab().toImage()
+    ratio = image.devicePixelRatio()
+    center_y = round((view.height() / 2 + 8) * ratio)
+    x_right = round((view.width() / 2 + 115) * ratio)
+    x_middle = round(view.width() / 2 * ratio)
+    turquoise = image.pixelColor(x_right, center_y)
+    middle = image.pixelColor(x_middle, center_y)
+    assert turquoise.red() < 120 and turquoise.green() > 190 and turquoise.blue() > 210
+    assert not (middle.red() < 120 and middle.green() > 190 and middle.blue() > 210)
+    view.set_sample_positions(())
+    image = view.grab().toImage()
+    assert image.pixelColor(x_right, center_y) != turquoise
+    view.set_sample_positions((left, right))
+    view.show_frame(None)
+    image = view.grab().toImage()
+    assert image.pixelColor(x_right, center_y) != turquoise

@@ -26,6 +26,7 @@ class Scene3DPreview(QWidget):
         self.bounds: tuple[Point, float] | None = None
         self.message = tr("analysis.preview_empty")
         self.selected_point: str | None = None
+        self.sample_positions: tuple[Point, ...] = ()
         self._drag: QPointF | None = None
         self._pan_drag: QPointF | None = None
         self._pan_button: Qt.MouseButton | None = None
@@ -54,6 +55,11 @@ class Scene3DPreview(QWidget):
         self.selected_point = code
         self.update()
 
+    def set_sample_positions(self, points: tuple[Point, ...]) -> None:
+        """Только дискретные положения, не соединяем и не интерполируем."""
+        self.sample_positions = points
+        self.update()
+
     def configure(self, frames: list[Scene3D]) -> None:
         self.bounds = scene_bounds(frames)
         self.update()
@@ -61,6 +67,7 @@ class Scene3DPreview(QWidget):
     def clear(self, message: str | None = None) -> None:
         self.frame = None
         self.bounds = None
+        self.sample_positions = ()
         self.message = message or tr("analysis.preview_empty")
         self.update()
 
@@ -85,6 +92,16 @@ class Scene3DPreview(QWidget):
             painter.setPen(QPen(QColor(_COLORS[segment.kind]), 1.5 if segment.kind == "wheel" else 2.5))
             painter.drawLine(QPointF(self.width() / 2 + self.pan_x + a[0] * scale, self.height() / 2 + 8 + self.pan_y - a[1] * scale),
                              QPointF(self.width() / 2 + self.pan_x + b[0] * scale, self.height() / 2 + 8 + self.pan_y - b[1] * scale))
+        # Метки намеренно рисуются поверх линий, без проверки видимости/глубины.
+        if self.sample_positions:
+            painter.setPen(QPen(QColor("#00465a"), 1))
+            painter.setBrush(QColor("#4dd8ef"))
+            for sample in self.sample_positions:
+                x, y = project_orthographic(sample, center, self.yaw, self.elevation)
+                pos = QPointF(self.width() / 2 + self.pan_x + x * scale,
+                              self.height() / 2 + 8 + self.pan_y - y * scale)
+                painter.drawEllipse(pos, 3, 3)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
         point = self.frame.point(self.selected_point) if self.selected_point else None
         if point is not None:
             x, y = project_orthographic(point, center, self.yaw, self.elevation)

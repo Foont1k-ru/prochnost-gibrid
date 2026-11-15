@@ -198,7 +198,6 @@ class AnalysisDialog(QDialog):
             self._point_choice.addItem(tr(f"hp.{code}.name"), code)
         self._point_choice.setToolTip(tr("analysis.scene3d.point_tip"))
         point_layout.addWidget(self._point_choice, 1)
-        self._point_choice.currentIndexChanged.connect(self._update_point_annotation)
         self._point_controls.setVisible(False)
         self._preview_mode.currentIndexChanged.connect(lambda index: self._point_controls.setVisible(index == 1))
         preview_layout.addWidget(self._point_controls)
@@ -206,6 +205,12 @@ class AnalysisDialog(QDialog):
         self._point_info.setWordWrap(True)
         self._point_info.hide()
         preview_layout.addWidget(self._point_info)
+        self._point_samples = QCheckBox(tr("analysis.scene3d.samples_checkbox"), self)
+        self._point_samples.setToolTip(tr("analysis.scene3d.samples_tip"))
+        self._point_samples.hide()
+        preview_layout.addWidget(self._point_samples)
+        self._point_choice.currentIndexChanged.connect(self._update_point_annotation)
+        self._point_samples.toggled.connect(self._update_point_annotation)
         self._preview_mode.currentIndexChanged.connect(self._update_point_annotation)
         preview_layout.addWidget(self._preview_views, 1)
         self._scene_notice = QLabel(tr("analysis.scene3d.notice"), self)
@@ -398,18 +403,33 @@ class AnalysisDialog(QDialog):
 
     def _update_point_annotation(self, *_args: object) -> None:
         code = self._point_choice.currentData()
-        self._preview3d.select_point(code if isinstance(code, str) else None)
-        self._point_info.setVisible(bool(code) and self._preview_mode.currentIndex() == 1)
-        if not isinstance(code, str):
+        selected = isinstance(code, str)
+        self._preview3d.select_point(code if selected else None)
+        visible = selected and self._preview_mode.currentIndex() == 1
+        self._point_info.setVisible(visible)
+        self._point_samples.setVisible(visible)
+        self._point_samples.setEnabled(selected and bool(self._frames3d) and self._preview3d.bounds is not None)
+        if not selected:
+            self._preview3d.set_sample_positions(())
             self._point_info.clear()
             return
+        # Включаем только известные точки. Пропуски не заменяем и не соединяем.
+        positions = tuple(point for scene in self._frames3d if scene is not None
+                          for point in (scene.point(code),) if point is not None)
+        active = self._point_samples.isChecked() and self._preview3d.bounds is not None
+        self._preview3d.set_sample_positions(positions if active else ())
         scene = self._preview3d.frame
         point = scene.point(code) if scene is not None else None
         if point is None or self._preview3d.bounds is None:
-            self._point_info.setText(tr("analysis.scene3d.point_unavailable"))
+            text = tr("analysis.scene3d.point_unavailable")
         else:
-            self._point_info.setText(tr("analysis.scene3d.point_coordinates", x=f"{point[0]:+.2f}",
-                                        y=f"{point[1]:+.2f}", z=f"{point[2]:+.2f}"))
+            text = tr("analysis.scene3d.point_coordinates", x=f"{point[0]:+.2f}",
+                      y=f"{point[1]:+.2f}", z=f"{point[2]:+.2f}")
+        if active and self._frames3d:
+            text += " " + tr("analysis.scene3d.samples_count", count=len(positions), total=len(self._frames3d))
+            if scene is None:
+                text += " " + tr("analysis.scene3d.samples_no_frame")
+        self._point_info.setText(text)
 
     def _clear_results(self) -> None:
         self._playback.set_count(0)

@@ -188,7 +188,12 @@ def run_packaging_check() -> None:
         app.processEvents()
         _require(dialog._preview3d.frame is not None and dialog._preview3d.frame.point("ubj") is not None
                  and "X" in dialog._point_info.text(), "Выделение расчётной точки недоступно")
+        dialog._point_samples.setChecked(True)
+        app.processEvents()
+        _require(len(dialog._preview3d.sample_positions) == 2 and "2 из 2" in dialog._point_info.text()
+                 and not dialog._preview3d.grab().isNull(), "Дискретные положения точки недоступны")
         dialog._point_choice.setCurrentIndex(0)
+        _require(not dialog._preview3d.sample_positions, "Положения точки не очищены")
         dialog._parameters_toggle.click()
         app.processEvents()
         _require(not dialog._parameters.isVisible() and dialog._preview3d.height() >= 250
