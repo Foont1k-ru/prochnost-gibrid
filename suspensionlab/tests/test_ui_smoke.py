@@ -3689,6 +3689,8 @@ def test_damper_candidate_details_navigation_and_invalidation(window, qtbot):
     dialog._candidate_details.click()
     details = dialog._candidate_detail_dialog
     assert details is not None and details.isVisible()
+    details._tabs.setCurrentIndex(1)
+    assert not details._plot.grab().isNull()
     dialog._candidate_max.setText("500")
     assert not details.isVisible() and dialog._candidate_detail_dialog is None
     assert not dialog._candidate_details.isEnabled() and dialog._table.rowCount() == 3

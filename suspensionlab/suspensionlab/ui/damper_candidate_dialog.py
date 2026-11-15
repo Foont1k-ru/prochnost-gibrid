@@ -13,12 +13,14 @@ from PySide6.QtWidgets import (
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
 from ..core.damper_range import CandidateComparison
 from ..i18n import tr
+from .canvas.damper_candidate_plot import DamperCandidatePlot
 
 
 class DamperCandidateDialog(QDialog):
@@ -66,6 +68,32 @@ class DamperCandidateDialog(QDialog):
         self._table.cellDoubleClicked.connect(self._choose_row)
         self._table.currentCellChanged.connect(self._update_choice)
         self._filter.currentIndexChanged.connect(self._apply_filter)
+        table_container = QWidget(self)
+        table_layout = QVBoxLayout(table_container)
+        table_layout.setContentsMargins(0, 0, 0, 0)
+        table_layout.addLayout(controls)
+        table_layout.addWidget(self._table, 1)
+        self._plot = DamperCandidatePlot(comparison, self)
+        self._plot.rowSelected.connect(self._select_plot_row)
+        self._plot_selection = QLabel(tr("damper_candidate.plot.selection_empty"), self)
+        self._plot_selection.setWordWrap(True)
+        plot_notice = QLabel(tr("damper_candidate.plot.legend"), self)
+        plot_notice.setWordWrap(True)
+        lower = comparison.limits.compressed_mm + comparison.reserve_mm
+        upper = comparison.limits.extended_mm - comparison.reserve_mm
+        if lower > upper:
+            plot_notice.setText(plot_notice.text() + "\n" + tr("damper_candidate.plot.crossed"))
+        elif lower == upper:
+            plot_notice.setText(plot_notice.text() + "\n" + tr("damper_candidate.plot.touching"))
+        graph_container = QWidget(self)
+        graph_layout = QVBoxLayout(graph_container)
+        graph_layout.setContentsMargins(0, 0, 0, 0)
+        graph_layout.addWidget(self._plot, 1)
+        graph_layout.addWidget(self._plot_selection)
+        graph_layout.addWidget(plot_notice)
+        self._tabs = QTabWidget(self)
+        self._tabs.addTab(table_container, tr("damper_candidate.plot.table_tab"))
+        self._tabs.addTab(graph_container, tr("damper_candidate.plot.graph_tab"))
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close, self)
         buttons.button(QDialogButtonBox.StandardButton.Close).setText(tr("analysis.close"))
         buttons.rejected.connect(self.reject)
@@ -76,8 +104,7 @@ class DamperCandidateDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.addWidget(notice)
         layout.addWidget(context_label)
-        layout.addLayout(controls)
-        layout.addWidget(self._table, 1)
+        layout.addWidget(self._tabs, 1)
         layout.addLayout(bottom)
         self._apply_filter()
 
@@ -95,6 +122,21 @@ class DamperCandidateDialog(QDialog):
 
     def _update_choice(self, row: int, *_args: object) -> None:
         self._choose.setEnabled(0 <= row < self._table.rowCount() and not self._table.isRowHidden(row))
+        self._plot.set_row(row)
+        if 0 <= row < len(self._comparison.points):
+            point = self._comparison.points[row]
+            length = f"{point.length_mm:.3f}" if point.length_mm is not None else "—"
+            self._plot_selection.setText(tr("damper_candidate.plot.selection", row=row + 1,
+                                             travel=f"{point.travel_mm:+.3f}", length=length,
+                                             status=tr(f"damper_candidate.report.status.{point.status}")))
+        else:
+            self._plot_selection.setText(tr("damper_candidate.plot.selection_empty"))
+
+    def _select_plot_row(self, row: int) -> None:
+        if 0 <= row < self._table.rowCount():
+            if self._table.isRowHidden(row):
+                self._filter.setCurrentIndex(self._filter.findData("all"))
+            self._table.setCurrentCell(row, 0)
 
     def _choose_row(self, *_args: object) -> None:
         row = self._table.currentRow()

@@ -217,6 +217,9 @@ def run_packaging_check() -> None:
         _require(details is not None, "Окно точек кандидата не открыто")
         assert details is not None
         details._filter.setCurrentIndex(details._filter.findData("clear"))
+        details._tabs.setCurrentIndex(1)
+        _require(not details._plot.grab().isNull() and details._plot._geometry() is not None,
+                 "График кандидата недоступен")
         details._table.setCurrentCell(1, 0)
         details._choose.click()
         _require(dialog._table.currentRow() == 1 and dialog._candidate_detail_dialog is None,

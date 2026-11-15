@@ -77,6 +77,7 @@ class CandidateComparison:
     first_stop: LengthPoint | None
     first_insufficient: LengthPoint | None
     points: tuple[CandidatePoint, ...]
+    limits: StrokeLimits
 
 
 def compare_candidate(points: list[tuple[float, float | None]], limits: StrokeLimits,
@@ -110,4 +111,4 @@ def compare_candidate(points: list[tuple[float, float | None]], limits: StrokeLi
         results.append(CandidatePoint(travel, length, state, status))
     return CandidateComparison(summary, reserve_mm, len(insufficient),
                                stopped[0] if stopped else None, insufficient[0] if insufficient else None,
-                               tuple(results))
+                               tuple(results), limits)
