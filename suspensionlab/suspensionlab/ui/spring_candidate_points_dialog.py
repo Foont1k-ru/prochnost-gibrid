@@ -99,9 +99,22 @@ class SpringCandidatePointsDialog(QDialog):
         graph_layout.addWidget(self._plot, 1)
         graph_layout.addWidget(self._plot_selection)
         graph_layout.addWidget(plot_notice)
+        self._force_plot = SpringCandidatePlot(comparison, self, force=True)
+        self._force_plot.rowSelected.connect(self._select_plot_row)
+        self._force_selection = QLabel(tr("spring_candidate.plot.selection_empty"), self)
+        self._force_selection.setWordWrap(True)
+        force_notice = QLabel(tr("spring_candidate.force_plot.legend"), self)
+        force_notice.setWordWrap(True)
+        force_page = QWidget(self)
+        force_layout = QVBoxLayout(force_page)
+        force_layout.setContentsMargins(0, 0, 0, 0)
+        force_layout.addWidget(self._force_plot, 1)
+        force_layout.addWidget(self._force_selection)
+        force_layout.addWidget(force_notice)
         self._tabs = QTabWidget(self)
         self._tabs.addTab(table_page, tr("spring_candidate.plot.table_tab"))
         self._tabs.addTab(graph_page, tr("spring_candidate.plot.graph_tab"))
+        self._tabs.addTab(force_page, tr("spring_candidate.force_plot.tab"))
         layout.addWidget(notice)
         layout.addWidget(self._tabs, 1)
         layout.addLayout(bottom)
@@ -122,14 +135,20 @@ class SpringCandidatePointsDialog(QDialog):
     def _update_choice(self, row: int, *_args: object) -> None:
         self._choose.setEnabled(0 <= row < self._table.rowCount() and not self._table.isRowHidden(row))
         self._plot.set_row(row)
+        self._force_plot.set_row(row)
         if 0 <= row < len(self.comparison.points):
             point = self.comparison.points[row]
             length = f"{point.length_mm:.3f}" if point.length_mm is not None else "—"
             self._plot_selection.setText(tr("spring_candidate.plot.selection", row=row + 1,
                                              travel=f"{point.travel_mm:+.3f}", length=length,
                                              status=tr(f"spring_candidate.report.status.{point.status}")))
+            force = f"{point.force_n:.3f}" if point.force_n is not None else "—"
+            self._force_selection.setText(tr("spring_candidate.force_plot.selection", row=row + 1,
+                                              travel=f"{point.travel_mm:+.3f}", force=force,
+                                              status=tr(f"spring_candidate.force.status.{point.force_status}")))
         else:
             self._plot_selection.setText(tr("spring_candidate.plot.selection_empty"))
+            self._force_selection.setText(tr("spring_candidate.plot.selection_empty"))
 
     def _select_plot_row(self, row: int) -> None:
         if 0 <= row < self._table.rowCount():

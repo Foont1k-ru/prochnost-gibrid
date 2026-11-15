@@ -282,6 +282,17 @@ def run_packaging_check() -> None:
         _require(spring_candidate.comparison is not None and spring_candidate.report is not None
                  and spring_candidate.comparison.points[0].force_n is not None
                  and spring_candidate.report.rows[0][8] != "—", "Линейная оценка силы пружины недоступна")
+        spring_candidate._details.click()
+        force_detail = spring_candidate._details_dialog
+        _require(force_detail is not None, "Просмотр силы пружины не открылся")
+        assert force_detail is not None
+        force_detail._tabs.setCurrentIndex(2)
+        app.processEvents()
+        _require(force_detail._force_plot._geometry() is not None and not force_detail._force_plot.grab().isNull(),
+                 "График силы пружины недоступен")
+        force_detail._select_plot_row(0)
+        _require(force_detail._table.currentRow() == 0 and force_detail._force_plot.row == 0,
+                 "Выбор на графике силы не синхронизирован")
         spring_candidate.reject()
         _require(dialog._spring_candidate_dialog is None, "Окно сравнения пружины не закрыто")
         _require("Точек на упоре или за ним: 2" in dialog._damper_range.toPlainText(),

@@ -1,4 +1,4 @@
-"""Дискретные длины кандидата пружины без соединения точек."""
+"""Дискретные длины и модельная сила кандидата без соединения точек."""
 from __future__ import annotations
 
 from math import isfinite
@@ -7,7 +7,7 @@ from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QMouseEvent, QPainter, QPen
 from PySide6.QtWidgets import QWidget
 
-from ...core.spring_candidate import SpringComparison
+from ...core.spring_candidate import SpringCandidatePoint, SpringComparison
 from ...i18n import tr
 
 
@@ -18,9 +18,10 @@ class SpringCandidatePlot(QWidget):
     _COLORS = {"clear": "#398bd1", "reserve_short": "#d78b18", "coil_bind": "#d94b46",
                "invalid": "#d94b46", "uncompressed": "#a778d1"}
 
-    def __init__(self, comparison: SpringComparison, parent: QWidget | None = None) -> None:
+    def __init__(self, comparison: SpringComparison, parent: QWidget | None = None, *, force: bool = False) -> None:
         super().__init__(parent)
         self.comparison = comparison
+        self.force = force
         self.row = -1
         self.setMinimumSize(300, 230)
 
@@ -28,15 +29,19 @@ class SpringCandidatePlot(QWidget):
         self.row = row
         self.update()
 
+    def _value(self, point: SpringCandidatePoint) -> float | None:
+        return point.force_n if self.force else point.length_mm
+
     def _geometry(self) -> tuple[QRectF, float, float, float, float] | None:
         points = self.comparison.points
         xs = [p.travel_mm for p in points if isfinite(p.travel_mm) and abs(p.travel_mm) < 1e100]
-        ys = [p.length_mm for p in points if p.length_mm is not None and isfinite(p.length_mm)
-              and abs(p.length_mm) < 1e100]
+        ys = [value for p in points if (value := self._value(p)) is not None
+              and isfinite(value) and abs(value) < 1e100]
         candidate = self.comparison.candidate
-        references = (candidate.coil_bind_mm, candidate.free_mm,
-                      candidate.coil_bind_mm + candidate.coil_reserve_mm,
-                      candidate.free_mm - candidate.compression_reserve_mm)
+        references = ((0.,) if self.force else
+                      (candidate.coil_bind_mm, candidate.free_mm,
+                       candidate.coil_bind_mm + candidate.coil_reserve_mm,
+                       candidate.free_mm - candidate.compression_reserve_mm))
         if not xs or not ys or any(not isfinite(v) or abs(v) >= 1e100 for v in references):
             return None
         ys.extend(references)
@@ -60,11 +65,12 @@ class SpringCandidatePlot(QWidget):
         geometry = self._geometry()
         if geometry is None:
             painter.drawText(self.rect(), int(Qt.AlignmentFlag.AlignCenter) | int(Qt.TextFlag.TextWordWrap),
-                             tr("spring_candidate.plot.empty"))
+                             tr("spring_candidate.force_plot.empty_disabled" if self.force and self.comparison.candidate.linear_rate_n_mm is None
+                                else "spring_candidate.force_plot.empty" if self.force else "spring_candidate.plot.empty"))
             return
         rect, xmin, xmax, ymin, ymax = geometry
         painter.drawText(QRectF(6, 0, self.width() - 12, 22), int(Qt.AlignmentFlag.AlignLeft),
-                         tr("spring_candidate.plot.y_axis"))
+                         tr("spring_candidate.force_plot.y_axis" if self.force else "spring_candidate.plot.y_axis"))
         painter.drawRect(rect)
         for t in (0., .5, 1.):
             painter.drawText(QRectF(rect.left() + rect.width() * t - 34, rect.bottom() + 5, 68, 18),
@@ -74,21 +80,22 @@ class SpringCandidatePlot(QWidget):
         painter.drawText(QRectF(rect.left(), self.height() - 20, rect.width(), 18),
                          int(Qt.AlignmentFlag.AlignCenter), tr("spring_candidate.plot.x_axis"))
         candidate = self.comparison.candidate
-        refs = [(candidate.coil_bind_mm, "#d94b46", Qt.PenStyle.DashLine),
-                (candidate.free_mm, "#a778d1", Qt.PenStyle.DashLine)]
-        if candidate.coil_reserve_mm > 0:
+        refs = [] if self.force else [(candidate.coil_bind_mm, "#d94b46", Qt.PenStyle.DashLine),
+                                     (candidate.free_mm, "#a778d1", Qt.PenStyle.DashLine)]
+        if not self.force and candidate.coil_reserve_mm > 0:
             refs.append((candidate.coil_bind_mm + candidate.coil_reserve_mm, "#d78b18", Qt.PenStyle.DotLine))
-        if candidate.compression_reserve_mm > 0:
+        if not self.force and candidate.compression_reserve_mm > 0:
             refs.append((candidate.free_mm - candidate.compression_reserve_mm, "#d78b18", Qt.PenStyle.DotLine))
-        for value, reference_color, style in refs:
+        for reference, reference_color, style in refs:
             painter.setPen(QPen(QColor(reference_color), 1.5, style))
-            y = self._screen(xmin, value, geometry).y()
+            y = self._screen(xmin, reference, geometry).y()
             painter.drawLine(QPointF(rect.left(), y), QPointF(rect.right(), y))
         for i, point in enumerate(self.comparison.points):
             if not isfinite(point.travel_mm) or abs(point.travel_mm) >= 1e100:
                 continue
-            if point.length_mm is None:
-                # Пропуск привязан к оси X, а не к вымышленной длине.
+            value = self._value(point)
+            if value is None or not isfinite(value) or abs(value) >= 1e100:
+                # Пропуск привязан к оси X, а не к вымышленному значению.
                 x = self._screen(point.travel_mm, ymin, geometry).x()
                 painter.setPen(QPen(QColor("#888888"), 2))
                 painter.drawLine(QPointF(x, rect.bottom() - 6), QPointF(x, rect.bottom() + 1))
@@ -96,9 +103,7 @@ class SpringCandidatePlot(QWidget):
                     painter.setPen(QPen(self.palette().text().color(), 1.5))
                     painter.drawRect(QRectF(x - 5, rect.bottom() - 11, 10, 10))
                 continue
-            if not isfinite(point.length_mm) or abs(point.length_mm) >= 1e100:
-                continue
-            center = self._screen(point.travel_mm, point.length_mm, geometry)
+            center = self._screen(point.travel_mm, value, geometry)
             color = QColor(self._COLORS[point.status])
             painter.setPen(QPen(color, 2))
             if point.status in ("invalid", "coil_bind"):
