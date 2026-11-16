@@ -35,6 +35,7 @@ from ..core.snapshot_compare import (
 from ..core.snapshot_parameters import ParameterComparison, compare_parameters
 from ..export.csv_report import CSVReport, write_csv_report
 from ..i18n import tr
+from ..model.entities import Project, Snapshot
 from ..model.point_csv import PointRecord
 from ..model.snapshot_restore import prepare_snapshot
 from .controller import AppController, Selection
@@ -74,6 +75,13 @@ def _scalar(value: str | bool | int | float | None) -> str:
     return str(value) if isinstance(value, str) else repr(value)
 
 
+def _prepare(snapshot: Snapshot) -> tuple[Project, str]:
+    project = prepare_snapshot(snapshot.data)
+    selected = {key: snapshot.data[key] for key in ("schema_version", "meta", "vehicle", "front_axle", "rear_axle")}
+    payload = json.dumps(selected, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    return project, hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 class SnapshotCompareDialog(QDialog):
     """Показывает сравнение только для чтения; при изменении модели блокируется."""
 
@@ -84,6 +92,8 @@ class SnapshotCompareDialog(QDialog):
         self._stale = False
         self._result: SnapshotComparison | None = None
         self._snapshot_hash = ""
+        self._target_hash = ""
+        self._revision = 0
         self._point_rows: tuple[tuple[str, ...], ...] = ()
         self._link_rows: tuple[tuple[str, ...], ...] = ()
         self._param_rows: tuple[tuple[str, ...], ...] = ()
@@ -97,7 +107,16 @@ class SnapshotCompareDialog(QDialog):
         self._snapshot = QComboBox(self)
         for index, snapshot in enumerate(controller.project.snapshots):
             self._snapshot.addItem(f"{index + 1}. {snapshot.name}", index)
-        layout.addWidget(self._snapshot)
+        sources = QHBoxLayout()
+        sources.addWidget(QLabel(tr("snapshot_compare.source_a")))
+        sources.addWidget(self._snapshot, 1)
+        self._target = QComboBox(self)
+        self._target.addItem(tr("snapshot_compare.current_project"), -1)
+        for index, snapshot in enumerate(controller.project.snapshots):
+            self._target.addItem(f"{index + 1}. {snapshot.name}", index)
+        sources.addWidget(QLabel(tr("snapshot_compare.source_b")))
+        sources.addWidget(self._target, 1)
+        layout.addLayout(sources)
         self._context = QLabel(self)
         self._context.setWordWrap(True)
         layout.addWidget(self._context)
@@ -144,6 +163,7 @@ class SnapshotCompareDialog(QDialog):
         buttons.addWidget(close)
         layout.addLayout(buttons)
         self._snapshot.currentIndexChanged.connect(self._load)
+        self._target.currentIndexChanged.connect(self._load)
         self._role.currentIndexChanged.connect(self._apply_filter)
         self._filter.currentIndexChanged.connect(self._apply_filter)
         self._tabs.currentChanged.connect(self._apply_filter)
@@ -168,7 +188,10 @@ class SnapshotCompareDialog(QDialog):
     def _load(self) -> None:
         if self._stale:
             return
+        self._revision += 1
         self._result = None
+        self._snapshot_hash = ""
+        self._target_hash = ""
         self._point_rows = ()
         self._link_rows = ()
         self._param_rows = ()
@@ -184,24 +207,45 @@ class SnapshotCompareDialog(QDialog):
             return
         snapshot = self.controller.project.snapshots[index]
         try:
-            reference = prepare_snapshot(snapshot.data)
-            selected = {key: snapshot.data[key] for key in ("schema_version", "meta", "vehicle", "front_axle", "rear_axle")}
-            payload = json.dumps(selected, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
-            self._snapshot_hash = hashlib.sha256(payload.encode("utf-8")).hexdigest()
-            result = compare_projects(reference, self.controller.project)
-            parameters = compare_parameters(reference, self.controller.project)
-        except (ValueError, TypeError, KeyError, OverflowError, ArithmeticError, RecursionError):
+            reference, reference_hash = _prepare(snapshot)
+        except (ValueError, TypeError, KeyError, ArithmeticError, RecursionError, UnicodeError):
             self._context.setText("")
-            self._state.setText(tr("snapshot_compare.bad_snapshot"))
+            self._state.setText(tr("snapshot_compare.bad_snapshot_a"))
             self._apply_filter()
             return
+        target_index = self._target.currentData()
+        if not isinstance(target_index, int) or not -1 <= target_index < len(self.controller.project.snapshots):
+            self._context.setText("")
+            self._state.setText(tr("snapshot_compare.bad_snapshot_b"))
+            self._apply_filter()
+            return
+        try:
+            if target_index == -1:
+                target = self.controller.project
+                target_hash = ""
+            else:
+                target, target_hash = _prepare(self.controller.project.snapshots[target_index])
+        except (ValueError, TypeError, KeyError, ArithmeticError, RecursionError, UnicodeError):
+            self._context.setText("")
+            self._state.setText(tr("snapshot_compare.bad_snapshot_b"))
+            self._apply_filter()
+            return
+        try:
+            result = compare_projects(reference, target)
+            parameters = compare_parameters(reference, target)
+        except (ValueError, TypeError, KeyError, ArithmeticError, RecursionError, UnicodeError):
+            self._context.setText("")
+            self._state.setText(tr("snapshot_compare.compare_error"))
+            self._apply_filter()
+            return
+        self._snapshot_hash = reference_hash
+        self._target_hash = target_hash
         self._result = result
         self._parameters = parameters
-        current = self.controller.project
         self._context.setText(tr("snapshot_compare.types", old_front=reference.front.type_code,
-                                 new_front=current.front.type_code, old_rear=reference.rear.type_code,
-                                 new_rear=current.rear.type_code))
-        self._state.setText(tr("snapshot_compare.ready"))
+                                 new_front=target.front.type_code, old_rear=reference.rear.type_code,
+                                 new_rear=target.rear.type_code))
+        self._state.setText(tr("snapshot_compare.ready_current" if target_index == -1 else "snapshot_compare.ready_pair"))
         point_rows = []
         for row in result.points:
             point = row.new or row.old
@@ -212,7 +256,7 @@ class SnapshotCompareDialog(QDialog):
                                *_coordinates(row.new), *delta, _number(row.distance)))
         link_rows = []
         for link_row in result.links:
-            axle = current.axle(link_row.role) if link_row.new_exists else reference.axle(link_row.role)
+            axle = target.axle(link_row.role) if link_row.new_exists else reference.axle(link_row.role)
             spec = axle.spec.link(link_row.code)
             link_rows.append((tr(f"tree.{link_row.role}"), link_row.code, tr(spec.name_key) if spec else link_row.code,
                               tr(f"snapshot_compare.status_{link_row.status}"), _number(link_row.old_length),
@@ -294,7 +338,8 @@ class SnapshotCompareDialog(QDialog):
     def _update_choose(self, *_args: object) -> None:
         table, rows = self._active()
         index = table.currentRow()
-        enabled = not self._stale and 0 <= index < len(rows) and not table.isRowHidden(index)
+        enabled = (not self._stale and self._target.currentData() == -1 and
+                   0 <= index < len(rows) and not table.isRowHidden(index))
         if enabled:
             row = rows[index]
             if isinstance(row, PointComparison):
@@ -319,6 +364,7 @@ class SnapshotCompareDialog(QDialog):
     def _invalidate(self) -> None:
         self._stale = True
         self._snapshot.setEnabled(False)
+        self._target.setEnabled(False)
         self._state.setText(tr("snapshot_compare.stale"))
         self._apply_filter()
 
@@ -350,9 +396,19 @@ class SnapshotCompareDialog(QDialog):
                    *(tr(f"snapshot_compare.column_{name}") for name in report_columns))
         rows = tuple((row.old_type or "—", row.new_type or "—", row.status, *display)
                      for row, display in zip(data, display_rows, strict=True))
+        target_index = self._target.currentData()
+        if target_index == -1:
+            target_details = [(tr("snapshot_compare.target_kind"), tr("snapshot_compare.current_project"))]
+        else:
+            target_snapshot = self.controller.project.snapshots[target_index]
+            target_details = [(tr("snapshot_compare.target_kind"), tr("snapshot_compare.target_snapshot")),
+                              (tr("snapshot_compare.target_name"), target_snapshot.name),
+                              (tr("snapshot_compare.target_index"), str(target_index + 1)),
+                              (tr("snapshot_compare.target_hash"), self._target_hash)]
         parameters = [(tr("snapshot_compare.snapshot_name"), snapshot.name),
                       (tr("snapshot_compare.snapshot_index"), str(index + 1)),
                       (tr("snapshot_compare.snapshot_hash"), self._snapshot_hash),
+                      *target_details,
                       (tr("snapshot_compare.scope_label"), tr("snapshot_compare.notice"))]
         if tab == 2:
             parameters.append((tr("snapshot_compare.parameter_scope_label"), tr("snapshot_compare.parameter_scope")))
@@ -361,6 +417,7 @@ class SnapshotCompareDialog(QDialog):
                                              "snapshot_compare.precision"), allow_empty_rows=True)
 
     def _export_current(self) -> None:
+        revision, tab = self._revision, self._tabs.currentIndex()
         try:
             report = self._report()
         except (ValueError, UnicodeError, ArithmeticError, TypeError) as error:
@@ -373,8 +430,8 @@ class SnapshotCompareDialog(QDialog):
         if path.suffix.lower() != ".csv":
             path = path.with_name(path.name + ".csv")
         try:
-            if self._stale:
-                raise ValueError(tr("snapshot_compare.stale"))
+            if self._stale or revision != self._revision or tab != self._tabs.currentIndex():
+                raise ValueError(tr("snapshot_compare.export_changed"))
             protected = [autosave_path()]
             if self.controller.project.path:
                 protected.append(Path(self.controller.project.path))

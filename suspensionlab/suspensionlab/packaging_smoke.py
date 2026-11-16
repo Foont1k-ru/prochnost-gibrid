@@ -245,15 +245,20 @@ def run_packaging_check() -> None:
         _require(first_point.x == old_x, "Отмена правки точки недоступна")
         app.processEvents()
         window.controller.project.add_snapshot("Проверка сравнения")
+        window.controller.project.add_snapshot("Проверка второго снимка")
         compare = SnapshotCompareDialog(window.controller, window)
         _require(bool(window.action_compare_snapshot.text()) and compare._result is not None,
                  "Сравнение снимка недоступно")
         _require(bool(compare._report().rows), "Отчёт сравнения снимка пуст")
+        compare._target.setCurrentIndex(2)
+        _require(compare._result is not None and not compare._choose.isEnabled(),
+                 "Сравнение двух снимков недоступно")
         compare._tabs.setCurrentIndex(2)
         _require(bool(compare._parameters) and bool(compare._report().rows),
                  "Сравнение параметров снимка недоступно")
         compare.close()
         compare.deleteLater()
+        window.controller.project.snapshots.pop()
         window.controller.project.snapshots.pop()
         dialog = AnalysisDialog(window.controller, window)
         dialog.show()

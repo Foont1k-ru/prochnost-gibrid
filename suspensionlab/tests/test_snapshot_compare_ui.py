@@ -213,3 +213,139 @@ def test_main_menu_parameter_navigation(qtbot):
     window.action_compare_snapshot.trigger()
     assert c.selection == Selection('damper', 'front')
     assert c.undo.depth() == 0 and not c.dirty
+
+
+def test_snapshot_pair_reversal_values_filter_export_and_no_navigation(qtbot, tmp_path, monkeypatch):
+    from suspensionlab.i18n import tr
+    from suspensionlab.ui.snapshot_compare_dialog import _prepare
+
+    c = AppController()
+    c.project.add_snapshot('=одинаковое имя')
+    c.project.front.hardpoints['ubj'].x += 3
+    c.project.front.hardpoints['ubj'].z += 4
+    c.project.front.spring.rate_N_mm += 10
+    c.project.add_snapshot('=одинаковое имя')
+    c.project.front.hardpoints['ubj'].x += 100
+    c.project.front.spring.rate_N_mm += 100
+    state = copy.deepcopy(c.project.to_dict())
+    d = SnapshotCompareDialog(c)
+    qtbot.addWidget(d)
+    d.show()
+    d._target.setCurrentIndex(2)  # второй снимок Б, текущий проект не используется
+    point_index = next(i for i, p in enumerate(d._result.points) if p.role == 'front' and p.code == 'ubj')
+    point = d._result.points[point_index]
+    assert point.delta == (3, 0, 4) and point.distance == 5
+    assert d._points.item(point_index, 9).text() == repr(point.new.xyz[0])
+    assert 'сравниваются два снимка' in d._state.text().lower()
+    d._points.setCurrentCell(point_index, 0)
+    assert not d._choose.isEnabled()
+    d._maximum.click()
+    assert d._points.currentRow() == point_index and not d._choose.isEnabled()
+    d._tabs.setCurrentIndex(1)
+    d._links.setCurrentCell(0, 0)
+    assert not d._choose.isEnabled()
+    d._tabs.setCurrentIndex(2)
+    param_index = next(i for i, p in enumerate(d._parameters) if p.role == 'front' and p.code == 'spring.rate')
+    assert d._parameters[param_index].delta == 10
+    d._params.setCurrentCell(param_index, 0)
+    assert not d._choose.isEnabled()
+    d._role.setCurrentIndex(d._role.findData('rear'))
+    report = d._report()
+    assert len(report.rows) == len(d._parameters) and any('spring.rate' in row for row in report.rows)
+    meta = dict(report.metadata)
+    assert meta[tr('snapshot_compare.snapshot_index')] == '1'
+    assert meta[tr('snapshot_compare.target_index')] == '2'
+    assert meta[tr('snapshot_compare.snapshot_hash')] == _prepare(c.project.snapshots[0])[1]
+    assert meta[tr('snapshot_compare.target_hash')] == _prepare(c.project.snapshots[1])[1]
+    assert meta[tr('snapshot_compare.snapshot_hash')] != meta[tr('snapshot_compare.target_hash')]
+    path = tmp_path / 'pair.csv'
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(path), ''))
+    d._export_current()
+    with path.open(encoding='utf-8-sig', newline='') as stream:
+        csv_rows = list(csv.reader(stream, delimiter=';'))
+    assert sum("'=одинаковое имя" in row for row in csv_rows) == 2
+    assert any('spring.rate' in row for row in csv_rows)
+    d._snapshot.setCurrentIndex(1)
+    d._target.setCurrentIndex(1)
+    point = next(p for p in d._result.points if p.role == 'front' and p.code == 'ubj')
+    assert point.delta == (-3, 0, -4) and point.distance == 5
+    assert next(p for p in d._parameters if p.role == 'front' and p.code == 'spring.rate').delta == -10
+    d._target.setCurrentIndex(2)  # А и Б — один снимок
+    point = next(p for p in d._result.points if p.role == 'front' and p.code == 'ubj')
+    assert point.status == 'unchanged' and point.delta == (0, 0, 0)
+    assert c.project.to_dict() == state and c.undo.depth() == 0 and not c.dirty
+
+
+def test_pair_invalid_b_stale_and_export_reentrancy(qtbot, tmp_path, monkeypatch):
+    c = setup_comparison()
+    c.project.add_snapshot('second')
+    c.project.snapshots.append(Snapshot('broken', data={'schema_version': 1}))
+    d = SnapshotCompareDialog(c)
+    qtbot.addWidget(d)
+    d._target.setCurrentIndex(3)
+    assert d._result is None and not d._export.isEnabled()
+    assert 'снимок б' in d._state.text().lower()
+    d._target.setCurrentIndex(2)
+    assert d._result is not None and d._export.isEnabled()
+    warnings = []
+    monkeypatch.setattr(QMessageBox, 'warning', lambda *args: warnings.append(args))
+    path = tmp_path / 'changed.csv'
+    def switch_while_saving(*args):
+        d._target.setCurrentIndex(1)
+        d._target.setCurrentIndex(2)  # Даже возврат к тому же выбору отменяет экспорт.
+        return str(path), ''
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', switch_while_saving)
+    d._export_current()
+    assert warnings and not path.exists()
+    c.modelChanged.emit()
+    assert not d._target.isEnabled() and not d._snapshot.isEnabled() and not d._export.isEnabled()
+    with pytest.raises(ValueError):
+        d._report()
+
+
+def test_pair_different_axle_types_are_not_comparable(qtbot):
+    c = AppController()
+    c.project.add_snapshot('independent')
+    c.project.set_axle_type('rear', 'live_axle_coil')
+    c.project.add_snapshot('solid')
+    d = SnapshotCompareDialog(c)
+    qtbot.addWidget(d)
+    d._target.setCurrentIndex(2)
+    point = next(p for p in d._result.points if p.role == 'rear' and p.old and p.new)
+    assert point.status == 'incompatible' and point.delta is None
+    param = next(p for p in d._parameters if p.role == 'rear' and p.code == 'spring.rate')
+    assert param.status == 'incompatible' and param.delta is None
+    assert 'multilink_rear' in d._context.text() and 'live_axle_coil' in d._context.text()
+
+
+def test_pair_uses_saved_rounded_values_not_live_model(qtbot):
+    c = AppController()
+    c.project.front.hardpoints['ubj'].x = 0.123456
+    c.project.add_snapshot('A')
+    c.project.front.hardpoints['ubj'].x = 0.123454
+    c.project.add_snapshot('B')
+    d = SnapshotCompareDialog(c)
+    qtbot.addWidget(d)
+    current = next(p for p in d._result.points if p.role == 'front' and p.code == 'ubj')
+    assert current.status == 'changed' and current.new.xyz[0] == 0.123454
+    d._target.setCurrentIndex(2)
+    pair = next(p for p in d._result.points if p.role == 'front' and p.code == 'ubj')
+    assert pair.status == 'unchanged' and pair.old.xyz[0] == pair.new.xyz[0] == 0.1235
+
+
+def test_pair_added_removed_follow_direction(qtbot):
+    c = AppController()
+    c.project.front.hardpoints['only_a'] = Hardpoint('only_a', 1, 2, 3)
+    c.project.add_snapshot('A')
+    del c.project.front.hardpoints['only_a']
+    c.project.front.hardpoints['only_b'] = Hardpoint('only_b', 4, 5, 6)
+    c.project.add_snapshot('B')
+    d = SnapshotCompareDialog(c)
+    qtbot.addWidget(d)
+    d._target.setCurrentIndex(2)
+    points = {p.code: p for p in d._result.points if p.role == 'front'}
+    assert points['only_a'].status == 'removed' and points['only_b'].status == 'added'
+    d._snapshot.setCurrentIndex(1)
+    d._target.setCurrentIndex(1)
+    points = {p.code: p for p in d._result.points if p.role == 'front'}
+    assert points['only_a'].status == 'added' and points['only_b'].status == 'removed'
