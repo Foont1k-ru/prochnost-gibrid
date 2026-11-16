@@ -213,10 +213,10 @@ def test_cad_preview_load_rotate_and_cancel_without_project_changes(window, qtbo
         raise CadPreviewError("cancelled")
     monkeypatch.setattr(CadJob, "run", wait_for_cancel)
     dialog._reload.click()
-    assert started.wait(3) and dialog._view.mesh is None and not dialog._choose.isEnabled()
+    assert started.wait(3) and dialog._view.mesh is grouped and not dialog._choose.isEnabled()
     dialog._cancel.click()
     qtbot.waitUntil(lambda: dialog._reader is None, timeout=10000)
-    assert "отменено" in dialog._status.text() and dialog._view.mesh is None
+    assert "отменено" in dialog._status.text() and dialog._view.mesh is grouped
     assert window.controller.project.to_dict() == before
     dialog.close()
 
