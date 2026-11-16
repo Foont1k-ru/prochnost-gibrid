@@ -1,4 +1,4 @@
-"""Сравнение исходных точек и длин рычагов с сохранённым снимком."""
+"""Сравнение геометрии и параметров с сохранённым снимком."""
 from __future__ import annotations
 
 import hashlib
@@ -32,6 +32,7 @@ from ..core.snapshot_compare import (
     max_link_delta,
     max_point_displacement,
 )
+from ..core.snapshot_parameters import ParameterComparison, compare_parameters
 from ..export.csv_report import CSVReport, write_csv_report
 from ..i18n import tr
 from ..model.point_csv import PointRecord
@@ -43,6 +44,7 @@ STATUSES = ("all", "changed", "unchanged", "added", "removed", "incompatible", "
 POINT_COLUMNS = ("axle", "code", "name", "status", "old_rep", "new_rep", "old_x", "old_y", "old_z",
                  "new_x", "new_y", "new_z", "dx", "dy", "dz", "distance")
 LINK_COLUMNS = ("axle", "code", "name", "status", "old_length", "new_length", "length_delta")
+PARAM_COLUMNS = ("axle", "component", "code", "name", "status", "unit", "old_value", "new_value", "value_delta")
 
 
 def _number(value: float | None) -> str:
@@ -64,6 +66,14 @@ def _representation(point: PointRecord | None) -> str:
     return tr("point_table." + key)
 
 
+def _scalar(value: str | bool | int | float | None) -> str:
+    if value is None:
+        return tr("snapshot_compare.nonfinite")
+    if isinstance(value, bool):
+        return tr("export.yes") if value else tr("export.no")
+    return str(value) if isinstance(value, str) else repr(value)
+
+
 class SnapshotCompareDialog(QDialog):
     """Показывает сравнение только для чтения; при изменении модели блокируется."""
 
@@ -76,6 +86,8 @@ class SnapshotCompareDialog(QDialog):
         self._snapshot_hash = ""
         self._point_rows: tuple[tuple[str, ...], ...] = ()
         self._link_rows: tuple[tuple[str, ...], ...] = ()
+        self._param_rows: tuple[tuple[str, ...], ...] = ()
+        self._parameters: tuple[ParameterComparison, ...] = ()
         self.setWindowTitle(tr("snapshot_compare.title"))
         self.resize(1100, 690)
         layout = QVBoxLayout(self)
@@ -91,8 +103,8 @@ class SnapshotCompareDialog(QDialog):
         layout.addWidget(self._context)
         filters = QHBoxLayout()
         self._role = QComboBox(self)
-        for role in ("all", "front", "rear"):
-            self._role.addItem(tr(f"point_table.filter_{role}"), role)
+        for role in ("all", "front", "rear", "vehicle"):
+            self._role.addItem(tr(f"snapshot_compare.role_{role}"), role)
         self._filter = QComboBox(self)
         for status in STATUSES:
             self._filter.addItem(tr(f"snapshot_compare.filter_{status}"), status)
@@ -103,13 +115,18 @@ class SnapshotCompareDialog(QDialog):
         self._maximum.clicked.connect(self._select_maximum)
         filters.addWidget(self._maximum)
         layout.addLayout(filters)
+        self._detail = QLabel(self)
+        self._detail.setWordWrap(True)
+        layout.addWidget(self._detail)
         self._count = QLabel(self)
         layout.addWidget(self._count)
         self._tabs = QTabWidget(self)
         self._points = self._make_table(POINT_COLUMNS)
         self._links = self._make_table(LINK_COLUMNS)
+        self._params = self._make_table(PARAM_COLUMNS)
         self._tabs.addTab(self._points, tr("snapshot_compare.points"))
         self._tabs.addTab(self._links, tr("snapshot_compare.links"))
+        self._tabs.addTab(self._params, tr("snapshot_compare.parameters"))
         layout.addWidget(self._tabs, 1)
         self._state = QLabel(self)
         self._state.setWordWrap(True)
@@ -132,6 +149,7 @@ class SnapshotCompareDialog(QDialog):
         self._tabs.currentChanged.connect(self._apply_filter)
         self._points.currentCellChanged.connect(self._update_choose)
         self._links.currentCellChanged.connect(self._update_choose)
+        self._params.currentCellChanged.connect(self._update_choose)
         controller.modelChanged.connect(self._invalidate)
         controller.projectReplaced.connect(self._invalidate)
         self._load()
@@ -153,6 +171,9 @@ class SnapshotCompareDialog(QDialog):
         self._result = None
         self._point_rows = ()
         self._link_rows = ()
+        self._param_rows = ()
+        self._parameters = ()
+        self._params.setRowCount(0)
         self._points.setRowCount(0)
         self._links.setRowCount(0)
         index = self._snapshot.currentData()
@@ -168,12 +189,14 @@ class SnapshotCompareDialog(QDialog):
             payload = json.dumps(selected, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
             self._snapshot_hash = hashlib.sha256(payload.encode("utf-8")).hexdigest()
             result = compare_projects(reference, self.controller.project)
+            parameters = compare_parameters(reference, self.controller.project)
         except (ValueError, TypeError, KeyError, OverflowError, ArithmeticError, RecursionError):
             self._context.setText("")
             self._state.setText(tr("snapshot_compare.bad_snapshot"))
             self._apply_filter()
             return
         self._result = result
+        self._parameters = parameters
         current = self.controller.project
         self._context.setText(tr("snapshot_compare.types", old_front=reference.front.type_code,
                                  new_front=current.front.type_code, old_rear=reference.rear.type_code,
@@ -194,9 +217,15 @@ class SnapshotCompareDialog(QDialog):
             link_rows.append((tr(f"tree.{link_row.role}"), link_row.code, tr(spec.name_key) if spec else link_row.code,
                               tr(f"snapshot_compare.status_{link_row.status}"), _number(link_row.old_length),
                               _number(link_row.new_length), _number(link_row.delta)))
-        self._point_rows, self._link_rows = tuple(point_rows), tuple(link_rows)
+        param_rows = []
+        for param in parameters:
+            param_rows.append((tr(f"tree.{param.role}"), tr(f"tree.{param.component}"), param.code,
+                               tr(param.name_key), tr(f"snapshot_compare.status_{param.status}"), param.unit,
+                               _scalar(param.old), _scalar(param.new), _number(param.delta)))
+        self._point_rows, self._link_rows, self._param_rows = tuple(point_rows), tuple(link_rows), tuple(param_rows)
         self._fill(self._points, self._point_rows)
         self._fill(self._links, self._link_rows)
+        self._fill(self._params, self._param_rows)
         self._apply_filter()
 
     @staticmethod
@@ -208,24 +237,30 @@ class SnapshotCompareDialog(QDialog):
                 item.setToolTip(text)
                 table.setItem(r, col, item)
 
-    def _active(self) -> tuple[QTableWidget, tuple[PointComparison, ...] | tuple[LinkComparison, ...]]:
-        if self._result is None:
-            return (self._points if self._tabs.currentIndex() == 0 else self._links, ())
-        return ((self._points, self._result.points) if self._tabs.currentIndex() == 0 else
-                (self._links, self._result.links))
+    def _active(self) -> tuple[QTableWidget, tuple[PointComparison | LinkComparison | ParameterComparison, ...]]:
+        index = self._tabs.currentIndex()
+        if index == 0:
+            return self._points, self._result.points if self._result else ()
+        if index == 1:
+            return self._links, self._result.links if self._result else ()
+        return self._params, self._parameters
 
     def _apply_filter(self, *_args: object) -> None:
         result = self._result
+        self._detail.setText(tr("snapshot_compare.parameter_scope") if self._tabs.currentIndex() == 2 else "")
+        self._detail.setVisible(self._tabs.currentIndex() == 2)
         if result:
             for i, point in enumerate(result.points):
                 self._points.setRowHidden(i, self._is_hidden(point.role, point.status))
             for i, link in enumerate(result.links):
                 self._links.setRowHidden(i, self._is_hidden(link.role, link.status))
+            for i, param in enumerate(self._parameters):
+                self._params.setRowHidden(i, self._is_hidden(param.role, param.status))
         table, rows = self._active()
         visible = sum(not table.isRowHidden(i) for i in range(len(rows)))
         self._count.setText(tr("snapshot_compare.count", visible=visible, total=len(rows)))
         index = (max_point_displacement(result.points) if self._tabs.currentIndex() == 0 else
-                 max_link_delta(result.links)) if result else None
+                 max_link_delta(result.links) if self._tabs.currentIndex() == 1 else None) if result else None
         self._maximum.setEnabled(index is not None and not self._stale)
         if index is None or result is None:
             self._maximum.setText(tr("snapshot_compare.max_none"))
@@ -242,7 +277,7 @@ class SnapshotCompareDialog(QDialog):
         return self._role.currentData() not in ("all", role) or self._filter.currentData() not in ("all", status)
 
     def _select_maximum(self) -> None:
-        if self._result is None or self._stale:
+        if self._result is None or self._stale or self._tabs.currentIndex() == 2:
             return
         index = (max_point_displacement(self._result.points) if self._tabs.currentIndex() == 0 else
                  max_link_delta(self._result.links))
@@ -262,7 +297,12 @@ class SnapshotCompareDialog(QDialog):
         enabled = not self._stale and 0 <= index < len(rows) and not table.isRowHidden(index)
         if enabled:
             row = rows[index]
-            enabled = row.new is not None if isinstance(row, PointComparison) else row.new_exists
+            if isinstance(row, PointComparison):
+                enabled = row.new is not None
+            elif isinstance(row, LinkComparison):
+                enabled = row.new_exists
+            else:
+                enabled = row.selectable
         self._choose.setEnabled(enabled)
 
     def _select(self) -> None:
@@ -270,7 +310,10 @@ class SnapshotCompareDialog(QDialog):
             return
         table, rows = self._active()
         row = rows[table.currentRow()]
-        self.selection = Selection("point" if self._tabs.currentIndex() == 0 else "link", row.role, row.code)
+        if isinstance(row, ParameterComparison):
+            self.selection = Selection(row.component, "" if row.role == "vehicle" else row.role)
+        else:
+            self.selection = Selection("point" if isinstance(row, PointComparison) else "link", row.role, row.code)
         self.accept()
 
     def _invalidate(self) -> None:
@@ -285,20 +328,37 @@ class SnapshotCompareDialog(QDialog):
         index = self._snapshot.currentData()
         snapshot = self.controller.project.snapshots[index]
         result = self._result
-        is_points = self._tabs.currentIndex() == 0
-        display_rows = self._point_rows if is_points else self._link_rows
-        data: tuple[PointComparison | LinkComparison, ...] = result.points if is_points else result.links
+        tab = self._tabs.currentIndex()
+        report_columns: tuple[str, ...]
+        if tab == 0:
+            display_rows = self._point_rows
+            data: tuple[PointComparison | LinkComparison | ParameterComparison, ...] = result.points
+            report_columns = POINT_COLUMNS
+            title = "points"
+        elif tab == 1:
+            display_rows = self._link_rows
+            data = result.links
+            report_columns = LINK_COLUMNS
+            title = "links"
+        else:
+            display_rows = self._param_rows
+            data = self._parameters
+            report_columns = PARAM_COLUMNS
+            title = "parameters"
         columns = (tr("snapshot_compare.column_old_type"), tr("snapshot_compare.column_new_type"),
                    tr("snapshot_compare.column_status_code"),
-                   *(tr(f"snapshot_compare.column_{name}") for name in (POINT_COLUMNS if is_points else LINK_COLUMNS)))
-        rows = tuple((row.old_type, row.new_type, row.status, *display)
+                   *(tr(f"snapshot_compare.column_{name}") for name in report_columns))
+        rows = tuple((row.old_type or "—", row.new_type or "—", row.status, *display)
                      for row, display in zip(data, display_rows, strict=True))
         parameters = [(tr("snapshot_compare.snapshot_name"), snapshot.name),
                       (tr("snapshot_compare.snapshot_index"), str(index + 1)),
                       (tr("snapshot_compare.snapshot_hash"), self._snapshot_hash),
                       (tr("snapshot_compare.scope_label"), tr("snapshot_compare.notice"))]
-        return make_report(self.controller, tr("snapshot_compare.points" if is_points else "snapshot_compare.links"),
-                           parameters, columns, rows, precision_text=tr("snapshot_compare.precision"), allow_empty_rows=True)
+        if tab == 2:
+            parameters.append((tr("snapshot_compare.parameter_scope_label"), tr("snapshot_compare.parameter_scope")))
+        return make_report(self.controller, tr("snapshot_compare." + title), parameters, columns, rows,
+                           precision_text=tr("snapshot_compare.parameter_precision" if tab == 2 else
+                                             "snapshot_compare.precision"), allow_empty_rows=True)
 
     def _export_current(self) -> None:
         try:

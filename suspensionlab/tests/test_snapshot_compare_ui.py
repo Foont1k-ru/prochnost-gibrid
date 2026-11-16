@@ -117,3 +117,99 @@ def test_empty_snapshots(qtbot):
     qtbot.addWidget(d)
     assert d._result is None and not d._export.isEnabled() and not d._choose.isEnabled()
     assert 'нет снимков' in d._state.text()
+
+
+def test_parameter_tab_filter_export_units_and_navigation(qtbot, tmp_path, monkeypatch):
+    from suspensionlab.model.units import UnitSettings
+
+    c = setup_comparison()
+    c.project.front.spring.rate_N_mm = 111.123456
+    c.project.vehicle.name = '=bad'
+    c.set_units(UnitSettings(length='in', rate='lb_in', angle='rad'))
+    d = SnapshotCompareDialog(c)
+    qtbot.addWidget(d)
+    d.show()
+    d._tabs.setCurrentIndex(2)
+    spring_index = next(i for i, row in enumerate(d._parameters) if row.role == 'front' and row.code == 'spring.rate')
+    assert d._params.item(spring_index, 5).text() == 'Н/мм'
+    assert d._params.item(spring_index, 7).text() == '111.123456'
+    assert not d._maximum.isEnabled()
+    assert 'только скалярные' in d._detail.text().lower()
+    d._role.setCurrentIndex(d._role.findData('vehicle'))
+    d._filter.setCurrentIndex(d._filter.findData('changed'))
+    assert d._params.isRowHidden(spring_index)
+    report = d._report()
+    assert len(report.rows) == len(d._parameters) == 83
+    assert any('spring.rate' in row for row in report.rows)
+    path = tmp_path / 'params.csv'
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(path), ''))
+    before, depth, dirty = copy.deepcopy(c.project.to_dict()), c.undo.depth(), c.dirty
+    d._export_current()
+    with path.open(encoding='utf-8-sig', newline='') as f:
+        rows = list(csv.reader(f, delimiter=';'))
+    assert any("'=bad" in row for row in rows) and any('spring.rate' in row for row in rows)
+    d._role.setCurrentIndex(0)
+    d._filter.setCurrentIndex(0)
+    steering = next(i for i, row in enumerate(d._parameters) if row.role == 'rear' and row.code == 'steering.ratio')
+    d._params.setCurrentCell(steering, 0)
+    assert not d._choose.isEnabled()
+    d._params.setCurrentCell(spring_index, 0)
+    assert d._choose.isEnabled()
+    d._select()
+    assert d.selection == Selection('spring', 'front')
+    assert c.project.to_dict() == before and (c.undo.depth(), c.dirty) == (depth, dirty)
+
+
+def test_parameter_tab_vehicle_navigation_and_snapshot_switch(qtbot):
+    c = setup_comparison()
+    c.project.vehicle.mass_kg += 42
+    c.project.add_snapshot('second')
+    c.project.vehicle.mass_kg += 3
+    d = SnapshotCompareDialog(c)
+    qtbot.addWidget(d)
+    d._tabs.setCurrentIndex(2)
+    index = next(i for i, row in enumerate(d._parameters) if row.code == 'vehicle.mass')
+    assert d._parameters[index].delta == 45
+    d._snapshot.setCurrentIndex(1)
+    assert d._parameters[index].delta == 3
+    d._params.setCurrentCell(index, 0)
+    d._select()
+    assert d.selection == Selection('vehicle')
+
+
+def test_parameters_stale_and_protected_autosave(qtbot, tmp_path, monkeypatch):
+    c = setup_comparison()
+    d = SnapshotCompareDialog(c)
+    qtbot.addWidget(d)
+    d._tabs.setCurrentIndex(2)
+    target = tmp_path / 'autosave.csv'
+    target.write_text('saved', encoding='utf-8')
+    monkeypatch.setattr('suspensionlab.ui.snapshot_compare_dialog.autosave_path', lambda: target)
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(target), ''))
+    warnings = []
+    monkeypatch.setattr(QMessageBox, 'warning', lambda *args: warnings.append(args))
+    d._export_current()
+    assert warnings and target.read_text(encoding='utf-8') == 'saved'
+    d._params.setCurrentCell(0, 0)
+    assert d._choose.isEnabled()
+    c.modelChanged.emit()
+    assert not d._choose.isEnabled() and not d._export.isEnabled()
+    with pytest.raises(ValueError):
+        d._report()
+
+
+def test_main_menu_parameter_navigation(qtbot):
+    c = setup_comparison()
+    window = MainWindow(c)
+    qtbot.addWidget(window)
+    def select_from_dialog():
+        dialog = window.findChild(SnapshotCompareDialog)
+        dialog._tabs.setCurrentIndex(2)
+        index = next(i for i, row in enumerate(dialog._parameters)
+                     if row.role == 'front' and row.code == 'damper.bump')
+        dialog._params.setCurrentCell(index, 0)
+        dialog._select()
+    QTimer.singleShot(0, select_from_dialog)
+    window.action_compare_snapshot.trigger()
+    assert c.selection == Selection('damper', 'front')
+    assert c.undo.depth() == 0 and not c.dirty

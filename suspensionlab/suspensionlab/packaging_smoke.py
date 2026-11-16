@@ -249,6 +249,9 @@ def run_packaging_check() -> None:
         _require(bool(window.action_compare_snapshot.text()) and compare._result is not None,
                  "Сравнение снимка недоступно")
         _require(bool(compare._report().rows), "Отчёт сравнения снимка пуст")
+        compare._tabs.setCurrentIndex(2)
+        _require(bool(compare._parameters) and bool(compare._report().rows),
+                 "Сравнение параметров снимка недоступно")
         compare.close()
         compare.deleteLater()
         window.controller.project.snapshots.pop()
