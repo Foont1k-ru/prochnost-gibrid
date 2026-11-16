@@ -39,6 +39,7 @@ from ..model.entities import Project, Snapshot
 from ..model.point_csv import PointRecord
 from ..model.snapshot_restore import prepare_snapshot
 from .controller import AppController, Selection
+from .snapshot_overlay_dialog import SnapshotOverlayDialog
 from .table_export import make_report
 
 STATUSES = ("all", "changed", "unchanged", "added", "removed", "incompatible", "invalid")
@@ -154,6 +155,9 @@ class SnapshotCompareDialog(QDialog):
         self._choose = QPushButton(tr("snapshot_compare.choose"))
         self._choose.clicked.connect(self._select)
         buttons.addWidget(self._choose)
+        self._overlay = QPushButton(tr("snapshot_overlay.open"))
+        self._overlay.clicked.connect(self._open_overlay)
+        buttons.addWidget(self._overlay)
         self._export = QPushButton(tr("snapshot_compare.export"))
         self._export.clicked.connect(self._export_current)
         buttons.addWidget(self._export)
@@ -315,6 +319,7 @@ class SnapshotCompareDialog(QDialog):
             link = result.links[index]
             self._maximum.setText(tr("snapshot_compare.max_link", role=tr(f"tree.{link.role}"), code=link.code, value=_number(abs(link.delta or 0.0))))
         self._export.setEnabled(result is not None and not self._stale)
+        self._overlay.setEnabled(result is not None and not self._stale)
         self._update_choose()
 
     def _is_hidden(self, role: str, status: str) -> bool:
@@ -360,6 +365,35 @@ class SnapshotCompareDialog(QDialog):
         else:
             self.selection = Selection("point" if isinstance(row, PointComparison) else "link", row.role, row.code)
         self.accept()
+
+    def _open_overlay(self) -> None:
+        if self._result is None or self._stale:
+            return
+        role = self._role.currentData()
+        if role not in ("front", "rear"):
+            role = "front"
+        revision = self._revision
+        dialog = SnapshotOverlayDialog(self.controller, self._result.points, self, initial_role=role,
+                                       source_a=self._snapshot.currentText(), source_b=self._target.currentText(),
+                                       types=self._context.text())
+        self._snapshot.currentIndexChanged.connect(dialog._invalidate)
+        self._target.currentIndexChanged.connect(dialog._invalidate)
+        try:
+            if not dialog.exec() or self._stale or revision != self._revision or dialog.selected_row is None:
+                return
+            index = dialog.selected_row
+            if self._points.isRowHidden(index):
+                self._role.setCurrentIndex(0)
+                self._filter.setCurrentIndex(0)
+            self._tabs.setCurrentIndex(0)
+            self._points.setCurrentCell(index, 0)
+            item = self._points.item(index, 0)
+            if item is not None:
+                self._points.scrollToItem(item)
+        finally:
+            self._snapshot.currentIndexChanged.disconnect(dialog._invalidate)
+            self._target.currentIndexChanged.disconnect(dialog._invalidate)
+            dialog.deleteLater()
 
     def _invalidate(self) -> None:
         self._stale = True

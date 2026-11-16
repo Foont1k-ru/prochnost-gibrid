@@ -25,6 +25,7 @@ from .ui.main_window import MainWindow
 from .ui.point_import_dialog import PointImportDialog
 from .ui.point_table_dialog import PointTableDialog
 from .ui.snapshot_compare_dialog import SnapshotCompareDialog
+from .ui.snapshot_overlay_dialog import SnapshotOverlayDialog
 from .ui.spring_rate_dialog import SpringRateDialog
 from .ui.table_export import make_plot_report
 
@@ -253,6 +254,16 @@ def run_packaging_check() -> None:
         compare._target.setCurrentIndex(2)
         _require(compare._result is not None and not compare._choose.isEnabled(),
                  "Сравнение двух снимков недоступно")
+        assert compare._result is not None
+        overlay = SnapshotOverlayDialog(window.controller, compare._result.points, compare)
+        overlay.show()
+        app.processEvents()
+        _require(bool(overlay._canvas.screen_points()) and not overlay._canvas.grab().isNull(),
+                 "Наложение точек снимков недоступно")
+        overlay._list.setCurrentRow(0)
+        _require(overlay._choose.isEnabled(), "Выбор точки в наложении недоступен")
+        overlay.close()
+        overlay.deleteLater()
         compare._tabs.setCurrentIndex(2)
         _require(bool(compare._parameters) and bool(compare._report().rows),
                  "Сравнение параметров снимка недоступно")
