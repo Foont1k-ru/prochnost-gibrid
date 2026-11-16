@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 from ..config import autosave_path, settings_path
 from ..core.cad_registration import MAX_PAIRS, RegistrationEvaluation, evaluate_registration
 from ..core.cad_registration_overlay import overlay_pairs
+from ..core.cad_source_guard import summarize_sources
 from ..export.cad_registration_report import registration_report
 from ..export.csv_report import CSVReport, write_csv_report
 from ..i18n import tr
@@ -43,6 +44,8 @@ class CadRegistrationDialog(QDialog):
         self._records = capture_points(controller.project)
         self._stale = False
         self._revision = 0
+        self._source_digests: dict[QLabel, bytes] = {}
+        self._snapshot_digest: bytes | None = None
         self._picker: CadRegistrationPicker | None = None
         self._report: CSVReport | None = None
         self._snapshot: tuple[tuple[PointRecord, ...], tuple[bool, ...], RegistrationEvaluation] | None = None
@@ -69,6 +72,9 @@ class CadRegistrationDialog(QDialog):
         buttons.addWidget(self._pick)
         buttons.addStretch()
         layout.addLayout(buttons)
+        self._source_status = QLabel(self)
+        self._source_status.setWordWrap(True)
+        layout.addWidget(self._source_status)
         self._confirmed = QCheckBox(tr("cad_registration.confirm"), self)
         self._confirmed.toggled.connect(self._clear_result)
         layout.addWidget(self._confirmed)
@@ -103,9 +109,25 @@ class CadRegistrationDialog(QDialog):
         self._revision += 1
         self._report = None
         self._snapshot = None
+        self._snapshot_digest = None
+        self._update_source_status()
         self._export.setEnabled(False)
         self._overlay.setEnabled(False)
         self._result.clear()
+
+    def _source_summary(self):
+        digests = []
+        for row in range(self._table.rowCount()):
+            label = self._table.cellWidget(row, 5)
+            assert isinstance(label, QLabel)
+            digests.append(self._source_digests.get(label))
+        return summarize_sources(tuple(digests))
+
+    def _update_source_status(self) -> None:
+        summary = self._source_summary()
+        self._source_status.setText(tr("cad_registration.source_status", known=summary.known_points,
+                                       unknown=summary.unknown_points, sources=summary.distinct_sources) +
+                                    (" " + tr("cad_registration.source_conflict") if summary.has_conflict else ""))
 
     def _add_row(self) -> None:
         if self._stale or self._table.rowCount() >= MAX_PAIRS:
@@ -143,6 +165,7 @@ class CadRegistrationDialog(QDialog):
         label.setToolTip(tr("cad_registration.source_hint"))
 
     def _coordinate_changed(self, source: QLabel) -> None:
+        self._source_digests.pop(source, None)
         self._set_source(source, "manual_or_edited")
         self._clear_result()
 
@@ -163,9 +186,11 @@ class CadRegistrationDialog(QDialog):
             self._picker = CadRegistrationPicker(settings, self)
         picker = self._picker
         picker.chosen = None
+        picker.chosen_digest = None
         accepted = picker.exec() == QDialog.DialogCode.Accepted
         point = picker.chosen
-        if (not accepted or point is None or self._stale or revision != self._revision or
+        digest = picker.chosen_digest
+        if (not accepted or point is None or not isinstance(digest, bytes) or len(digest) != 32 or self._stale or revision != self._revision or
                 self._table.cellWidget(row, 5) is not source or
                 any(self._table.cellWidget(row, i) is not field for i, field in enumerate(fields, 1))):
             return
@@ -178,6 +203,7 @@ class CadRegistrationDialog(QDialog):
                 field.setText(repr(float(value)))
             finally:
                 field.blockSignals(previous)
+        self._source_digests[source] = digest
         self._set_source(source, "surface_preview")
         self._clear_result()
 
@@ -187,6 +213,9 @@ class CadRegistrationDialog(QDialog):
         row = self._table.currentRow()
         if row < 0:
             row = self._table.rowCount() - 1
+        source = self._table.cellWidget(row, 5)
+        if isinstance(source, QLabel):
+            self._source_digests.pop(source, None)
         self._table.removeRow(row)
         self._add.setEnabled(True)
         self._clear_result()
@@ -208,6 +237,10 @@ class CadRegistrationDialog(QDialog):
         self._clear_result()
         if not self._confirmed.isChecked():
             self._result.setPlainText(tr("cad_registration.confirm_required"))
+            return
+        summary = self._source_summary()
+        if summary.has_conflict:
+            self._result.setPlainText(tr("cad_registration.source_conflict"))
             return
         cad: list[tuple[float, float, float]] = []
         records = []
@@ -240,7 +273,7 @@ class CadRegistrationDialog(QDialog):
             points = tuple(cad)
             mask = tuple(fit_mask)
             result = evaluate_registration(points, tuple(record.xyz for record in records), mask)
-            report = registration_report(result, tuple(records), points, mask, tr, tuple(sources))
+            report = registration_report(result, tuple(records), points, mask, tr, tuple(sources), summary)
         except ValueError as error:
             code = str(error)
             if code not in ("selection", "coordinates", "count", "degenerate", "duplicate"):
@@ -248,7 +281,8 @@ class CadRegistrationDialog(QDialog):
             self._result.setPlainText(tr(f"cad_registration.error_{code}"))
             return
         transform = result.fit.transform
-        lines = [tr("cad_registration.output"), "", tr("cad_registration.rotation")]
+        lines = [tr("cad_registration.output"), self._source_status.text(),
+                 tr("cad_registration.source_check_warning"), "", tr("cad_registration.rotation")]
         lines.extend("  ".join(f"{value:.10g}" for value in row) for row in transform.rotation)
         lines.extend([tr("cad_registration.translation"),
                       "  ".join(f"{value:.10g}" for value in transform.translation), "",
@@ -266,6 +300,7 @@ class CadRegistrationDialog(QDialog):
         self._result.moveCursor(self._result.textCursor().MoveOperation.Start)
         self._report = report
         self._snapshot = (tuple(records), mask, result)
+        self._snapshot_digest = next(iter(self._source_digests.values()), None)
         self._export.setEnabled(True)
         self._overlay.setEnabled(True)
 
@@ -279,7 +314,8 @@ class CadRegistrationDialog(QDialog):
             QMessageBox.warning(self, tr("export.error_title"), tr("cad_registration_overlay.coordinates_error"))
             return
         settings = QSettings(str(settings_path()), QSettings.Format.IniFormat)
-        dialog = CadRegistrationOverlayDialog(self.controller, result.fit.transform, pairs, settings, self)
+        dialog = CadRegistrationOverlayDialog(self.controller, result.fit.transform, pairs, settings, self,
+                                              expected_digest=self._snapshot_digest)
         self.registrationChanged.connect(dialog._invalidate)
         try:
             dialog.exec()

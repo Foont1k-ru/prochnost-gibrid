@@ -4,19 +4,26 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from ..core.cad_registration import RegistrationEvaluation
+from ..core.cad_source_guard import SourceSummary
 from ..model.point_csv import PointRecord
 from .csv_report import CSVReport
 
 
 def registration_report(result: RegistrationEvaluation, records: tuple[PointRecord, ...],
                         cad: tuple[tuple[float, float, float], ...], fit_mask: tuple[bool, ...],
-                        translate: Callable[[str], str], sources: tuple[str, ...] | None = None) -> CSVReport:
+                        translate: Callable[[str], str], sources: tuple[str, ...] | None = None,
+                        source_check: SourceSummary | None = None) -> CSVReport:
     if sources is None:
         sources = ("manual_or_edited",) * len(cad)
     if not (len(records) == len(cad) == len(fit_mask) == len(result.points) == len(sources)):
         raise ValueError("Несогласованные данные отчёта")
     if any(source not in ("manual_or_edited", "surface_preview") for source in sources):
         raise ValueError("Несогласованные данные отчёта")
+    if source_check is not None and (source_check.has_conflict or
+                                     source_check.known_points != sources.count("surface_preview") or
+                                     source_check.unknown_points != sources.count("manual_or_edited") or
+                                     source_check.distinct_sources != (1 if source_check.known_points else 0)):
+        raise ValueError("Несогласованная проверка источников")
     t = translate
     tf = result.fit.transform
     metadata = [(t("cad_registration.report_notice"), t("cad_registration.output")),
@@ -25,6 +32,11 @@ def registration_report(result: RegistrationEvaluation, records: tuple[PointReco
                 ("fit_rms_mm", repr(result.fit.rms_mm)), ("fit_max_mm", repr(result.fit.max_mm)),
                 ("control_rms_mm", "" if result.control_rms_mm is None else repr(result.control_rms_mm)),
                 ("control_max_mm", "" if result.control_max_mm is None else repr(result.control_max_mm))]
+    if source_check is not None:
+        metadata.extend((("surface_points_with_digest", str(source_check.known_points)),
+                         ("manual_or_edited_unverified", str(source_check.unknown_points)),
+                         ("distinct_surface_content_at_load", str(source_check.distinct_sources)),
+                         (t("cad_registration.report_source_warning"), t("cad_registration.source_check_warning"))))
     metadata.extend((f"R{i + 1}{j + 1}", repr(tf.rotation[i][j])) for i in range(3) for j in range(3))
     metadata.extend((f"t_{axis}_mm", repr(value)) for axis, value in zip("xyz", tf.translation, strict=True))
     rows = []

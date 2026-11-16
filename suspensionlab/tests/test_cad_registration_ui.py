@@ -167,6 +167,7 @@ def test_explicit_surface_transfer_reuses_picker_and_tracks_manual_edit(qtbot, m
             created.append(self)
         def exec(self):
             self.chosen = (1.234567890123, -2., 3.)
+            self.chosen_digest = b'a' * 32
             return QDialog.DialogCode.Accepted
     monkeypatch.setattr(module, 'CadRegistrationPicker', FakePicker)
     dialog = CadRegistrationDialog(AppController())
@@ -201,6 +202,7 @@ def test_picker_rejection_and_changes_during_modal_never_apply(qtbot, monkeypatc
             self.result = QDialog.DialogCode.Rejected
         def exec(self):
             self.chosen = (10., 20., 30.)
+            self.chosen_digest = b'a' * 32
             self.action()
             return self.result
     monkeypatch.setattr(module, 'CadRegistrationPicker', FakePicker)
@@ -238,6 +240,7 @@ def test_picked_rows_marked_in_csv_and_invalidate_old_result(qtbot, monkeypatch)
             self.chosen = None
         def exec(self):
             self.chosen = (0., 0., 0.)
+            self.chosen_digest = b'a' * 32
             return QDialog.DialogCode.Accepted
     monkeypatch.setattr(module, 'CadRegistrationPicker', FakePicker)
     dialog._table.setCurrentCell(0, 1)
@@ -247,3 +250,45 @@ def test_picked_rows_marked_in_csv_and_invalidate_old_result(qtbot, monkeypatch)
     assert dialog._report is not None
     source_col = dialog._report.columns.index('cad_input')
     assert [r[source_col] for r in dialog._report.rows] == ['surface_preview', 'manual_or_edited', 'manual_or_edited']
+
+
+def test_mixed_picked_sources_block_registration_until_fixed(qtbot, monkeypatch):
+    from PySide6.QtWidgets import QDialog
+
+    from suspensionlab.ui import cad_registration_dialog as module
+    controller = AppController()
+    for code, xyz in zip(('ubj', 'lbj', 'lca_f_in'), ((0, 0, 0), (100, 0, 0), (0, 100, 0)), strict=True):
+        point = controller.project.front.hardpoints[code]
+        point.x, point.y, point.z = xyz
+    dialog = CadRegistrationDialog(controller)
+    qtbot.addWidget(dialog)
+    fill_identity(dialog)
+    dialog._confirmed.setChecked(True)
+    class FakePicker:
+        def __init__(self, settings, parent):
+            self.chosen = None
+            self.point = (0., 0., 0.)
+            self.digest = b'a' * 32
+        def exec(self):
+            self.chosen = self.point
+            self.chosen_digest = self.digest
+            return QDialog.DialogCode.Accepted
+    monkeypatch.setattr(module, 'CadRegistrationPicker', FakePicker)
+    dialog._table.setCurrentCell(0, 1)
+    dialog._pick_for_row()
+    picker = dialog._picker
+    picker.point, picker.digest = (100., 0., 0.), b'b' * 32
+    dialog._table.setCurrentCell(1, 1)
+    dialog._pick_for_row()
+    assert 'разным содержимым STEP' in dialog._source_status.text()
+    dialog._run()
+    assert dialog._report is None and 'Нельзя совместить' in dialog._result.toPlainText()
+    # Editing a coordinate drops its provenance; it is now explicitly unverified.
+    dialog._table.cellWidget(1, 1).setText('100.00')
+    assert 'неизвестный или изменённый ввод: 2' in dialog._source_status.text()
+    dialog._run()
+    assert dialog._report is not None
+    assert ('surface_points_with_digest', '1') in dialog._report.metadata
+    assert ('manual_or_edited_unverified', '2') in dialog._report.metadata
+    assert dialog._snapshot_digest == b'a' * 32
+    assert b'a'.decode() * 32 not in repr(dialog._report)

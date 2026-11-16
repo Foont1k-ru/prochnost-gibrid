@@ -17,12 +17,16 @@ class CadRegistrationPicker(CadPreviewDialog):
     def __init__(self, settings: QSettings, parent=None) -> None:
         super().__init__(parent, settings=settings)
         self.chosen: tuple[float, float, float] | None = None
+        self.chosen_digest: bytes | None = None
         self.setWindowTitle(tr("cad_registration.pick_title"))
         layout = self.layout()
         assert isinstance(layout, QVBoxLayout)
         note = QLabel(tr("cad_registration.pick_notice"), self)
         note.setWordWrap(True)
         layout.insertWidget(0, note)
+        self._identity_note = QLabel(self)
+        self._identity_note.setWordWrap(True)
+        layout.insertWidget(1, self._identity_note)
         row = QHBoxLayout()
         self._use_a = QPushButton(tr("cad_registration.pick_a"), self)
         self._use_b = QPushButton(tr("cad_registration.pick_b"), self)
@@ -35,14 +39,18 @@ class CadRegistrationPicker(CadPreviewDialog):
         self._sync_buttons()
 
     def _sync_buttons(self) -> None:
-        ready = self._reader is None and self._mesh is not None
+        ready = self._reader is None and self._mesh is not None and self._loaded_digest is not None
+        self._identity_note.setText(tr("cad_registration.pick_identity_missing") if
+                                    self._mesh is not None and self._loaded_digest is None else "")
         self._use_a.setEnabled(ready and len(self._measurement_points) >= 1)
         self._use_b.setEnabled(ready and len(self._measurement_points) >= 2)
 
     def _use_point(self, index: int) -> None:
-        if self._reader is not None or self._mesh is None or index >= len(self._measurement_points):
+        if (self._reader is not None or self._mesh is None or self._loaded_digest is None or
+                not 0 <= index < len(self._measurement_points)):
             return
         self.chosen = tuple(float(x) for x in self._measurement_points[index])  # type: ignore[assignment]
+        self.chosen_digest = self._loaded_digest
         self.accept()
 
     def load_file(self, path: Path, *, force: bool = False) -> None:

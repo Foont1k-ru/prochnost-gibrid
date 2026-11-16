@@ -125,3 +125,45 @@ def test_windows_stat_and_fstat_may_have_different_inode_or_ctime(tmp_path):
     assert not _stable_stats(handle, replace(handle, st_size=101), path, path, windows=True)
     assert not _stable_stats(handle, handle, path, replace(path, st_mtime_ns=999), windows=True)
     assert not _stable_stats(handle, handle, path, replace(path, st_size=101), windows=True)
+
+
+def test_verified_fingerprint_is_of_mesh_not_previous_failed_job(tmp_path, monkeypatch):
+    from hashlib import sha256
+    source = tmp_path / 'model.step'
+    source.write_bytes(b'original')
+    calls = []
+    def build(self, path, deviation):
+        calls.append(1)
+        return mesh()
+    monkeypatch.setattr(CadJob, 'run', build)
+    cache = CadMeshCache()
+    expected = sha256(b'original').digest()
+    _, hit, identity = cache.run_with_fingerprint(CadJob(), source, 2., expected_digest=expected)
+    assert not hit and identity and identity.digest == expected
+    _, hit, identity = cache.run_with_fingerprint(CadJob(), source, 2., expected_digest=expected)
+    assert hit and identity and identity.digest == expected and len(calls) == 1
+    source.write_bytes(b'different')
+    with pytest.raises(CadPreviewError, match='source_mismatch'):
+        cache.run_with_fingerprint(CadJob(), source, 2., expected_digest=expected)
+    assert len(calls) == 1  # mismatch is rejected before expensive CAD
+    _, hit, identity = cache.run_with_fingerprint(CadJob(), source, 2.)
+    assert not hit and identity and identity.digest == sha256(b'different').digest()
+    other = tmp_path / 'copy.step'
+    other.write_bytes(b'original')
+    _, _, identity = cache.run_with_fingerprint(CadJob(), other, 2., expected_digest=expected)
+    assert identity and identity.digest == expected  # content equality, not file path equality
+    with pytest.raises(CadPreviewError, match='source_mismatch'):
+        cache.run_with_fingerprint(CadJob(), tmp_path / 'missing', 2., expected_digest=expected)
+
+
+def test_fingerprint_not_returned_if_source_changes_during_job(tmp_path, monkeypatch):
+    source = tmp_path / 'model.step'
+    source.write_bytes(b'original')
+    def build(self, path, deviation):
+        path.write_bytes(b'changed')
+        return mesh()
+    monkeypatch.setattr(CadJob, 'run', build)
+    cache = CadMeshCache()
+    with pytest.raises(CadPreviewError, match='source_changed'):
+        cache.run_with_fingerprint(CadJob(), source, 2.)
+    assert not cache._items

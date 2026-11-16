@@ -83,3 +83,26 @@ def test_pending_result_after_cancel_is_not_displayed(qtbot, tmp_path):
     assert dialog._canvas.mesh is None
     dialog._finished()
     assert dialog._choose.isEnabled()
+
+
+def test_overlay_matching_content_checked_before_cad_build(qtbot, tmp_path, monkeypatch):
+    from hashlib import sha256
+
+    from suspensionlab.core.cad_transport import CadJob
+    _, dialog = make_dialog(qtbot, tmp_path)
+    dialog._expected_digest = sha256(b'expected').digest()
+    source = tmp_path / 'source.step'
+    source.write_bytes(b'other')
+    calls = []
+    def build(self, path, deviation):
+        calls.append(1)
+        return CadMesh(np.array([[[0., 0, 0], [100, 0, 0], [0, 100, 0]]]), 1)
+    monkeypatch.setattr(CadJob, 'run', build)
+    dialog._confirm.setChecked(True)
+    dialog.load_file(source)
+    qtbot.waitUntil(lambda: dialog._reader is None, timeout=10000)
+    assert not calls and dialog._canvas.mesh is None and 'отличается по содержимому' in dialog._status.text()
+    source.write_bytes(b'expected')
+    dialog.load_file(source)
+    qtbot.waitUntil(lambda: dialog._reader is None, timeout=10000)
+    assert len(calls) == 1 and dialog._canvas.mesh is not None

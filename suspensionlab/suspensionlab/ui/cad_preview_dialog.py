@@ -44,10 +44,15 @@ class _CadReader(QThread):
     progress = Signal(str, int)
 
     def __init__(self, path: Path, deviation: float, parent: QDialog, *,
-                 cache: CadMeshCache | None = None, force: bool = False) -> None:
+                 cache: CadMeshCache | None = None, force: bool = False,
+                 expected_digest: bytes | None = None) -> None:
         super().__init__(parent)
+        if expected_digest is not None and (cache is None or len(expected_digest) != 32):
+            raise ValueError("expected_digest")
         self.path, self.deviation = path, deviation
         self.cache, self.force = cache, force
+        self.expected_digest = expected_digest
+        self.source_digest: bytes | None = None
         self.cache_hit = False
         self.job = CadJob()
         self.job.progress_callback = self.progress.emit
@@ -57,7 +62,9 @@ class _CadReader(QThread):
             if self.cache is None:
                 mesh = self.job.run(self.path, self.deviation)
             else:
-                mesh, self.cache_hit = self.cache.run(self.job, self.path, self.deviation, force=self.force)
+                mesh, self.cache_hit, identity = self.cache.run_with_fingerprint(
+                    self.job, self.path, self.deviation, force=self.force, expected_digest=self.expected_digest)
+                self.source_digest = identity.digest if identity is not None else None
             self.result_ready.emit(mesh)
         except CadPreviewError as error:
             self.failed.emit(error.code)
@@ -79,6 +86,7 @@ class CadPreviewDialog(QDialog):
         self._operation: int | None = None
         self._operation_started = 0.0
         self._mesh: CadMesh | None = None
+        self._loaded_digest: bytes | None = None
         self._loaded_deviation: float | None = None
         self._requested_deviation: float | None = None
         self._instance_counts: np.ndarray | None = None
@@ -267,6 +275,7 @@ class CadPreviewDialog(QDialog):
         self._measure.setEnabled(False)
         self._clear_measurement()
         self._mesh = None
+        self._loaded_digest = None
         self._loaded_deviation = None
         self._instance_counts = None
         self._parts.blockSignals(True)
@@ -301,6 +310,7 @@ class CadPreviewDialog(QDialog):
                   faces=mesh.face_count, skipped=mesh.skipped_faces, recovered=mesh.recovered_faces,
                   triangles=len(mesh.triangles))
         self._mesh = mesh
+        self._loaded_digest = self._reader.source_digest if self._reader is not None else None
         self._loaded_deviation = self._requested_deviation if self._requested_deviation is not None else self._selected_deviation
         self._update_quality_status()
         self._measure.setEnabled(True)

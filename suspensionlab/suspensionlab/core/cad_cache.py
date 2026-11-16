@@ -105,16 +105,26 @@ class CadMeshCache:
         self._bytes += size
 
     def run(self, job: CadJob, source: Path, deviation: float, *, force: bool = False) -> tuple[CadMesh, bool]:
+        mesh, hit, _ = self.run_with_fingerprint(job, source, deviation, force=force)
+        return mesh, hit
+
+    def run_with_fingerprint(self, job: CadJob, source: Path, deviation: float, *, force: bool = False,
+                             expected_digest: bytes | None = None) -> tuple[CadMesh, bool, Fingerprint | None]:
+        """Построение и отпечаток одного результата; None означает непроверенный источник."""
+        if expected_digest is not None and len(expected_digest) != 32:
+            raise ValueError("digest")
         if job.progress_callback is not None:
             job.progress_callback("fingerprint", 0)
         first = fingerprint(source, job.is_cancelled)
+        if expected_digest is not None and (first is None or first.digest != expected_digest):
+            raise CadPreviewError("source_mismatch")
         key = (first, deviation) if first is not None else None
         if key is not None and not force:
             cached = self.get(key)
             if cached is not None:
                 if job.is_cancelled():
                     raise CadPreviewError("cancelled")
-                return cached, True
+                return cached, True, first
         mesh = job.run(source, deviation)
         if job.is_cancelled():
             raise CadPreviewError("cancelled")
@@ -126,4 +136,4 @@ class CadMeshCache:
                 raise CadPreviewError("source_changed")
             assert key is not None
             self.put(key, mesh)
-        return mesh, False
+        return mesh, False, first

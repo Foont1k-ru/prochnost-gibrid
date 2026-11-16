@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from ..core.cad_cache import CadMeshCache
 from ..core.cad_mesh import CadMesh
 from ..core.cad_registration_overlay import OverlayPair, transform_mesh_for_preview
 from ..core.spatial_transform import RigidTransform
@@ -33,10 +34,11 @@ from .widgets.camera_views import CameraViews
 
 class CadRegistrationOverlayDialog(QDialog):
     def __init__(self, controller: AppController, transform: RigidTransform, pairs: tuple[OverlayPair, ...],
-                 settings, parent=None) -> None:
+                 settings, parent=None, *, expected_digest: bytes | None = None) -> None:
         super().__init__(parent)
         self.controller = controller
         self.transform, self.pairs = transform, pairs
+        self._expected_digest = expected_digest
         self._deviation = read_cad_deviation(settings)
         self._reader: _CadReader | None = None
         self._stale = False
@@ -141,7 +143,9 @@ class CadRegistrationOverlayDialog(QDialog):
         self._progress_bar.show()
         self._refresh_progress()
         self._progress_timer.start()
-        reader = _CadReader(path, self._deviation, self)
+        reader = _CadReader(path, self._deviation, self,
+                            cache=CadMeshCache(0) if self._expected_digest is not None else None,
+                            expected_digest=self._expected_digest)
         self._reader = reader
         reader.result_ready.connect(self._show_mesh)
         reader.failed.connect(self._show_error)
@@ -180,7 +184,7 @@ class CadRegistrationOverlayDialog(QDialog):
         if self._stale or self._closing or self._discard_result or not self._confirm.isChecked():
             return
         known = {"cancelled", "start", "timeout", "crash", "file_size", "deviation", "missing_cad", "units",
-                 "read", "no_shape", "mesh", "limit", "memory", "missing_face", "coordinates", "no_faces", "unexpected", "output"}
+                 "read", "no_shape", "mesh", "limit", "memory", "missing_face", "coordinates", "no_faces", "unexpected", "output", "source_mismatch", "source_changed"}
         self._status.setText(tr(f"cad_preview.error.{code if code in known else 'unexpected'}"))
 
     def _cancel_read(self) -> None:
