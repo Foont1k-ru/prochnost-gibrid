@@ -268,7 +268,9 @@ def run_packaging_check() -> None:
         dialog._axis_compare_button.click()
         alignment = dialog._axis_dialog
         _require(alignment is not None and len(alignment._report.rows) == 2
-                 and alignment._report.rows[0][5] == tr("axis_alignment.status.available"),
+                 and alignment._report.rows[0][9] == tr("axis_alignment.status.available")
+                 and len(alignment._report.rows[0]) == 11 and alignment._report.rows[0][5] != "—"
+                 and alignment._report.rows[0][7] != "—",
                  "Сравнение линий опор не открылось или недоступно")
         assert alignment is not None
         write_csv_report(alignment._report, temporary / "axis-alignment.csv")

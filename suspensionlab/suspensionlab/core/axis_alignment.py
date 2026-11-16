@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import atan2, degrees, hypot, isfinite
+from math import atan2, degrees, fsum, hypot, isfinite
 from typing import Literal
 
 from .pose_view import Point, PoseView
@@ -10,11 +10,15 @@ from .pose_view import Point, PoseView
 
 @dataclass(frozen=True)
 class AxisAlignment:
-    """Острый угол осей и расстояния концов пружины до бесконечной оси амортизатора."""
+    """Линии опор и различие одноимённых точек; не размеры деталей."""
 
     angle_deg: float
     lower_offset_mm: float
     upper_offset_mm: float
+    lower_pair_distance_mm: float
+    upper_pair_distance_mm: float
+    lower_axial_mm: float
+    upper_axial_mm: float
 
 
 @dataclass(frozen=True)
@@ -42,11 +46,24 @@ def compare_mount_axes(spring: tuple[Point, Point], damper: tuple[Point, Point])
     damper_dir = unit(sub(damper[1], damper[0]))
     dot = sum(a * b for a, b in zip(spring_dir, damper_dir, strict=True))
     angle = degrees(atan2(hypot(*cross(spring_dir, damper_dir)), abs(dot)))
-    lower = hypot(*cross(sub(spring[0], damper[0]), damper_dir))
+    lower_delta = sub(spring[0], damper[0])
+    upper_delta = sub(spring[1], damper[1])
+    lower = hypot(*cross(lower_delta, damper_dir))
     upper = hypot(*cross(sub(spring[1], damper[0]), damper_dir))
-    if not all(isfinite(x) for x in (angle, lower, upper)):
+    def distance_projection(delta: Point) -> tuple[float, float]:
+        distance = hypot(*delta)
+        if not isfinite(distance):
+            raise ValueError("Расстояние между опорами не является конечным")
+        if distance == 0:
+            return 0.0, 0.0
+        # Нормируем перед суммированием, чтобы избежать переполнения отдельных слагаемых.
+        cosine = fsum((component / distance) * axis for component, axis in zip(delta, damper_dir, strict=True))
+        return distance, max(-1.0, min(1.0, cosine)) * distance
+    lower_distance, lower_axial = distance_projection(lower_delta)
+    upper_distance, upper_axial = distance_projection(upper_delta)
+    if not all(isfinite(x) for x in (angle, lower, upper, lower_distance, upper_distance, lower_axial, upper_axial)):
         raise ValueError("Сравнение осей не является конечным")
-    return AxisAlignment(angle, lower, upper)
+    return AxisAlignment(angle, lower, upper, lower_distance, upper_distance, lower_axial, upper_axial)
 
 
 def compare_pose_axes(travel_mm: float, frame: PoseView | None) -> AxisAlignmentRow:

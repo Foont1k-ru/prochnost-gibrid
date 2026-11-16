@@ -43,7 +43,12 @@ def test_real_sweep_dialog_export_navigation_and_invalidation(qtbot, tmp_path, m
     assert expected.result is not None
     assert float(view._report.rows[0][2]) == expected.result.angle_deg
     assert float(view._report.rows[0][3]) == expected.result.lower_offset_mm
-    assert view._report.rows[0][6] == dialog._table.item(0, 8).text()
+    assert float(view._report.rows[0][5]) == expected.result.lower_pair_distance_mm
+    assert float(view._report.rows[0][6]) == expected.result.upper_pair_distance_mm
+    assert float(view._report.rows[0][7]) == expected.result.lower_axial_mm
+    assert float(view._report.rows[0][8]) == expected.result.upper_axial_mm
+    assert view._table.columnCount() == 11
+    assert view._report.rows[0][10] == dialog._table.item(0, 8).text()
     assert tr("axis_alignment.notice") == dict(view._report.metadata)[tr("axis_alignment.scope_label")]
     saved = []
     monkeypatch.setattr(axis_alignment_dialog, "save_table_dialog", lambda _parent, report: saved.append(report))
@@ -79,10 +84,11 @@ def test_unavailable_and_conflicting_rows_are_retained(qtbot):
     dialog._open_axis_alignment()
     view = dialog._axis_dialog
     assert view is not None
-    assert [row[5] for row in view._report.rows[:3]] == [tr("axis_alignment.status.missing_pose"),
+    assert [row[9] for row in view._report.rows[:3]] == [tr("axis_alignment.status.missing_pose"),
             tr("axis_alignment.status.missing_mounts"), tr("axis_alignment.status.invalid_geometry")]
     assert all(row[2:5] == ("—", "—", "—") for row in view._report.rows[:3])
-    assert view._report.rows[3][6] == "диагностический конфликт"
+    assert all(row[5:9] == ("—", "—", "—", "—") for row in view._report.rows[:3])
+    assert view._report.rows[3][10] == "диагностический конфликт"
     assert "2 из 5" in view._count.text()
     view._table.setCurrentCell(0, 0)
     view._choose.click()

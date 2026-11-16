@@ -27,7 +27,7 @@ class AxisAlignmentDialog(QDialog):
 
     def __init__(self, rows: tuple[AxisAlignmentRow, ...], report: CSVReport, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        if len(report.rows) != len(rows) or len(report.columns) != 7 or any(len(row) != 7 for row in report.rows):
+        if len(report.rows) != len(rows) or len(report.columns) != 11 or any(len(row) != 11 for row in report.rows):
             raise ValueError(tr("export.no_results"))
         self.setWindowTitle(tr("axis_alignment.title"))
         self.resize(900, 510)
@@ -43,7 +43,11 @@ class AxisAlignmentDialog(QDialog):
             display = (values[0], f"{data.travel_mm:+.3f}",
                        f"{result.angle_deg:.4f}" if result else "—",
                        f"{result.lower_offset_mm:.4f}" if result else "—",
-                       f"{result.upper_offset_mm:.4f}" if result else "—", values[5], values[6])
+                       f"{result.upper_offset_mm:.4f}" if result else "—",
+                       f"{result.lower_pair_distance_mm:.4f}" if result else "—",
+                       f"{result.upper_pair_distance_mm:.4f}" if result else "—",
+                       f"{result.lower_axial_mm:+.4f}" if result else "—",
+                       f"{result.upper_axial_mm:+.4f}" if result else "—", values[9], values[10])
             for col, text in enumerate(display):
                 item = QTableWidgetItem(text)
                 item.setToolTip(text)
