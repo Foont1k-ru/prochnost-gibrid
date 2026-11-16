@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..core.equilibrium import EquilibriumPath, EquilibriumPathError, EquilibriumResult, SpringEquilibrium
-from ..core.mass_load import SymmetricMassLoad
+from ..core.mass_load import CornerMassLoad, MassLoadEstimate, SymmetricMassLoad
 from ..core.stroke import StrokeLimits
 from ..core.sweep_plot import PATH_PLOT_METRICS, PlotPoint, equilibrium_path_plot_points
 from ..export.csv_report import CSVReport
@@ -59,7 +59,7 @@ class EquilibriumDialog(QDialog):
         self._from = self._number(-100, 100, -30)
         self._to = self._number(-100, 100, 30)
         self._load = self._number(0, 100000, 0)
-        self._load_source: SymmetricMassLoad | None = None
+        self._load_source: MassLoadEstimate | None = None
         self._mass_load_button = QPushButton(tr("equilibrium_ui.mass_load_button"), self)
         self._mass_load_button.clicked.connect(self._open_mass_load)
         self._load_source_label = QLabel(tr("equilibrium_ui.load_manual"), self)
@@ -154,7 +154,7 @@ class EquilibriumDialog(QDialog):
             self._apply_mass_load(dialog.estimate, dialog.applied_load)
         dialog.deleteLater()
 
-    def _apply_mass_load(self, estimate: SymmetricMassLoad, load: float) -> None:
+    def _apply_mass_load(self, estimate: MassLoadEstimate, load: float) -> None:
         self._load.setValue(load)
         self._load_source = estimate
         self._load_source_label.setText(tr("equilibrium_ui.load_estimated"))
@@ -323,12 +323,22 @@ class EquilibriumDialog(QDialog):
         axle = self.controller.project.axle(str(self._role.currentData()))
         disabled, unknown = tr("export.not_enabled"), tr("export.unknown")
         source = self._load_source
-        source_details = (tr("equilibrium_ui.load_mass_values", mass=repr(source.total_mass_kg),
-                             axle=repr(source.axle_percent), unsprung=repr(source.unsprung_corner_kg),
-                             sprung=repr(source.corner_sprung_kg), reaction=repr(source.tire_reaction_n),
-                             load=repr(source.sprung_load_n)) if source is not None else "—")
+        if isinstance(source, SymmetricMassLoad):
+            source_key = "load_source_mass"
+            source_details = tr("equilibrium_ui.load_mass_values", mass=repr(source.total_mass_kg),
+                                axle=repr(source.axle_percent), unsprung=repr(source.unsprung_corner_kg),
+                                sprung=repr(source.corner_sprung_kg), reaction=repr(source.tire_reaction_n),
+                                load=repr(source.sprung_load_n))
+        elif isinstance(source, CornerMassLoad):
+            source_key = f"load_source_{source.source_kind}"
+            source_details = tr("equilibrium_ui.load_corner_values", wheel=repr(source.corner_total_kg),
+                                unsprung=repr(source.unsprung_corner_kg), sprung=repr(source.corner_sprung_kg),
+                                reaction=repr(source.tire_reaction_n), load=repr(source.sprung_load_n))
+        else:
+            source_key = "load_source_manual"
+            source_details = "—"
         return [
-            (tr("equilibrium_ui.load_source"), tr("equilibrium_ui.load_source_mass" if source else "equilibrium_ui.load_source_manual")),
+            (tr("equilibrium_ui.load_source"), tr(f"equilibrium_ui.{source_key}")),
             (tr("equilibrium_ui.load_mass_inputs"), source_details),
             (tr("equilibrium_ui.role"), self._role.currentText()),
             (tr("export.axle_type"), tr(axle.spec.name_key)),

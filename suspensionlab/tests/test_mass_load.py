@@ -28,3 +28,34 @@ def test_front_and_rear_use_selected_axle_and_unsprung_per_corner():
 def test_invalid_or_unrepresentable_inputs(mass, share, unsprung):
     with pytest.raises(ValueError):
         symmetric_mass_load(mass, share, unsprung)
+
+
+def test_explicit_corner_load_has_no_symmetry_assumption_and_records_source():
+    from suspensionlab.core.mass_load import corner_mass_load
+
+    left = corner_mass_load(340, 40, "weighed")
+    right = corner_mass_load(300, 35, "assumed")
+    assert left.source_kind == "weighed" and right.source_kind == "assumed"
+    assert left.corner_sprung_kg == 300 and right.corner_sprung_kg == 265
+    assert left.tire_reaction_n == pytest.approx(340 * GRAVITY_M_S2)
+    assert left.sprung_load_n == pytest.approx(300 * GRAVITY_M_S2)
+    assert right.sprung_load_n == pytest.approx(265 * GRAVITY_M_S2)
+    assert left.sprung_load_n != right.sprung_load_n
+
+
+@pytest.mark.parametrize("wheel,unsprung", [
+    (0, 0), (-1, 0), (nan, 0), (inf, 0), (1, -1), (1, 1), (1, 2), (1, nan),
+    (1, inf), (1e308, 0), (5e-324, 5e-324),
+])
+def test_invalid_or_unrepresentable_corner_value(wheel, unsprung):
+    from suspensionlab.core.mass_load import corner_mass_load
+
+    with pytest.raises(ValueError):
+        corner_mass_load(wheel, unsprung, "weighed")
+
+
+def test_corner_source_must_be_explicit():
+    from suspensionlab.core.mass_load import corner_mass_load
+
+    with pytest.raises(ValueError):
+        corner_mass_load(300, 35, "unknown")

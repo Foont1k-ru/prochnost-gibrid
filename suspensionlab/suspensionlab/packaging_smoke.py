@@ -381,6 +381,23 @@ def run_packaging_check() -> None:
         equilibrium._mass_load_button.click()
         _require(equilibrium._load.value() == 2893.0 and equilibrium._load_source is not None,
                  "Нагрузка по массе не перенесена в баланс")
+
+        def enter_corner_load() -> None:
+            helper = app.activeModalWidget()
+            _require(isinstance(helper, MassLoadDialog), "Окно оценки по колесу не открыто")
+            assert isinstance(helper, MassLoadDialog)
+            helper._mode.setCurrentIndex(helper._mode.findData("weighed"))
+            helper._fields["wheel"].setText("340")
+            helper._fields["unsprung"].setText("40")
+            helper._calculate_button.click()
+            _require(helper._apply.isEnabled(), "Оценка по колесу не рассчитана")
+            helper._apply.click()
+
+        QTimer.singleShot(0, enter_corner_load)
+        equilibrium._mass_load_button.click()
+        _require(equilibrium._load.value() == 2942.0 and equilibrium._load_source is not None
+                 and "показание весов" in dict(equilibrium._report_parameters())[tr("equilibrium_ui.load_source")],
+                 "Нагрузка по колесу не перенесена или потерян источник")
         equilibrium._length.setValue(230)
         equilibrium._load.setValue(SpringEquilibrium(window.controller.project.front, 230).evaluate(12, 1).wheel_support_n)
         equilibrium._run.click()
