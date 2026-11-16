@@ -4,6 +4,7 @@ from __future__ import annotations
 import math
 from pathlib import Path
 
+from PySide6.QtCore import QSettings, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -21,16 +22,20 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from ..config import autosave_path
-from ..core.cad_registration import MAX_PAIRS, evaluate_registration
+from ..config import autosave_path, settings_path
+from ..core.cad_registration import MAX_PAIRS, RegistrationEvaluation, evaluate_registration
+from ..core.cad_registration_overlay import overlay_pairs
 from ..export.cad_registration_report import registration_report
 from ..export.csv_report import CSVReport, write_csv_report
 from ..i18n import tr
-from ..model.point_csv import capture_points
+from ..model.point_csv import PointRecord, capture_points
+from .cad_registration_overlay_dialog import CadRegistrationOverlayDialog
 from .controller import AppController
 
 
 class CadRegistrationDialog(QDialog):
+    registrationChanged = Signal()
+
     def __init__(self, controller: AppController, parent=None) -> None:
         super().__init__(parent)
         self.controller = controller
@@ -38,6 +43,7 @@ class CadRegistrationDialog(QDialog):
         self._stale = False
         self._revision = 0
         self._report: CSVReport | None = None
+        self._snapshot: tuple[tuple[PointRecord, ...], tuple[bool, ...], RegistrationEvaluation] | None = None
         self.setWindowTitle(tr("cad_registration.title"))
         self.resize(1100, 750)
         layout = QVBoxLayout(self)
@@ -69,6 +75,10 @@ class CadRegistrationDialog(QDialog):
         self._export.clicked.connect(self._save_report)
         run_row.addWidget(self._calculate)
         run_row.addWidget(self._export)
+        self._overlay = QPushButton(tr("cad_registration_overlay.button"), self)
+        self._overlay.setEnabled(False)
+        self._overlay.clicked.connect(self._open_overlay)
+        run_row.addWidget(self._overlay)
         run_row.addStretch()
         layout.addLayout(run_row)
         self._result = QPlainTextEdit(self)
@@ -84,9 +94,12 @@ class CadRegistrationDialog(QDialog):
         controller.projectReplaced.connect(self._invalidate)
 
     def _clear_result(self, *_args) -> None:
+        self.registrationChanged.emit()
         self._revision += 1
         self._report = None
+        self._snapshot = None
         self._export.setEnabled(False)
+        self._overlay.setEnabled(False)
         self._result.clear()
 
     def _add_row(self) -> None:
@@ -194,7 +207,26 @@ class CadRegistrationDialog(QDialog):
         self._result.setPlainText("\n".join(lines))
         self._result.moveCursor(self._result.textCursor().MoveOperation.Start)
         self._report = report
+        self._snapshot = (tuple(records), mask, result)
         self._export.setEnabled(True)
+        self._overlay.setEnabled(True)
+
+    def _open_overlay(self) -> None:
+        if self._stale or self._snapshot is None:
+            return
+        records, mask, result = self._snapshot
+        try:
+            pairs = overlay_pairs(records, mask, result)
+        except ValueError:
+            QMessageBox.warning(self, tr("export.error_title"), tr("cad_registration_overlay.coordinates_error"))
+            return
+        settings = QSettings(str(settings_path()), QSettings.Format.IniFormat)
+        dialog = CadRegistrationOverlayDialog(self.controller, result.fit.transform, pairs, settings, self)
+        self.registrationChanged.connect(dialog._invalidate)
+        try:
+            dialog.exec()
+        finally:
+            dialog.deleteLater()
 
     def _save_report(self) -> None:
         if self._stale or self._report is None:
