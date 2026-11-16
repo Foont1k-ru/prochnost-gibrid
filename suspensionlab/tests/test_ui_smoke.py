@@ -4385,3 +4385,33 @@ def test_spring_candidate_optional_force_export_and_snapshot_invalidation(window
     candidate._compare.click()
     assert candidate.comparison.points[0].force_n is None and candidate.report.rows[0][8] == "—"
     assert window.controller.project.to_dict() == before
+
+
+def test_candidate_force_extremum_goes_to_original_analysis_row(window, qtbot):
+    from suspensionlab.ui.analysis_dialog import AnalysisDialog
+
+    window.controller.new_project("ring")
+    original = window.controller.project.to_dict()
+    dialog = AnalysisDialog(window.controller, window)
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog._spring.setChecked(True)
+    dialog._spring_length.setValue(320)
+    dialog._from.setValue(0)
+    dialog._to.setValue(2)
+    dialog._run.click()
+    dialog._spring_compare_button.click()
+    candidate = dialog._spring_candidate_dialog
+    assert candidate is not None
+    for key, value in (("free", "350"), ("installed", "310"), ("coil", "120"),
+                       ("coil_reserve", "10"), ("compression_reserve", "5")):
+        candidate._fields[key].setText(value)
+    candidate._force_enable.setChecked(True)
+    candidate._force_rate.setText("10")
+    candidate._compare.click()
+    row = candidate._force_max_row
+    assert row is not None and candidate._force_max_button.isEnabled()
+    candidate._force_max_button.click()
+    assert dialog._table.currentRow() == row and dialog._view_tabs.currentIndex() == 0
+    assert dialog._spring_candidate_dialog is None
+    assert window.controller.project.to_dict() == original

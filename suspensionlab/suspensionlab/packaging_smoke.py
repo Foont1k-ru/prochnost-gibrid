@@ -282,6 +282,8 @@ def run_packaging_check() -> None:
         _require(spring_candidate.comparison is not None and spring_candidate.report is not None
                  and spring_candidate.comparison.points[0].force_n is not None
                  and spring_candidate.report.rows[0][8] != "—", "Линейная оценка силы пружины недоступна")
+        _require(spring_candidate._force_min_button.isEnabled() and spring_candidate._force_max_button.isEnabled()
+                 and "Наименьшая" in spring_candidate._result.toPlainText(), "Сводка силы пружины недоступна")
         spring_candidate._details.click()
         force_detail = spring_candidate._details_dialog
         _require(force_detail is not None, "Просмотр силы пружины не открылся")

@@ -91,3 +91,37 @@ def test_linear_force_matches_explicit_formula_and_stop_rule(length, rate):
     else:
         assert point.force_n == pytest.approx(rate * max(300 - length, 0))
         assert point.force_status == "calculated"
+
+
+def test_force_summary_discrete_extrema_ties_and_missing_reasons():
+    from suspensionlab.core.spring_candidate import summarize_candidate_force
+
+    candidate = SpringCandidate(300, 50, 100, 0, 0, linear_rate_n_mm=10)
+    source = ((0, None), (1, 1), (2, 250), (3, 400), (4, 500), (5, 400), (6, 450))
+    summary = summarize_candidate_force(compare_spring_candidate(source, 200, candidate))
+    assert (summary.total, summary.calculated, summary.missing, summary.invalid, summary.coil_bind) == (7, 4, 1, 1, 1)
+    assert summary.minimum is not None and (summary.minimum.row, summary.minimum.force_n) == (4, 0)
+    assert summary.maximum is not None and (summary.maximum.row, summary.maximum.force_n) == (3, 500)
+    assert summary.maximum.travel_mm == 3 and summary.overflow == 0 and summary.disabled == 0
+
+
+def test_force_summary_disabled_empty_overflow_and_no_values():
+    from suspensionlab.core.spring_candidate import summarize_candidate_force
+
+    disabled = compare_spring_candidate(((0, None), (1, 100)), 200, SpringCandidate(300, 200, 100, 0, 0))
+    result = summarize_candidate_force(disabled)
+    assert result.disabled == 2 and result.calculated == 0 and result.minimum is None and result.maximum is None
+    empty = summarize_candidate_force(compare_spring_candidate((), 200, SpringCandidate(300, 200, 100, 0, 0, 1)))
+    assert empty.total == 0 and empty.minimum is None and empty.maximum is None
+    overflow = compare_spring_candidate(((0, 2),), 2, SpringCandidate(1e308, 2, 1, 0, 0, 1e308))
+    result = summarize_candidate_force(overflow)
+    assert result.overflow == 1 and result.minimum is None and result.maximum is None
+
+
+def test_force_extrema_selected_before_display_rounding():
+    from suspensionlab.core.spring_candidate import summarize_candidate_force
+
+    candidate = SpringCandidate(300, 200, 100, 0, 0, 1)
+    result = summarize_candidate_force(compare_spring_candidate(((0, 250), (1, 249.9999)), 200, candidate))
+    assert result.maximum is not None and result.maximum.row == 1
+    assert result.minimum is not None and result.minimum.row == 0

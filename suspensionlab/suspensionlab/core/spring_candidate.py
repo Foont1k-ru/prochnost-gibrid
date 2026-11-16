@@ -107,3 +107,45 @@ def compare_spring_candidate(
                 force_status = "calculated"
         result.append(SpringCandidatePoint(travel, length, coil, compression, status, force, force_status))
     return SpringComparison(candidate, reference_installed_mm, tuple(result))
+
+
+@dataclass(frozen=True)
+class ForceExtremum:
+    """Индекс исходной строки и значение силы без экранного округления."""
+
+    row: int
+    travel_mm: float
+    force_n: float
+
+
+@dataclass(frozen=True)
+class CandidateForceSummary:
+    total: int
+    calculated: int
+    disabled: int
+    missing: int
+    invalid: int
+    coil_bind: int
+    overflow: int
+    minimum: ForceExtremum | None
+    maximum: ForceExtremum | None
+
+
+def summarize_candidate_force(comparison: SpringComparison) -> CandidateForceSummary:
+    """Крайние силы только на доступных строках; при равенстве — первая.
+
+    Пропуски и смыкания не превращаются в нули. Даже при отсутствии пропусков
+    крайние точки не гарантируют экстремумы между ними или физическую достижимость.
+    """
+    counts = dict.fromkeys(("calculated", "disabled", "missing", "invalid", "coil_bind", "overflow"), 0)
+    values: list[ForceExtremum] = []
+    for row, point in enumerate(comparison.points):
+        counts[point.force_status] += 1
+        if point.force_status == "calculated" and point.force_n is not None:
+            values.append(ForceExtremum(row, point.travel_mm, point.force_n))
+    return CandidateForceSummary(
+        total=len(comparison.points), calculated=counts["calculated"], disabled=counts["disabled"],
+        missing=counts["missing"], invalid=counts["invalid"], coil_bind=counts["coil_bind"],
+        overflow=counts["overflow"], minimum=min(values, key=lambda p: p.force_n, default=None),
+        maximum=max(values, key=lambda p: p.force_n, default=None),
+    )

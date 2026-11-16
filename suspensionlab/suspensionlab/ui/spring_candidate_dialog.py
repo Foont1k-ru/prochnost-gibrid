@@ -19,7 +19,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..core.spring_candidate import SpringCandidate, SpringComparison, compare_spring_candidate
+from ..core.spring_candidate import (
+    SpringCandidate,
+    SpringComparison,
+    compare_spring_candidate,
+    summarize_candidate_force,
+)
 from ..export.csv_report import CSVReport
 from ..i18n import tr
 from .spring_candidate_points_dialog import SpringCandidatePointsDialog
@@ -65,6 +70,12 @@ class SpringCandidateDialog(QDialog):
         self._compare.clicked.connect(self._calculate)
         self._result = QTextEdit(self)
         self._result.setReadOnly(True)
+        self._force_min_row: int | None = None
+        self._force_max_row: int | None = None
+        self._force_min_button = QPushButton(tr("spring_candidate.force.go_min"), self)
+        self._force_max_button = QPushButton(tr("spring_candidate.force.go_max"), self)
+        self._force_min_button.clicked.connect(lambda: self._select_force_extremum(self._force_min_row))
+        self._force_max_button.clicked.connect(lambda: self._select_force_extremum(self._force_max_row))
         self._details = QPushButton(tr("spring_candidate.details.button"), self)
         self._details.clicked.connect(self._open_details)
         self._export = QPushButton(tr("spring_candidate.report.button"), self)
@@ -78,6 +89,10 @@ class SpringCandidateDialog(QDialog):
         layout.addLayout(form)
         layout.addWidget(self._compare)
         layout.addWidget(self._result, 1)
+        force_actions = QHBoxLayout()
+        force_actions.addWidget(self._force_min_button)
+        force_actions.addWidget(self._force_max_button)
+        layout.addLayout(force_actions)
         actions = QHBoxLayout()
         actions.addWidget(self._details)
         actions.addWidget(self._export)
@@ -90,6 +105,9 @@ class SpringCandidateDialog(QDialog):
         self._close_details()
         self.comparison = None
         self.report = None
+        self._force_min_row = self._force_max_row = None
+        self._force_min_button.setEnabled(False)
+        self._force_max_button.setEnabled(False)
         self._details.setEnabled(False)
         self._export.setEnabled(False)
         self._result.setPlainText(tr("spring_candidate.empty"))
@@ -125,14 +143,20 @@ class SpringCandidateDialog(QDialog):
         if comparison.candidate.linear_rate_n_mm is None:
             lines.append(tr("spring_candidate.force.disabled"))
         else:
-            values = [(i, point) for i, point in enumerate(comparison.points, 1) if point.force_n is not None]
+            summary = summarize_candidate_force(comparison)
             lines.append(tr("spring_candidate.force.count", rate=repr(comparison.candidate.linear_rate_n_mm),
-                            available=len(values), total=len(comparison.points)))
-            if values:
-                index, point = max(values, key=lambda item: item[1].force_n if item[1].force_n is not None else -1)
-                assert point.force_n is not None
-                lines.append(tr("spring_candidate.force.maximum", force=f"{point.force_n:.2f}",
-                                row=index, travel=f"{point.travel_mm:+.2f}"))
+                            available=summary.calculated, total=summary.total))
+            lines.append(tr("spring_candidate.force.unavailable_counts", missing=summary.missing,
+                            invalid=summary.invalid, coil_bind=summary.coil_bind, overflow=summary.overflow))
+            if summary.minimum is not None and summary.maximum is not None:
+                for key, extremum in (("minimum", summary.minimum), ("maximum", summary.maximum)):
+                    lines.append(tr(f"spring_candidate.force.{key}", force=f"{extremum.force_n:.2f}",
+                                    row=extremum.row + 1, travel=f"{extremum.travel_mm:+.2f}"))
+                self._force_min_row = summary.minimum.row
+                self._force_max_row = summary.maximum.row
+                self._force_min_button.setEnabled(True)
+                self._force_max_button.setEnabled(True)
+                lines.append(tr("spring_candidate.force.extrema_notice"))
             else:
                 lines.append(tr("spring_candidate.force.no_values"))
             lines.append(tr("spring_candidate.force.notice"))
@@ -145,6 +169,10 @@ class SpringCandidateDialog(QDialog):
             except (ValueError, UnicodeError) as error:
                 lines.append(tr("spring_candidate.report.unavailable", reason=str(error)))
         self._result.setPlainText("\n\n".join(lines))
+
+    def _select_force_extremum(self, row: int | None) -> None:
+        if row is not None:
+            self._select_row(row)
 
     def _close_details(self) -> None:
         if self._details_dialog is not None:
