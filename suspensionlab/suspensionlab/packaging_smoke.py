@@ -264,6 +264,18 @@ def run_packaging_check() -> None:
         spring_row = dialog._spring_summary.shortest.row
         dialog._spring_shortest.click()
         _require(dialog._table.currentRow() == spring_row, "Переход к точке сводки пружины недоступен")
+        _require(dialog._axis_compare_button.isEnabled(), "Сравнение линий опор недоступно")
+        dialog._axis_compare_button.click()
+        alignment = dialog._axis_dialog
+        _require(alignment is not None and len(alignment._report.rows) == 2
+                 and alignment._report.rows[0][5] == tr("axis_alignment.status.available"),
+                 "Сравнение линий опор не открылось или недоступно")
+        assert alignment is not None
+        write_csv_report(alignment._report, temporary / "axis-alignment.csv")
+        alignment._table.setCurrentCell(1, 0)
+        alignment._choose.click()
+        _require(dialog._axis_dialog is None and dialog._table.currentRow() == 1,
+                 "Переход к строке сравнения линий опор недоступен")
         _require(dialog._spring_compare_button.isEnabled(), "Сравнение пружины недоступно")
         dialog._spring_compare_button.click()
         spring_candidate = dialog._spring_candidate_dialog

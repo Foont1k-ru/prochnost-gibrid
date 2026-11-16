@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..core.analysis import CornerSample, analyze_corner
+from ..core.axis_alignment import compare_pose_axes
 from ..core.damper import DamperForcePoint, LinearDamperCharacteristic, evaluate_linear_damping
 from ..core.damper_range import CandidateComparison, compare_candidate, summarize_damper_range
 from ..core.double_wishbone import DoubleWishbone
@@ -45,6 +46,7 @@ from ..core.spring_range import SpringRange, summarize_spring_range
 from ..core.stroke import StrokeLimits
 from ..core.sweep import travel_grid
 from ..core.sweep_plot import PLOT_METRICS, sweep_plot_points
+from ..export.axis_alignment import axis_alignment_rows
 from ..export.csv_report import CSVReport
 from ..export.damper_candidate_report import candidate_report_rows
 from ..export.point_positions_report import point_position_rows
@@ -53,6 +55,7 @@ from ..export.spring_rate_provenance import spring_rate_metadata
 from ..export.static_report import static_report_rows
 from ..i18n import tr
 from .analysis_explanation import explain_corner_sample, explain_static_sample
+from .axis_alignment_dialog import AxisAlignmentDialog
 from .canvas.pose_preview import PosePreview
 from .canvas.scene3d_preview import Scene3DPreview
 from .canvas.sweep_plot import SweepPlot
@@ -341,6 +344,13 @@ class AnalysisDialog(QDialog):
         self._spring_compare_button.setEnabled(False)
         self._spring_compare_button.clicked.connect(self._open_spring_candidate)
         spring_layout.addWidget(self._spring_compare_button)
+        self._axis_compare_button = QPushButton(tr("axis_alignment.open"), self)
+        self._axis_compare_button.setToolTip(tr("axis_alignment.notice"))
+        self._axis_compare_button.setEnabled(False)
+        self._axis_compare_button.clicked.connect(self._open_axis_alignment)
+        spring_layout.addWidget(self._axis_compare_button)
+        self._axis_dialog: AxisAlignmentDialog | None = None
+        self.finished.connect(lambda _result: self._close_axis_alignment())
         self._spring_candidate_dialog: SpringCandidateDialog | None = None
         self._spring_candidate_points: tuple[tuple[float, float | None], ...] = ()
         self.finished.connect(lambda _result: self._close_spring_candidate())
@@ -511,6 +521,8 @@ class AnalysisDialog(QDialog):
         self._plot.set_points(())
         self._summary.set_samples(())
         self._close_spring_candidate()
+        self._close_axis_alignment()
+        self._axis_compare_button.setEnabled(False)
         self._spring_candidate_points = ()
         self._spring_compare_button.setEnabled(False)
         self._spring_summary = None
@@ -842,6 +854,7 @@ class AnalysisDialog(QDialog):
                 item.setToolTip(text)
                 self._table.setItem(row, column, item)
         self._summary.set_samples(corner_summary(result))
+        self._axis_compare_button.setEnabled(self._spring.isChecked() and self._damper.isChecked() and bool(travels))
         if self._spring.isChecked():
             spring_points = [(point.travel_mm, sample.spring.state if sample is not None and sample.spring is not None
                               and sample.spring.error is None else None)
@@ -880,6 +893,44 @@ class AnalysisDialog(QDialog):
             index = min(range(len(travels)), key=lambda i: abs(travels[i]))
             self._table.setCurrentCell(index, 0)
             self._show_row(index)
+
+    def _close_axis_alignment(self) -> None:
+        if self._axis_dialog is not None:
+            dialog = self._axis_dialog
+            self._axis_dialog = None
+            dialog.reject()
+
+    def _open_axis_alignment(self) -> None:
+        if not self._axis_compare_button.isEnabled():
+            return
+        if self._axis_dialog is not None:
+            self._axis_dialog.raise_()
+            self._axis_dialog.activateWindow()
+            return
+        self._playback.pause_for_view_change()
+        try:
+            points = self._plot.points
+            states = [self._table.item(row, 8) for row in range(self._table.rowCount())]
+            if len(points) != len(self._frames) or len(points) != len(states) or any(item is None for item in states):
+                raise ValueError(tr("export.no_results"))
+            rows = tuple(compare_pose_axes(point.travel_mm, frame) for point, frame in zip(points, self._frames, strict=True))
+            columns, values = axis_alignment_rows(rows, tuple(item.text() for item in states if item is not None))
+            report = make_report(self.controller, tr("axis_alignment.title"),
+                                 [*self._report_parameters(), (tr("axis_alignment.scope_label"), tr("axis_alignment.notice"))],
+                                 columns, values, precision_text=tr("axis_alignment.precision"))
+        except (ValueError, UnicodeError, ArithmeticError) as error:
+            QMessageBox.warning(self, tr("export.error_title"), tr("export.error", reason=str(error)))
+            return
+        dialog = AxisAlignmentDialog(rows, report, self)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        self._axis_dialog = dialog
+        dialog.rowSelected.connect(lambda row: self._table.setCurrentCell(row, 0))
+        dialog.finished.connect(lambda _result: self._forget_axis_dialog(dialog))
+        dialog.show()
+
+    def _forget_axis_dialog(self, dialog: AxisAlignmentDialog) -> None:
+        if self._axis_dialog is dialog:
+            self._axis_dialog = None
 
     def _close_spring_candidate(self) -> None:
         if self._spring_candidate_dialog is not None:
