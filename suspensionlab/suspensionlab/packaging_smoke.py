@@ -317,6 +317,10 @@ def run_packaging_check() -> None:
         _require(spring_candidate.comparison is not None and spring_candidate.report is not None
                  and spring_candidate.comparison.points[0].force_n is not None
                  and spring_candidate.report.rows[0][8] != "—", "Линейная оценка силы пружины недоступна")
+        assert spring_candidate.report is not None
+        _require(dict(spring_candidate.report.metadata).get(tr("spring_rate.length1")) == "300.0"
+                 and dict(spring_candidate.report.metadata).get(tr("spring_rate.force2")) == "875.0",
+                 "Исходные точки жёсткости потеряны в отчёте сравнения")
         _require(spring_candidate._force_min_button.isEnabled() and spring_candidate._force_max_button.isEnabled()
                  and "Наименьшая" in spring_candidate._result.toPlainText(), "Сводка силы пружины недоступна")
         spring_candidate._details.click()
@@ -361,6 +365,9 @@ def run_packaging_check() -> None:
             view = EquilibriumPathDialog(path, balance, candidate=c)
             report = balance._path_report(path, view._table)
             graph = balance._path_graph_report(path, view._table, view._plot.points, view._plot_metric.currentText())
+            _require(dict(report.metadata).get(tr("spring_rate.length1")) == "300.0"
+                     and dict(graph.metadata).get(tr("spring_rate.force2")) == "875.0",
+                     "Исходные точки жёсткости потеряны в отчётах пути")
             column = tr("equilibrium_path.column.candidate_status")
             _require(column in report.columns and column in graph.columns and len(report.rows) == len(path.samples)
                      and "отказ без данных" in view._candidate_summary.text()

@@ -49,6 +49,7 @@ from ..export.csv_report import CSVReport
 from ..export.damper_candidate_report import candidate_report_rows
 from ..export.point_positions_report import point_position_rows
 from ..export.spring_candidate_report import spring_candidate_report_rows
+from ..export.spring_rate_provenance import spring_rate_metadata
 from ..export.static_report import static_report_rows
 from ..i18n import tr
 from .analysis_explanation import explain_corner_sample, explain_static_sample
@@ -912,6 +913,7 @@ class AnalysisDialog(QDialog):
             inputs = [(tr(f"spring_candidate.{key}"), repr(value)) for key, value in zip(fields, values, strict=True)]
             inputs.append((tr("spring_candidate.force.rate_label"), repr(candidate.linear_rate_n_mm)
                            if candidate.linear_rate_n_mm is not None else tr("spring_candidate.force.not_enabled")))
+            inputs.extend(spring_rate_metadata(candidate))
             return make_report(self.controller, tr("spring_candidate.report.kind"),
                                [*parameters, *inputs, (tr("spring_candidate.report.scope_label"),
                                                        tr("spring_candidate.report.scope"))],

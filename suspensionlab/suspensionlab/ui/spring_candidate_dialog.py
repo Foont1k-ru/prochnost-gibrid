@@ -25,6 +25,7 @@ from ..core.spring_candidate import (
     compare_spring_candidate,
     summarize_candidate_force,
 )
+from ..core.spring_rate_estimate import SpringRatePoints
 from ..export.csv_report import CSVReport
 from ..i18n import tr
 from .spring_candidate_points_dialog import SpringCandidatePointsDialog
@@ -46,6 +47,7 @@ class SpringCandidateDialog(QDialog):
         self._points = points
         self._reference_installed = reference_installed_mm
         self.comparison: SpringComparison | None = None
+        self._rate_points: SpringRatePoints | None = None
         self._report_factory = report_factory
         self._balance_factory = balance_factory
         self.report: CSVReport | None = None
@@ -60,6 +62,8 @@ class SpringCandidateDialog(QDialog):
             edit.setPlaceholderText(tr("spring_candidate.required"))
             edit.textChanged.connect(self._clear)
             form.addRow(tr(f"spring_candidate.{key}"), edit)
+        self._rate_source_label = QLabel(self)
+        self._rate_source_label.setWordWrap(True)
         self._force_enable = QCheckBox(tr("spring_candidate.force.enable"), self)
         self._force_rate = QLineEdit(self)
         self._force_rate.setPlaceholderText(tr("spring_candidate.force.rate_placeholder"))
@@ -69,6 +73,9 @@ class SpringCandidateDialog(QDialog):
         self._force_enable.toggled.connect(self._force_rate.setEnabled)
         self._force_enable.toggled.connect(self._clear)
         self._force_rate.textChanged.connect(self._clear)
+        self._fields["free"].textChanged.connect(self._forget_rate_points)
+        self._force_rate.textChanged.connect(self._forget_rate_points)
+        self._force_enable.toggled.connect(self._forget_rate_points)
         self._estimate_rate = QPushButton(tr("spring_rate.open"), self)
         self._estimate_rate.setToolTip(tr("spring_rate.title"))
         self._estimate_rate.clicked.connect(self._open_rate_estimate)
@@ -76,6 +83,7 @@ class SpringCandidateDialog(QDialog):
         rate_row.addWidget(self._force_rate, 1)
         rate_row.addWidget(self._estimate_rate)
         form.addRow(self._force_enable, rate_row)
+        form.addRow(self._rate_source_label)
         self._compare = QPushButton(tr("spring_candidate.compare"), self)
         self._compare.clicked.connect(self._calculate)
         self._result = QTextEdit(self)
@@ -113,7 +121,13 @@ class SpringCandidateDialog(QDialog):
         layout.addLayout(actions)
         layout.addWidget(buttons)
         self.finished.connect(lambda _result: self._close_details())
+        self._forget_rate_points()
         self._clear()
+
+    def _forget_rate_points(self, *_args: object) -> None:
+        self._rate_points = None
+        mode = "manual" if self._force_enable.isChecked() else "disabled"
+        self._rate_source_label.setText(tr(f"spring_rate.source_{mode}"))
 
     def _clear(self, *_args: object) -> None:
         if self.comparison is not None:
@@ -143,7 +157,8 @@ class SpringCandidateDialog(QDialog):
                 if not isfinite(rate) or not 0 < rate <= MAX_CANDIDATE_RATE:
                     raise ValueError
             candidate = SpringCandidate(parse("free"), parse("installed"), parse("coil"), parse("coil_reserve"),
-                                        parse("compression_reserve"), linear_rate_n_mm=rate)
+                                        parse("compression_reserve"), linear_rate_n_mm=rate,
+                                        rate_points=self._rate_points if rate is not None else None)
             self.comparison = compare_spring_candidate(self._points, self._reference_installed, candidate)
         except (ValueError, OverflowError):
             self._result.setPlainText(tr("spring_candidate.invalid"))
@@ -191,10 +206,15 @@ class SpringCandidateDialog(QDialog):
     def _open_rate_estimate(self) -> None:
         free_length_text = self._fields["free"].text()
         dialog = SpringRateDialog(free_length_text, self)
-        if (dialog.exec() == QDialog.DialogCode.Accepted and dialog.estimate is not None
+        if (dialog.exec() == QDialog.DialogCode.Accepted and dialog.estimate is not None and dialog.points is not None
                 and self._fields["free"].text() == free_length_text):
             self._force_enable.setChecked(True)
             self._force_rate.setText(repr(dialog.estimate.rate_n_mm))
+            # Даже та же жёсткость может быть получена из других точек.
+            self._clear()
+            self._rate_points = dialog.points
+            self._rate_source_label.setText(tr("spring_rate.source_two_points"))
+        dialog.deleteLater()
 
     def _select_force_extremum(self, row: int | None) -> None:
         if row is not None:

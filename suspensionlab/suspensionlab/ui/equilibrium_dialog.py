@@ -38,6 +38,7 @@ from ..export.equilibrium_path import (
     format_candidate_path_minima,
 )
 from ..export.plot_report import plot_report_rows
+from ..export.spring_rate_provenance import spring_rate_metadata
 from ..i18n import tr
 from .controller import AppController
 from .equilibrium_path_dialog import EquilibriumPathDialog
@@ -470,6 +471,7 @@ class EquilibriumDialog(QDialog):
             (tr("equilibrium_ui.damper_min"), str(self._damper_min.value()) if self._damper.isChecked() else disabled),
             (tr("equilibrium_ui.damper_max"), str(self._damper_max.value()) if self._damper.isChecked() else disabled),
             (spring_label, spring_data),
+            *(spring_rate_metadata(self._candidate) if self._candidate is not None else []),
             (tr("equilibrium_ui.search_metadata"), tr("equilibrium_ui.search_settings")),
             (tr("equilibrium_ui.model_metadata"), limitations),
         ]

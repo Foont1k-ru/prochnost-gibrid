@@ -13,6 +13,19 @@ class SpringRateEstimate:
     model_force_2_n: float
 
 
+@dataclass(frozen=True)
+class SpringRatePoints:
+    """Введённые пользователем пары, не доказательство измерения или каталога."""
+
+    length_1_mm: float
+    force_1_n: float
+    length_2_mm: float
+    force_2_n: float
+
+    def estimate(self, free_length_mm: float) -> SpringRateEstimate:
+        return estimate_spring_rate(self.length_1_mm, self.force_1_n, self.length_2_mm, self.force_2_n, free_length_mm)
+
+
 def estimate_spring_rate(length_1_mm: float, force_1_n: float, length_2_mm: float, force_2_n: float,
                          free_length_mm: float) -> SpringRateEstimate:
     """Секущая dF/dсжатие, без проверки экспериментальных данных.

@@ -6,6 +6,7 @@ from math import isfinite
 from typing import Literal
 
 from .spring_characteristics import SpringCharacteristic, spring_state
+from .spring_rate_estimate import SpringRatePoints
 
 CandidateStatus = Literal["missing", "invalid", "coil_bind", "uncompressed", "reserve_short", "clear"]
 ForceStatus = Literal["disabled", "missing", "invalid", "coil_bind", "calculated", "overflow"]
@@ -19,6 +20,7 @@ class SpringCandidate:
     coil_reserve_mm: float
     compression_reserve_mm: float
     linear_rate_n_mm: float | None = None
+    rate_points: SpringRatePoints | None = None
 
     def __post_init__(self) -> None:
         if not all(isfinite(x) for x in (self.free_mm, self.installed_mm, self.coil_bind_mm,
@@ -30,6 +32,9 @@ class SpringCandidate:
             raise ValueError("Требуемые запасы не могут быть отрицательными")
         if self.linear_rate_n_mm is not None and (not isfinite(self.linear_rate_n_mm) or self.linear_rate_n_mm <= 0):
             raise ValueError("Линейная жёсткость должна быть положительной и конечной")
+        if (self.rate_points is not None and (self.linear_rate_n_mm is None
+                or self.rate_points.estimate(self.free_mm).rate_n_mm != self.linear_rate_n_mm)):
+            raise ValueError("Исходные точки не соответствуют жёсткости кандидата")
 
 
 @dataclass(frozen=True)

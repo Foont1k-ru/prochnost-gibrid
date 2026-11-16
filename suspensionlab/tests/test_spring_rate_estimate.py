@@ -35,3 +35,17 @@ def test_offset_is_not_silently_applied_to_existing_model():
 def test_invalid_and_unrepresentable_values(values):
     with pytest.raises(ValueError):
         estimate_spring_rate(*values)
+
+
+def test_candidate_rejects_inconsistent_or_invalid_rate_provenance():
+    from suspensionlab.core.spring_candidate import SpringCandidate
+    from suspensionlab.core.spring_rate_estimate import SpringRatePoints
+
+    points = SpringRatePoints(280, 600, 240, 1400)
+    candidate = SpringCandidate(300, 200, 100, 0, 0, 20, rate_points=points)
+    assert candidate.rate_points == points
+    for rate in (None, 19.999, 21):
+        with pytest.raises(ValueError):
+            SpringCandidate(300, 200, 100, 0, 0, rate, rate_points=points)
+    with pytest.raises(ValueError):
+        SpringCandidate(300, 200, 100, 0, 0, 20, rate_points=SpringRatePoints(280, 600, 280, 1400))
