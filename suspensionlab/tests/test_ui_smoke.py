@@ -2283,6 +2283,7 @@ def test_save_and_autosave_failure_preserve_original_and_dirty_state(window, tmp
     backup = tmp_path / "autosave.susp.json"
     backup.write_bytes(b"old backup")
     monkeypatch.setattr(module, "autosave_path", lambda: backup)
+    c.allow_autosave_overwrite(c.prepare_autosave_overwrite())
     c.set_value(c.project.vehicle, "mass_kg", c.project.vehicle.mass_kg + 50)
     messages = []
     c.statusMessage.connect(messages.append)
@@ -2530,6 +2531,8 @@ def test_recovery_ui_cancel_bad_file_and_success(window, tmp_path, monkeypatch):
     window.action_recover_autosave.trigger()
     assert errors and c.project.to_dict() == before and not c.recovery_pending
     assert window._autosave_timer.isActive()
+    assert not c.autosave()  # External edit must not be silently overwritten.
+    c.allow_autosave_overwrite(c.prepare_autosave_overwrite())
     assert c.autosave()
     monkeypatch.setattr(window, "_confirm_discard_changes", lambda: False)
     window.action_recover_autosave.trigger()

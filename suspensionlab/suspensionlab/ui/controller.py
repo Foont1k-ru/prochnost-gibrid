@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 from collections.abc import Iterator
@@ -19,6 +20,7 @@ from PySide6.QtCore import QObject, Signal
 
 from ..config import autosave_path
 from ..diagnostic_events import event
+from ..model.autosave_guard import AutosaveGuard, AutosaveStamp, inspect_autosave
 from ..model.commands import (
     ChangeLinkLengthCommand,
     DictFlagCommand,
@@ -29,7 +31,7 @@ from ..model.commands import (
     ValueCommand,
 )
 from ..model.entities import Axle, Hardpoint, Project, Snapshot
-from ..model.project_io import ProjectIOError, ensure_suffix, load_project, save_project
+from ..model.project_io import ProjectIOError, ensure_suffix, load_project, project_to_json, save_project
 from ..model.snapshot_restore import RestoreSnapshotCommand, prepare_snapshot
 from ..model.templates import load_template
 from ..model.units import UnitSettings
@@ -56,6 +58,7 @@ class AppController(QObject):
     statusMessage = Signal(str)
     dirtyChanged = Signal(bool)
     unitsChanged = Signal()
+    autosaveProtectionChanged = Signal()
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -67,6 +70,8 @@ class AppController(QObject):
         self.dirty = False
         self._recovery_source: Path | None = None
         self._recovery_guard: Path | None = None
+        self._autosave_guard = AutosaveGuard()
+        self._autosave_waiting = False
         self.auto_extend_slider = True
         self._issues: list[Issue] = []
         self.undo.add_listener(self._on_undo_changed)
@@ -182,6 +187,36 @@ class AppController(QObject):
         event("project.recovery", result="ok")
         self.statusMessage.emit("autosave.recovered")
 
+    @property
+    def autosave_waiting(self) -> bool:
+        """Общая копия не может быть автоматически перезаписана без решения."""
+        return self._autosave_waiting
+
+    def _set_autosave_waiting(self, value: bool) -> None:
+        if value != self._autosave_waiting:
+            self._autosave_waiting = value
+            self.autosaveProtectionChanged.emit()
+
+    def check_autosave_protection(self) -> bool:
+        try:
+            current = inspect_autosave(autosave_path())
+            waiting = not self._autosave_guard.may_write(current)
+        except (OSError, RuntimeError):
+            waiting = True  # ошибка проверки никогда не даёт разрешение
+        self._set_autosave_waiting(waiting)
+        return waiting
+
+    def prepare_autosave_overwrite(self) -> AutosaveStamp | None:
+        """Снимок копии до вопроса; не меняет состояние и ничего не записывает."""
+        return inspect_autosave(autosave_path())
+
+    def allow_autosave_overwrite(self, expected: AutosaveStamp) -> None:
+        """Согласие действует только на содержимое, увиденное до подтверждения."""
+        if self.recovery_pending or self._recovery_guard is not None:
+            raise OSError("recovery is pending")
+        self._autosave_guard.approve(expected, inspect_autosave(autosave_path()))
+        self._set_autosave_waiting(False)
+
     def autosave(self) -> bool:
         """Тихое автосохранение рабочей копии (раз в минуту)."""
         if self.recovery_pending or self._recovery_guard is not None:
@@ -190,8 +225,22 @@ class AppController(QObject):
             return False
         original_path = self.project.path
         try:
-            save_project(self.project, autosave_path())
-        except (OSError, ProjectIOError):
+            path = autosave_path()
+            current = inspect_autosave(path)
+            if not self._autosave_guard.may_write(current):
+                self._set_autosave_waiting(True)
+                event("project.autosave", warning=True, result="protected")
+                self.statusMessage.emit("autosave.existing_paused")
+                return False
+            expected_digest = hashlib.sha256(project_to_json(self.project).encode("utf-8")).digest()
+            save_project(self.project, path)
+            written = inspect_autosave(path)
+            if written is None or written.digest != expected_digest:
+                raise OSError("autosave changed after writing")
+            self._autosave_guard.written(written)
+            self._set_autosave_waiting(False)
+        except (OSError, UnicodeError, TypeError, ValueError, OverflowError, RuntimeError, ProjectIOError):
+            self._set_autosave_waiting(True)
             event("project.autosave", warning=True, result="failed")
             LOG.warning("Автосохранение не удалось", exc_info=True)
             self.statusMessage.emit("autosave.failed")

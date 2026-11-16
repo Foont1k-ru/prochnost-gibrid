@@ -83,6 +83,7 @@ class MainWindow(QMainWindow):
         self._autosave_timer.timeout.connect(self._on_autosave)
         self._autosave_timer.start()
 
+        self.controller.check_autosave_protection()
         self._refresh_undo_actions()
         self._update_title()
         self._update_status()
@@ -177,6 +178,8 @@ class MainWindow(QMainWindow):
 
         self.action_recover_autosave = QAction(tr("autosave.recover_menu"), self)
         self.action_recover_autosave.triggered.connect(self._recover_autosave)
+        self.action_allow_autosave = QAction(tr("autosave.allow_menu"), self)
+        self.action_allow_autosave.triggered.connect(self._allow_autosave_overwrite)
 
         self.action_save = QAction(tr("menu.file.save"), self)
         self.action_save.setShortcut(QKeySequence.StandardKey.Save)
@@ -290,6 +293,7 @@ class MainWindow(QMainWindow):
         menu_file.addAction(self.action_cad_preview)
         menu_file.addAction(self.action_cad_registration)
         menu_file.addAction(self.action_recover_autosave)
+        menu_file.addAction(self.action_allow_autosave)
         menu_file.addAction(self.action_templates)
         menu_file.addSeparator()
         menu_file.addAction(self.action_save)
@@ -409,8 +413,11 @@ class MainWindow(QMainWindow):
         self._status_project = QLabel(self)
         self._status_selection = QLabel(self)
         self._status_units = QLabel(self)
+        self._status_autosave = QLabel(self)
+        self._status_autosave.setToolTip(tr("autosave.existing_paused"))
         status = self.statusBar()
         status.addWidget(self._status_selection, 1)
+        status.addPermanentWidget(self._status_autosave)
         status.addPermanentWidget(self._status_project)
         status.addPermanentWidget(self._status_units)
         self.controller.statusMessage.connect(lambda key: status.showMessage(tr(key), 4000))
@@ -466,6 +473,7 @@ class MainWindow(QMainWindow):
         self.controller.projectReplaced.connect(self._on_project_replaced)
         self.controller.dirtyChanged.connect(lambda _dirty: self._update_title())
         self.controller.unitsChanged.connect(self._update_status)
+        self.controller.autosaveProtectionChanged.connect(self._update_title)
         self._tree.selectionRequested.connect(self.controller.select)
         self._diagnostics.issueSelected.connect(self.controller.select)
 
@@ -501,8 +509,11 @@ class MainWindow(QMainWindow):
         project = self.controller.project
         name = project.meta.name.strip() or tr("status.project_untitled").split(": ", 1)[-1]
         marker = " •" if self.controller.dirty else ""
-        recovery = f" — {tr('autosave.paused_title')}" if self.controller.recovery_pending else ""
+        recovery = f" — {tr('autosave.paused_title')}" if self.controller.recovery_pending or self.controller.autosave_waiting else ""
         self.setWindowTitle(f"{APP_NAME} — {name}{marker}{recovery}")
+        self._status_autosave.setText(tr("autosave.paused_title") if recovery else "")
+        self._status_autosave.setToolTip(tr("autosave.paused") if self.controller.recovery_pending
+                                         else tr("autosave.existing_paused"))
         self._status_project.setText(tr("status.project", name=name))
         self._status_project.setToolTip(project.path or "")
 
@@ -641,6 +652,34 @@ class MainWindow(QMainWindow):
         finally:
             if running:
                 self._autosave_timer.start()
+
+    def _allow_autosave_overwrite(self) -> None:
+        """Подтверждение относится только к копии, прочитанной до вопроса."""
+        if self.controller.recovery_pending:
+            QMessageBox.information(self, tr("autosave.allow_title"), tr("autosave.paused"))
+            return
+        try:
+            expected = self.controller.prepare_autosave_overwrite()
+        except (OSError, RuntimeError):
+            self.controller.check_autosave_protection()
+            QMessageBox.warning(self, tr("autosave.allow_title"), tr("autosave.allow_error"))
+            return
+        if expected is None:
+            self.controller.check_autosave_protection()
+            QMessageBox.information(self, tr("autosave.allow_title"), tr("autosave.allow_absent"))
+            return
+        answer = QMessageBox.question(self, tr("autosave.allow_title"), tr("autosave.allow_notice"),
+                                      QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                                      QMessageBox.StandardButton.No)
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            self.controller.allow_autosave_overwrite(expected)
+        except (OSError, RuntimeError):
+            self.controller.check_autosave_protection()
+            QMessageBox.warning(self, tr("autosave.allow_title"), tr("autosave.allow_error"))
+            return
+        self.statusBar().showMessage(tr("autosave.allow_done"), 4000)
 
     def _save_project(self) -> bool:
         """Сохранить текущий проект."""
