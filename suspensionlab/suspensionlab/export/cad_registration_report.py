@@ -37,6 +37,17 @@ def registration_report(result: RegistrationEvaluation, records: tuple[PointReco
                          ("manual_or_edited_unverified", str(source_check.unknown_points)),
                          ("distinct_surface_content_at_load", str(source_check.distinct_sources)),
                          (t("cad_registration.report_source_warning"), t("cad_registration.source_check_warning"))))
+    metadata.append((t("cad_registration.distance_report_warning"), t("cad_registration.distance_warning")))
+    for prefix, comparison in (("fit_segments", result.fit_distances),
+                               ("control_segments", result.control_distances)):
+        metadata.append((f"{prefix}_count", str(comparison.count if comparison else 0)))
+        if comparison is not None:
+            metadata.extend(((f"{prefix}_rms_difference_mm", repr(comparison.rms_difference_mm)),
+                             (f"{prefix}_worst_row_1", str(comparison.first_row + 1)),
+                             (f"{prefix}_worst_row_2", str(comparison.second_row + 1)),
+                             (f"{prefix}_worst_cad_length_mm", repr(comparison.cad_length_mm)),
+                             (f"{prefix}_worst_project_length_mm", repr(comparison.project_length_mm)),
+                             (f"{prefix}_worst_project_minus_cad_mm", repr(comparison.difference_mm))))
     metadata.extend((f"R{i + 1}{j + 1}", repr(tf.rotation[i][j])) for i in range(3) for j in range(3))
     metadata.extend((f"t_{axis}_mm", repr(value)) for axis, value in zip("xyz", tf.translation, strict=True))
     rows = []

@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..config import autosave_path, settings_path
-from ..core.cad_registration import MAX_PAIRS, RegistrationEvaluation, evaluate_registration
+from ..core.cad_registration import MAX_PAIRS, DistanceComparison, RegistrationEvaluation, evaluate_registration
 from ..core.cad_registration_overlay import overlay_pairs
 from ..core.cad_source_guard import summarize_sources
 from ..export.cad_registration_report import registration_report
@@ -291,7 +291,17 @@ class CadRegistrationDialog(QDialog):
                       (tr("cad_registration.no_controls") if result.control_rms_mm is None else
                        tr("cad_registration.control_summary", count=len(mask) - sum(mask),
                           rms=f"{result.control_rms_mm:.6g}", max=f"{result.control_max_mm:.6g}")),
-                      tr("cad_registration.residuals")])
+                      "", tr("cad_registration.distance_warning")])
+        def distance_line(label: str, value: DistanceComparison | None) -> str:
+            if value is None:
+                return tr("cad_registration.distance_none", group=label)
+            return tr("cad_registration.distance_summary", group=label, count=value.count,
+                      rms=f"{value.rms_difference_mm:.6g}", row1=value.first_row + 1,
+                      row2=value.second_row + 1, cad=f"{value.cad_length_mm:.6g}",
+                      project=f"{value.project_length_mm:.6g}", diff=f"{value.difference_mm:.6g}")
+        lines.extend([distance_line(tr("cad_registration.distance_fit"), result.fit_distances),
+                      distance_line(tr("cad_registration.distance_control"), result.control_distances),
+                      "", tr("cad_registration.residuals")])
         for i, (record, point, is_fit) in enumerate(zip(records, result.points, mask, strict=True), 1):
             delta = ", ".join(f"{value:.6g}" for value in point.delta_mm)
             lines.append(f"{i}: {tr('cad_registration.fit' if is_fit else 'cad_registration.control')} / "

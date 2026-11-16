@@ -130,3 +130,50 @@ def test_controls_cannot_repeat_coordinates(duplicate_side):
     a, b = (duplicate, pts) if duplicate_side == 'cad' else (pts, duplicate)
     with pytest.raises(ValueError, match='duplicate'):
         evaluate_registration(a, b, (True, True, True, False))
+
+
+def test_distance_comparison_separates_fit_and_all_control_segments():
+    from suspensionlab.core.cad_registration import evaluate_registration
+
+    cad = [(0, 0, 0), (3, 0, 0), (0, 4, 0), (0, 0, 12), (0, 0, 20)]
+    project = [(10, 20, 30), (16, 20, 30), (10, 28, 30), (10, 20, 39), (10, 20, 55)]
+    mask = (True, True, True, False, False)
+    result = evaluate_registration(cad, project, mask)
+    fit = result.fit_distances
+    assert fit.count == 3
+    assert (fit.first_row, fit.second_row) == (1, 2)
+    assert (fit.cad_length_mm, fit.project_length_mm, fit.difference_mm) == pytest.approx((5, 10, 5))
+    assert fit.rms_difference_mm == pytest.approx(math.sqrt((3**2 + 4**2 + 5**2) / 3))
+    control = result.control_distances
+    assert control is not None and control.count == 7  # 3x2 fit/control + 1 control/control
+    segments = [(i, j, math.dist(cad[i], cad[j]), math.dist(project[i], project[j]))
+                for i in range(5) for j in range(i + 1, 5) if not (mask[i] and mask[j])]
+    expected = max(segments, key=lambda v: abs(v[3] - v[2]))
+    assert (control.first_row, control.second_row) == expected[:2]
+    assert control.difference_mm == pytest.approx(expected[3] - expected[2])
+    assert control.rms_difference_mm == pytest.approx(
+        math.sqrt(sum((p - c)**2 for _, _, c, p in segments) / 7))
+
+
+def test_distance_diagnostics_ignore_rigid_transform_and_cannot_detect_reflection():
+    from suspensionlab.core.cad_registration import evaluate_registration
+
+    cad = [(0, 0, 0), (10, 0, 0), (0, 20, 0), (0, 0, 30)]
+    mirror = [(100 - x, y - 50, z + 7) for x, y, z in cad]
+    result = evaluate_registration(cad, mirror, (True, True, True, True))
+    assert result.fit_distances.rms_difference_mm == pytest.approx(0)
+    assert (result.fit_distances.first_row, result.fit_distances.second_row) == (0, 1)
+    assert result.control_distances is None
+    assert result.fit.rms_mm > 0.1  # distances alone cannot expose reflection
+
+
+def test_distance_comparison_signed_shorter_project_and_control_not_in_fit_summary():
+    from suspensionlab.core.cad_registration import evaluate_registration
+
+    cad = [(0, 0, 0), (10, 0, 0), (0, 10, 0), (0, 0, 100)]
+    project = [(0, 0, 0), (10, 0, 0), (0, 10, 0), (0, 0, 1)]
+    result = evaluate_registration(cad, project, (True, True, True, False))
+    assert result.fit_distances.rms_difference_mm == 0
+    assert result.control_distances is not None
+    assert result.control_distances.count == 3
+    assert result.control_distances.difference_mm < 0

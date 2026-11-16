@@ -91,6 +91,8 @@ def test_control_pairs_are_excluded_and_export_invalidates(qtbot, tmp_path, monk
     dialog._confirmed.setChecked(True)
     dialog._run()
     assert 'Контрольные пары не заданы' in dialog._result.toPlainText()
+    assert 'Только подбор: 3 отрезков' in dialog._result.toPlainText()
+    assert 'С участием контроля: отрезков нет' in dialog._result.toPlainText()
     assert dialog._export.isEnabled()
     dialog._add_row()
     assert not dialog._export.isEnabled()
@@ -106,6 +108,7 @@ def test_control_pairs_are_excluded_and_export_invalidates(qtbot, tmp_path, monk
         edit.setText(str(value))
     dialog._run()
     assert 'Контроль (не участвовал в подборе): 1 пар' in dialog._result.toPlainText()
+    assert 'С участием контроля: 3 отрезков' in dialog._result.toPlainText()
     assert '10 мм' in dialog._result.toPlainText()
     target = tmp_path / 'report.csv'
     monkeypatch.setattr(module.QFileDialog, 'getSaveFileName', lambda *args: (str(target), 'CSV'))

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from itertools import combinations
 
 import numpy as np
 
@@ -73,11 +74,26 @@ class PointResidual:
 
 
 @dataclass(frozen=True, slots=True)
+class DistanceComparison:
+    """Наибольшее расхождение длин среди отрезков между строками; индексы с нуля."""
+
+    count: int
+    rms_difference_mm: float
+    first_row: int
+    second_row: int
+    cad_length_mm: float
+    project_length_mm: float
+    difference_mm: float  # project - CAD
+
+
+@dataclass(frozen=True, slots=True)
 class RegistrationEvaluation:
     fit: Registration
     points: tuple[PointResidual, ...]  # исходный порядок строк
     control_rms_mm: float | None
     control_max_mm: float | None
+    fit_distances: DistanceComparison
+    control_distances: DistanceComparison | None
 
 
 def evaluate_registration(cad_points: object, project_points: object,
@@ -109,6 +125,22 @@ def evaluate_registration(cad_points: object, project_points: object,
     points = tuple(PointResidual(tuple(map(float, pred)), tuple(map(float, diff)), float(distance))  # type: ignore[arg-type]
                    for pred, diff, distance in zip(predicted, delta, distances, strict=True))
     controls = distances[~mask]
+    # Translation and rotation do not affect segment lengths. Compare fit-fit
+    # separately from every segment involving at least one control row.
+    groups: tuple[list[tuple[int, int, float, float]], list[tuple[int, int, float, float]]] = ([], [])
+    for i, j in combinations(range(len(cad)), 2):
+        cad_length = float(np.linalg.norm(cad[i] - cad[j]))
+        project_length = float(np.linalg.norm(target[i] - target[j]))
+        groups[0 if fit_mask[i] and fit_mask[j] else 1].append((i, j, cad_length, project_length))
+
+    def summarize(segments: list[tuple[int, int, float, float]]) -> DistanceComparison:
+        # max() retains the first segment in row order for exact ties.
+        i, j, cad_length, project_length = max(segments, key=lambda v: abs(v[3] - v[2]))
+        rms = float(np.sqrt(np.mean([(p - c) ** 2 for _, _, c, p in segments])))
+        return DistanceComparison(len(segments), rms, i, j, cad_length, project_length,
+                                  project_length - cad_length)
+
     return RegistrationEvaluation(fit, points,
                                   float(np.sqrt(np.mean(controls ** 2))) if len(controls) else None,
-                                  float(np.max(controls)) if len(controls) else None)
+                                  float(np.max(controls)) if len(controls) else None,
+                                  summarize(groups[0]), summarize(groups[1]) if groups[1] else None)

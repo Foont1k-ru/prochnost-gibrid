@@ -72,3 +72,25 @@ def test_source_check_metadata_is_aggregate_only():
     with pytest.raises(ValueError):
         registration_report(result, records, points, mask, str, sources,
                             summarize_sources((b'x' * 32, None, b'y' * 32)))
+
+
+def test_distance_summary_metadata_uses_row_numbers_and_full_precision():
+    source = ((0., 0., 0.), (3., 0., 0.), (0., 4., 0.), (0., 0., 12.))
+    target = ((0., 0., 0.), (6., 0., 0.), (0., 8., 0.), (0., 0., 9.1234567890123))
+    mask = (True, True, True, False)
+    result = evaluate_registration(source, target, mask)
+    records = tuple(replace(record, xyz=target[i]) for i, record in
+                    enumerate(capture_points(Project.create_default())[:4]))
+    metadata = dict(registration_report(result, records, source, mask, str).metadata)
+    assert metadata['fit_segments_count'] == '3'
+    assert metadata['fit_segments_worst_row_1'] == '2'
+    assert metadata['fit_segments_worst_row_2'] == '3'
+    assert float(metadata['fit_segments_worst_project_minus_cad_mm']) == 5
+    assert metadata['control_segments_count'] == '3'
+    assert result.control_distances is not None
+    assert float(metadata['control_segments_rms_difference_mm']) == result.control_distances.rms_difference_mm
+    assert metadata['cad_registration.distance_report_warning'] == 'cad_registration.distance_warning'
+    no_control = evaluate_registration(source[:3], target[:3], mask[:3])
+    no_metadata = dict(registration_report(no_control, records[:3], source[:3], mask[:3], str).metadata)
+    assert no_metadata['control_segments_count'] == '0'
+    assert 'control_segments_worst_row_1' not in no_metadata
