@@ -354,6 +354,15 @@ def run_packaging_check() -> None:
                      and view._candidate_min_coil.isEnabled() and view._candidate_min_compression.isEnabled()
                      and tr("equilibrium_path.candidate_report_coil_min") in dict(report.metadata),
                      "Запасы кандидата по сохранённым точкам не показаны")
+            if path.samples:
+                opposite = "short" if view._candidate_geometries[0].coil_reserve_ok else "ok"
+                view._coil_filter.setCurrentIndex(view._coil_filter.findData(opposite))
+                _require(view._table.isRowHidden(0) and balance._path_report(path, view._table) == report,
+                         "Фильтр пути изменил CSV или не скрыл строку")
+                assert view._candidate_plot is not None
+                view._candidate_plot.rowSelected.emit(0)
+                _require(not view._table.isRowHidden(0) and view._coil_filter.currentData() == "all",
+                         "Выбор скрытой точки пути не восстановил строку")
             view._candidate_min_coil.click()
             _require(view._table.currentRow() >= 0 and view._plot.row == view._table.currentRow(),
                      "Переход к минимуму запасов не работает")

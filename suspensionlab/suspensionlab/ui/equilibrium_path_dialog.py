@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..core.equilibrium import EquilibriumPath
-from ..core.spring_candidate import SpringCandidate
+from ..core.spring_candidate import SpringCandidate, candidate_geometry
 from ..core.sweep_plot import PATH_PLOT_METRICS, PlotPoint, equilibrium_path_plot_points
 from ..export.csv_report import CSVReport
 from ..export.equilibrium_path import (
@@ -67,6 +67,8 @@ class EquilibriumPathDialog(QDialog):
                                     count=len(path.samples), requested=f"{failure.requested_travel_mm:.4f}",
                                     actual=f"{failure.failure_travel_mm:.4f}",
                                     kind=tr(f"equilibrium_path.failure.{failure.kind}"), reason=failure.reason))
+        self._candidate_geometries = (tuple(candidate_geometry(candidate, sample.spring.length_mm) for sample in path.samples)
+                                      if candidate is not None else ())
         columns = PATH_COLUMNS + (CANDIDATE_PATH_COLUMNS if candidate is not None else ())
         self._candidate_summary = QLabel(self)
         self._candidate_summary.setWordWrap(True)
@@ -116,7 +118,7 @@ class EquilibriumPathDialog(QDialog):
         self._plot_metric.setCurrentIndex(PATH_PLOT_METRICS.index("residual"))
         self._plot.set_metric(self._plot_metric.currentIndex())
         self._plot_metric.currentIndexChanged.connect(self._plot.set_metric)
-        self._plot.rowSelected.connect(lambda row: self._table.setCurrentCell(row, 0))
+        self._plot.rowSelected.connect(self._select_path_row)
         self._table.currentCellChanged.connect(lambda row, *_args: self._plot.set_row(row))
         plot_selection = QLabel(tr("analysis.plot_no_selection"), self)
         plot_selection.setWordWrap(True)
@@ -134,8 +136,34 @@ class EquilibriumPathDialog(QDialog):
         self._plot_export_button.setEnabled(graph_report_factory is not None and (bool(path.samples) or path.failure is not None))
         self._plot_export_button.clicked.connect(self._export_graph)
         plot_layout.addWidget(self._plot_export_button)
+        self._coil_filter = QComboBox(self)
+        self._compression_filter = QComboBox(self)
+        for combo in (self._coil_filter, self._compression_filter):
+            for key in ("all", "ok", "short"):
+                combo.addItem(tr(f"equilibrium_path.candidate_filter.{key}"), key)
+        self._filter_count = QLabel(self)
+        self._filter_count.setWordWrap(True)
+        table_page = QWidget(self)
+        table_layout = QVBoxLayout(table_page)
+        table_layout.setContentsMargins(0, 0, 0, 0)
+        if candidate is not None:
+            filter_row = QHBoxLayout()
+            filter_row.addWidget(QLabel(tr("equilibrium_path.candidate_filter.coil"), self))
+            filter_row.addWidget(self._coil_filter)
+            filter_row.addWidget(QLabel(tr("equilibrium_path.candidate_filter.compression"), self))
+            filter_row.addWidget(self._compression_filter)
+            filter_row.addStretch(1)
+            table_layout.addLayout(filter_row)
+            table_layout.addWidget(self._filter_count)
+            self._coil_filter.currentIndexChanged.connect(self._apply_candidate_filters)
+            self._compression_filter.currentIndexChanged.connect(self._apply_candidate_filters)
+        else:
+            self._coil_filter.hide()
+            self._compression_filter.hide()
+            self._filter_count.hide()
+        table_layout.addWidget(self._table, 1)
         self._views = QTabWidget(self)
-        self._views.addTab(self._table, tr("equilibrium_path.tab_table"))
+        self._views.addTab(table_page, tr("equilibrium_path.tab_table"))
         self._views.addTab(plot_container, tr("analysis.tab_plot"))
         self._candidate_plot: SpringCandidatePlot | None = None
         self._candidate_plot_selection: QLabel | None = None
@@ -145,7 +173,7 @@ class EquilibriumPathDialog(QDialog):
             diagnostic = candidate_path_diagnostic_row(path)
             self._candidate_plot = SpringCandidatePlot(
                 comparison, self, diagnostic_rows=frozenset((diagnostic,)) if diagnostic is not None else frozenset())
-            self._candidate_plot.rowSelected.connect(lambda row: self._table.setCurrentCell(row, 0))
+            self._candidate_plot.rowSelected.connect(self._select_path_row)
             self._candidate_plot_selection = QLabel(tr("spring_candidate.plot.selection_empty"), self)
             self._candidate_plot_selection.setWordWrap(True)
             lower = candidate.coil_bind_mm + candidate.coil_reserve_mm
@@ -170,6 +198,8 @@ class EquilibriumPathDialog(QDialog):
             self._views.addTab(candidate_page, tr("equilibrium_path.candidate_plot_tab"))
             self._table.currentCellChanged.connect(self._update_candidate_plot)
         self._plot.set_points(equilibrium_path_plot_points(path))
+        if candidate is not None:
+            self._apply_candidate_filters()
         if path.samples:
             self._table.setCurrentCell(0, 0)
             self._plot.set_row(0)
@@ -195,6 +225,37 @@ class EquilibriumPathDialog(QDialog):
         layout.addLayout(candidate_buttons)
         layout.addWidget(self._views, 1)
         layout.addLayout(bottom)
+
+    @staticmethod
+    def _matches_candidate_filter(key: str, condition_ok: bool) -> bool:
+        return key == "all" or (key == "ok" and condition_ok) or (key == "short" and not condition_ok)
+
+    def _apply_candidate_filters(self, *_args: object) -> None:
+        coil, compression = self._coil_filter.currentData(), self._compression_filter.currentData()
+        visible = [self._matches_candidate_filter(coil, geometry.coil_reserve_ok)
+                   and self._matches_candidate_filter(compression, geometry.compression_reserve_ok)
+                   for geometry in self._candidate_geometries]
+        current = self._table.currentRow()
+        if 0 <= current < len(visible) and not visible[current]:
+            self._table.clearSelection()
+            self._table.setCurrentCell(-1, -1)
+        for row, show in enumerate(visible):
+            self._table.setRowHidden(row, not show)
+        self._filter_count.setText(tr("equilibrium_path.candidate_filter.count", visible=sum(visible), total=len(visible)))
+
+    def _select_path_row(self, row: int, column: int = 0) -> None:
+        if not 0 <= row < self._table.rowCount():
+            return
+        if self._candidate_geometries:
+            geometry = self._candidate_geometries[row]
+            for combo, condition in ((self._coil_filter, geometry.coil_reserve_ok),
+                                     (self._compression_filter, geometry.compression_reserve_ok)):
+                if not self._matches_candidate_filter(combo.currentData(), condition):
+                    combo.blockSignals(True)
+                    combo.setCurrentIndex(combo.findData("all"))
+                    combo.blockSignals(False)
+            self._apply_candidate_filters()
+        self._table.setCurrentCell(row, column)
 
     def _update_candidate_plot(self, row: int, *_args: object) -> None:
         plot, label = self._candidate_plot, self._candidate_plot_selection
@@ -224,7 +285,7 @@ class EquilibriumPathDialog(QDialog):
 
     def _select_candidate_minimum(self, row: int, column: int) -> None:
         self._views.setCurrentIndex(0)
-        self._table.setCurrentCell(row, column)
+        self._select_path_row(row, column)
         item = self._table.item(row, column)
         if item is not None:
             self._table.scrollToItem(item)

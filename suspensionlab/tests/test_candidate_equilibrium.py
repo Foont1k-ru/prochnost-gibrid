@@ -369,3 +369,139 @@ def test_path_plot_marks_crossed_and_coincident_limits(qtbot, reserve, expected)
     ordinary = EquilibriumPathDialog(path)
     qtbot.addWidget(ordinary)
     assert ordinary._candidate_plot is None and ordinary._views.count() == 2
+
+
+def test_path_filters_combine_exact_conditions_and_reveal_selected_rows(qtbot):
+    from dataclasses import replace
+    from math import inf, nextafter
+
+    from suspensionlab.core.equilibrium import PathFailure
+    from suspensionlab.ui.equilibrium_path_dialog import EquilibriumPathDialog
+
+    candidate = SpringCandidate(300, 200, 100, 10, 10, 12.5)
+    source = SpringEquilibrium(load_template("ring").front, 230).check_path(0, 1000)
+    original = source.samples[0]
+    lengths = (110., nextafter(110., 0), 290., nextafter(290., inf))
+    samples = tuple(replace(original, travel_mm=float(i), spring=replace(original.spring, length_mm=value))
+                    for i, value in enumerate(lengths))
+    path = replace(source, samples=samples, failure=PathFailure(3, 3, "branch_mismatch", "ветви"))
+    view = EquilibriumPathDialog(path, candidate=candidate)
+    qtbot.addWidget(view)
+    view.show()
+    assert "Показано 4 из 4" in view._filter_count.text()
+    view._coil_filter.setCurrentIndex(view._coil_filter.findData("short"))
+    assert [view._table.isRowHidden(i) for i in range(4)] == [True, False, True, True]
+    assert "Показано 1 из 4" in view._filter_count.text()
+    view._compression_filter.setCurrentIndex(view._compression_filter.findData("short"))
+    assert all(view._table.isRowHidden(i) for i in range(4))
+    assert view._table.currentRow() == -1 and view._plot.row == -1
+    assert view._candidate_plot is not None and view._candidate_plot.row == -1
+    # A graph selection resets only the incompatible filter.
+    view._plot.rowSelected.emit(1)
+    assert view._coil_filter.currentData() == "short" and view._compression_filter.currentData() == "all"
+    assert view._table.currentRow() == view._plot.row == view._candidate_plot.row == 1
+    assert not view._table.isRowHidden(1)
+    view._compression_filter.setCurrentIndex(view._compression_filter.findData("short"))
+    view._candidate_plot.rowSelected.emit(3)
+    assert view._coil_filter.currentData() == "all" and view._compression_filter.currentData() == "short"
+    assert view._table.currentRow() == 3 and not view._table.isRowHidden(3)
+    assert view._candidate_plot_selection is not None and "диагностическая" in view._candidate_plot_selection.text()
+    view._coil_filter.setCurrentIndex(view._coil_filter.findData("ok"))
+    view._compression_filter.setCurrentIndex(view._compression_filter.findData("ok"))
+    view._candidate_min_coil.click()
+    assert view._table.currentRow() == 1 and view._coil_filter.currentData() == "all"
+    assert view._compression_filter.currentData() == "ok" and not view._table.isRowHidden(1)
+    assert path.samples == samples
+
+
+def test_path_filter_does_not_filter_table_or_graph_csv(qtbot):
+    from suspensionlab.i18n import tr
+    from suspensionlab.ui.controller import AppController
+    from suspensionlab.ui.equilibrium_dialog import EquilibriumDialog
+    from suspensionlab.ui.equilibrium_path_dialog import EquilibriumPathDialog
+
+    c = AppController()
+    c.new_project("ring")
+    candidate = SpringCandidate(350, 230, 150, 77, 120, 12.5)
+    model = SpringEquilibrium(c.project.front, 230, coil_bind_length_mm=150,
+                              spring_characteristic=SpringCharacteristic(350, 12.5, coil_bind_length_mm=150))
+    dialog = EquilibriumDialog(c, candidate=candidate)
+    qtbot.addWidget(dialog)
+    dialog._load.setValue(model.evaluate(12, 1).wheel_support_n)
+    dialog._run.click()
+    path = dialog._path
+    assert path is not None
+    view = EquilibriumPathDialog(path, dialog, candidate=candidate)
+    qtbot.addWidget(view)
+    before = dialog._path_report(path, view._table)
+    graph_before = dialog._path_graph_report(path, view._table, view._plot.points, view._plot_metric.currentText())
+    view._coil_filter.setCurrentIndex(view._coil_filter.findData("short"))
+    assert any(view._table.isRowHidden(i) for i in range(len(path.samples)))
+    assert any(not view._table.isRowHidden(i) for i in range(len(path.samples)))
+    after = dialog._path_report(path, view._table)
+    graph_after = dialog._path_graph_report(path, view._table, view._plot.points, view._plot_metric.currentText())
+    assert after == before and graph_after == graph_before
+    assert len(after.rows) == len(graph_after.rows) == len(path.samples)
+    assert "все точки" in view._filter_count.text()
+    assert tr("equilibrium_path.column.candidate_status") in graph_after.columns
+    dialog._load.setValue(dialog._load.value() + 5)
+    with pytest.raises(ValueError):
+        dialog._path_report(path, view._table)
+
+
+def test_candidate_filters_empty_and_no_candidate(qtbot):
+    from suspensionlab.core.equilibrium import SpringEquilibrium
+    from suspensionlab.ui.equilibrium_path_dialog import EquilibriumPathDialog
+
+    axle = load_template("ring").front
+    path = SpringEquilibrium(axle, 230, coil_bind_length_mm=231).check_path(3, 1000)
+    assert not path.samples and path.failure is not None
+    view = EquilibriumPathDialog(path, candidate=SpringCandidate(350, 230, 231, 0, 0, 10))
+    qtbot.addWidget(view)
+    view._coil_filter.setCurrentIndex(view._coil_filter.findData("short"))
+    view._compression_filter.setCurrentIndex(view._compression_filter.findData("ok"))
+    assert "Показано 0 из 0" in view._filter_count.text()
+    assert not view._candidate_min_coil.isEnabled() and view._table.rowCount() == 0
+    normal = EquilibriumPathDialog(path)
+    qtbot.addWidget(normal)
+    normal.show()
+    assert normal._coil_filter.isHidden() and normal._compression_filter.isHidden() and normal._filter_count.isHidden()
+
+
+def test_path_filters_show_overlapping_short_conditions(qtbot):
+    from dataclasses import replace
+
+    from suspensionlab.ui.equilibrium_path_dialog import EquilibriumPathDialog
+
+    candidate = SpringCandidate(300, 200, 100, 150, 150, 12.5)
+    path = SpringEquilibrium(load_template("ring").front, 230).check_path(0, 1000)
+    sample = path.samples[0]
+    samples = tuple(replace(sample, travel_mm=float(i), spring=replace(sample.spring, length_mm=length))
+                    for i, length in enumerate((110., 200., 290.)))
+    path = replace(path, samples=samples)
+    view = EquilibriumPathDialog(path, candidate=candidate)
+    qtbot.addWidget(view)
+    view._coil_filter.setCurrentIndex(view._coil_filter.findData("short"))
+    view._compression_filter.setCurrentIndex(view._compression_filter.findData("short"))
+    assert [view._table.isRowHidden(i) for i in range(3)] == [True, False, True]
+    assert "Показано 1 из 3" in view._filter_count.text()
+    assert "условие до смыкания не выполнено в 2, по сжатию — в 2" in view._candidate_summary.text()
+    assert "Счётчики могут пересекаться" in view._candidate_summary.text()
+
+
+def test_path_filter_zero_reserves_excludes_physical_boundaries(qtbot):
+    from dataclasses import replace
+
+    from suspensionlab.ui.equilibrium_path_dialog import EquilibriumPathDialog
+
+    candidate = SpringCandidate(300, 200, 100, 0, 0, 12.5)
+    path = SpringEquilibrium(load_template("ring").front, 230).check_path(0, 1000)
+    sample = path.samples[0]
+    path = replace(path, samples=tuple(replace(sample, travel_mm=float(i),
+                        spring=replace(sample.spring, length_mm=length))
+                        for i, length in enumerate((100., 200., 300.))))
+    view = EquilibriumPathDialog(path, candidate=candidate)
+    qtbot.addWidget(view)
+    view._coil_filter.setCurrentIndex(view._coil_filter.findData("ok"))
+    view._compression_filter.setCurrentIndex(view._compression_filter.findData("ok"))
+    assert [view._table.isRowHidden(i) for i in range(3)] == [True, False, True]
