@@ -365,6 +365,22 @@ def run_packaging_check() -> None:
         _require(not antiroll._plot.grab().isNull(), "График стабилизатора недоступен")
         _require(antiroll._summary.groups[0].first.status == "incomplete", "Сводка стабилизатора некорректна")
         equilibrium = EquilibriumDialog(window.controller, window)
+        from .ui.mass_load_dialog import MassLoadDialog
+
+        def enter_mass_load() -> None:
+            helper = equilibrium.findChild(MassLoadDialog)
+            _require(helper is not None, "Окно оценки нагрузки по массе не открыто")
+            assert helper is not None
+            for key, value in (("mass", "1200"), ("axle_percent", "55"), ("unsprung", "35")):
+                helper._fields[key].setText(value)
+            helper._calculate_button.click()
+            _require(helper._apply.isEnabled(), "Оценка нагрузки по массе не рассчитана")
+            helper._apply.click()
+
+        QTimer.singleShot(0, enter_mass_load)
+        equilibrium._mass_load_button.click()
+        _require(equilibrium._load.value() == 2893.0 and equilibrium._load_source is not None,
+                 "Нагрузка по массе не перенесена в баланс")
         equilibrium._length.setValue(230)
         equilibrium._load.setValue(SpringEquilibrium(window.controller.project.front, 230).evaluate(12, 1).wheel_support_n)
         equilibrium._run.click()

@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..core.equilibrium import EquilibriumPath, EquilibriumPathError, EquilibriumResult, SpringEquilibrium
+from ..core.mass_load import SymmetricMassLoad
 from ..core.stroke import StrokeLimits
 from ..core.sweep_plot import PATH_PLOT_METRICS, PlotPoint, equilibrium_path_plot_points
 from ..export.csv_report import CSVReport
@@ -31,6 +32,7 @@ from ..export.plot_report import plot_report_rows
 from ..i18n import tr
 from .controller import AppController
 from .equilibrium_path_dialog import EquilibriumPathDialog
+from .mass_load_dialog import MassLoadDialog
 from .table_export import make_report, save_table_dialog
 
 LOG = logging.getLogger(__name__)
@@ -57,6 +59,11 @@ class EquilibriumDialog(QDialog):
         self._from = self._number(-100, 100, -30)
         self._to = self._number(-100, 100, 30)
         self._load = self._number(0, 100000, 0)
+        self._load_source: SymmetricMassLoad | None = None
+        self._mass_load_button = QPushButton(tr("equilibrium_ui.mass_load_button"), self)
+        self._mass_load_button.clicked.connect(self._open_mass_load)
+        self._load_source_label = QLabel(tr("equilibrium_ui.load_manual"), self)
+        self._load_source_label.setWordWrap(True)
         self._length = self._number(0, 2000, 0)
         self._bind = self._number(0, 2000, 0)
         self._damper = QCheckBox(tr("equilibrium_ui.damper"), self)
@@ -68,6 +75,8 @@ class EquilibriumDialog(QDialog):
         for key, widget in (("role", self._role), ("side", self._side), ("from", self._from),
                             ("to", self._to), ("load", self._load)):
             left.addRow(tr(f"equilibrium_ui.{key}"), widget)
+        left.addRow(self._mass_load_button)
+        left.addRow(self._load_source_label)
         for key, widget in (("length", self._length), ("bind", self._bind)):
             right.addRow(tr(f"equilibrium_ui.{key}"), widget)
         right.addRow(self._damper)
@@ -110,13 +119,46 @@ class EquilibriumDialog(QDialog):
         layout.addStretch()
         layout.addLayout(buttons)
         for combo in (self._role, self._side):
-            combo.currentIndexChanged.connect(self._invalidate)
-        for number in (self._from, self._to, self._load, self._length, self._bind,
+            combo.currentIndexChanged.connect(self._context_changed)
+        self._load.valueChanged.connect(self._load_changed)
+        for number in (self._from, self._to, self._length, self._bind,
                        self._damper_min, self._damper_max):
             number.valueChanged.connect(self._invalidate)
         self._damper.toggled.connect(self._invalidate)
         controller.modelChanged.connect(self._invalidate)
-        controller.projectReplaced.connect(self._invalidate)
+        controller.projectReplaced.connect(self._context_changed)
+        self._invalidate()
+
+    def _load_changed(self, *_args: object) -> None:
+        self._load_source = None
+        self._load_source_label.setText(tr("equilibrium_ui.load_manual"))
+        self._invalidate()
+
+    def _context_changed(self, *_args: object) -> None:
+        # Производная оценка относится к выбранной оси и проекту, не переносим её молча.
+        if self._load_source is not None:
+            self._load.setValue(0)
+            self._load_source = None
+            self._load_source_label.setText(tr("equilibrium_ui.load_manual"))
+        self._invalidate()
+
+    def _open_mass_load(self) -> None:
+        role, side = self._role.currentData(), self._side.currentData()
+        project = self.controller.project
+        old_load = self._load.value()
+        dialog = MassLoadDialog(self._role.currentText(), self._side.currentText(), self._load.maximum(), self)
+        if (dialog.exec() == QDialog.DialogCode.Accepted and dialog.estimate is not None
+                and dialog.applied_load is not None and self.controller.project is project
+                and self._role.currentData() == role and self._side.currentData() == side
+                and self._load.value() == old_load):
+            self._apply_mass_load(dialog.estimate, dialog.applied_load)
+        dialog.deleteLater()
+
+    def _apply_mass_load(self, estimate: SymmetricMassLoad, load: float) -> None:
+        self._load.setValue(load)
+        self._load_source = estimate
+        self._load_source_label.setText(tr("equilibrium_ui.load_estimated"))
+        # Если поле уже содержало такое число, valueChanged не вызовет очистку старого результата.
         self._invalidate()
 
     def _number(self, minimum: float, maximum: float, value: float) -> QDoubleSpinBox:
@@ -280,7 +322,14 @@ class EquilibriumDialog(QDialog):
     def _report_parameters(self) -> list[tuple[str, str]]:
         axle = self.controller.project.axle(str(self._role.currentData()))
         disabled, unknown = tr("export.not_enabled"), tr("export.unknown")
+        source = self._load_source
+        source_details = (tr("equilibrium_ui.load_mass_values", mass=repr(source.total_mass_kg),
+                             axle=repr(source.axle_percent), unsprung=repr(source.unsprung_corner_kg),
+                             sprung=repr(source.corner_sprung_kg), reaction=repr(source.tire_reaction_n),
+                             load=repr(source.sprung_load_n)) if source is not None else "—")
         return [
+            (tr("equilibrium_ui.load_source"), tr("equilibrium_ui.load_source_mass" if source else "equilibrium_ui.load_source_manual")),
+            (tr("equilibrium_ui.load_mass_inputs"), source_details),
             (tr("equilibrium_ui.role"), self._role.currentText()),
             (tr("export.axle_type"), tr(axle.spec.name_key)),
             (tr("equilibrium_ui.side"), self._side.currentText()),
