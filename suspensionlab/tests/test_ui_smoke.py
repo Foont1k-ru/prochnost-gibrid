@@ -145,7 +145,7 @@ def test_cad_preview_load_rotate_and_cancel_without_project_changes(window, qtbo
     dialog = CadPreviewDialog(window)
     qtbot.addWidget(dialog)
     dialog.show()
-    assert window.action_cad_preview.isEnabled() and dialog._deviation.value() == 10.
+    assert window.action_cad_preview.isEnabled() and dialog._selected_deviation == 10.
     dialog.load_file(tmp_path / "model.step")
     qtbot.waitUntil(lambda: dialog._reader is None, timeout=10000)
     assert dialog._view.mesh is mesh and "треугольников 1" in dialog._status.text()

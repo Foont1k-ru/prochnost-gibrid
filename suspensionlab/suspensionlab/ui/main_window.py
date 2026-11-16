@@ -32,6 +32,7 @@ from ..model.units import LENGTH_UNITS, RATE_UNITS, UnitKind, UnitSettings
 from .analysis_dialog import AnalysisDialog
 from .antiroll_dialog import AntiRollDialog
 from .cad_preview_dialog import CadPreviewDialog
+from .cad_preview_settings import CadPreviewSettingsDialog
 from .canvas.axle_view import AxleCanvas
 from .controller import AppController, Selection
 from .dialogs import RestoreSnapshotDialog, SnapshotDialog, TemplateDialog
@@ -123,7 +124,14 @@ class MainWindow(QMainWindow):
         StepInventoryDialog(self).exec()
 
     def _open_cad_preview(self) -> None:
-        CadPreviewDialog(self).exec()
+        CadPreviewDialog(self, settings=self._settings).exec()
+
+    def _open_cad_preview_settings(self) -> None:
+        dialog = CadPreviewSettingsDialog(self._settings, self)
+        try:
+            dialog.exec()
+        finally:
+            dialog.deleteLater()
 
     # ------------------------------------------------------------------ панели
     def _build_docks(self) -> None:
@@ -180,6 +188,9 @@ class MainWindow(QMainWindow):
 
         self.action_cad_preview = QAction(tr("cad_preview.menu"), self)
         self.action_cad_preview.triggered.connect(self._open_cad_preview)
+
+        self.action_cad_settings = QAction(tr("cad_preview.settings_menu"), self)
+        self.action_cad_settings.triggered.connect(self._open_cad_preview_settings)
 
         self.action_exit = QAction(tr("menu.file.exit"), self)
         self.action_exit.setShortcut(QKeySequence.StandardKey.Quit)
@@ -288,6 +299,9 @@ class MainWindow(QMainWindow):
         menu_view.addAction(self._diagnostics_dock.toggleViewAction())
         menu_view.addSeparator()
         menu_view.addAction(self.action_theme)
+
+        menu_settings = bar.addMenu(tr("menu.settings"))
+        menu_settings.addAction(self.action_cad_settings)
 
         self.menu_axle = bar.addMenu(tr("menu.axle"))
         self._rebuild_axle_menu()

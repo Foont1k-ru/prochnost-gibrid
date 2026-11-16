@@ -4,13 +4,12 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import QSettings, Qt, QThread, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
-    QDoubleSpinBox,
     QFileDialog,
     QHBoxLayout,
     QLabel,
@@ -18,10 +17,12 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from ..config import settings_path
 from ..core.cad_measurement import measurement_distance
 from ..core.cad_mesh import CadMesh
 from ..core.cad_transport import CadJob, CadPreviewError
 from ..i18n import tr
+from .cad_preview_settings import CadPreviewSettingsDialog, read_cad_deviation
 from .canvas.cad_preview import CadPreview
 from .widgets.camera_views import CameraViews
 
@@ -45,8 +46,10 @@ class _CadReader(QThread):
 
 
 class CadPreviewDialog(QDialog):
-    def __init__(self, parent=None) -> None:
+    def __init__(self, parent=None, *, settings: QSettings | None = None) -> None:
         super().__init__(parent)
+        self._settings = settings if settings is not None else QSettings(str(settings_path()), QSettings.Format.IniFormat)
+        self._selected_deviation = read_cad_deviation(self._settings)
         self.setWindowTitle(tr("cad_preview.title"))
         self.setWindowFlag(Qt.WindowType.WindowMaximizeButtonHint, True)
         self.resize(960, 750)
@@ -64,15 +67,8 @@ class CadPreviewDialog(QDialog):
         row = QHBoxLayout()
         self._choose = QPushButton(tr("cad_preview.choose"), self)
         self._choose.clicked.connect(self._choose_file)
-        self._quality = QComboBox(self)
-        for key, value in (("fast", 10.0), ("balanced", 2.0), ("detailed", 0.2), ("custom", None)):
-            self._quality.addItem(tr(f"cad_preview.quality.{key}"), value)
-        self._deviation = QDoubleSpinBox(self)
-        self._deviation.setRange(0.2, 20.)
-        self._deviation.setDecimals(1)
-        self._deviation.setValue(10.)
-        self._deviation.setSingleStep(0.5)
-        self._deviation.setSuffix(tr("cad_preview.mm"))
+        self._quality_settings = QPushButton(tr("cad_preview.settings_button"), self)
+        self._quality_settings.clicked.connect(self._open_quality_settings)
         self._reload = QPushButton(tr("cad_preview.reload"), self)
         self._reload.setEnabled(False)
         self._reload.clicked.connect(self._reload_file)
@@ -87,10 +83,7 @@ class CadPreviewDialog(QDialog):
         row.addWidget(self._reset)
         layout.addLayout(row)
         quality_row = QHBoxLayout()
-        quality_row.addWidget(QLabel(tr("cad_preview.quality_label"), self))
-        quality_row.addWidget(self._quality)
-        quality_row.addWidget(QLabel(tr("cad_preview.deviation"), self))
-        quality_row.addWidget(self._deviation)
+        quality_row.addWidget(self._quality_settings)
         quality_row.addWidget(self._reload)
         quality_row.addWidget(self._cancel)
         quality_row.addStretch()
@@ -98,9 +91,7 @@ class CadPreviewDialog(QDialog):
         self._quality_status = QLabel(self)
         self._quality_status.setWordWrap(True)
         layout.addWidget(self._quality_status)
-        self._quality.currentIndexChanged.connect(self._quality_preset_changed)
-        self._deviation.valueChanged.connect(self._quality_value_changed)
-        self._quality_value_changed()
+        self._update_quality_status()
         parts_row = QHBoxLayout()
         parts_row.addWidget(QLabel(tr("cad_preview.parts_label"), self))
         self._parts = QComboBox(self)
@@ -155,17 +146,19 @@ class CadPreviewDialog(QDialog):
         self._buttons.rejected.connect(self.reject)
         layout.addWidget(self._buttons)
 
-    def _quality_preset_changed(self) -> None:
-        value = self._quality.currentData()
-        if value is not None:
-            self._deviation.setValue(float(value))
+    def _open_quality_settings(self) -> None:
+        if self._reader is not None:
+            return
+        dialog = CadPreviewSettingsDialog(self._settings, self)
+        try:
+            if dialog.exec() == QDialog.DialogCode.Accepted:
+                self._selected_deviation = read_cad_deviation(self._settings)
+                self._update_quality_status()
+        finally:
+            dialog.deleteLater()
 
-    def _quality_value_changed(self) -> None:
-        value = self._deviation.value()
-        index = self._quality.findData(value)
-        self._quality.blockSignals(True)
-        self._quality.setCurrentIndex(index if index >= 0 else self._quality.findData(None))
-        self._quality.blockSignals(False)
+    def _update_quality_status(self) -> None:
+        value = self._selected_deviation
         if self._loaded_deviation is None:
             self._quality_status.setText(tr("cad_preview.quality_pending_open", value=f"{value:.1f}"))
         elif self._loaded_deviation == value:
@@ -192,8 +185,8 @@ class CadPreviewDialog(QDialog):
         self._clear_measurement()
         self._mesh = None
         self._loaded_deviation = None
-        self._requested_deviation = self._deviation.value()
-        self._quality_value_changed()
+        self._requested_deviation = self._selected_deviation
+        self._update_quality_status()
         self._instance_counts = None
         self._parts.blockSignals(True)
         self._parts.clear()
@@ -207,8 +200,7 @@ class CadPreviewDialog(QDialog):
         self._status.setText(tr("cad_preview.loading"))
         self._choose.setEnabled(False)
         self._reload.setEnabled(False)
-        self._deviation.setEnabled(False)
-        self._quality.setEnabled(False)
+        self._quality_settings.setEnabled(False)
         self._buttons.setEnabled(False)
         self._cancel.setEnabled(True)
         reader = _CadReader(path, self._requested_deviation, self)
@@ -220,8 +212,8 @@ class CadPreviewDialog(QDialog):
 
     def _show_mesh(self, mesh: CadMesh) -> None:
         self._mesh = mesh
-        self._loaded_deviation = self._requested_deviation if self._requested_deviation is not None else self._deviation.value()
-        self._quality_value_changed()
+        self._loaded_deviation = self._requested_deviation if self._requested_deviation is not None else self._selected_deviation
+        self._update_quality_status()
         self._measure.setEnabled(True)
         self._instance_counts = (np.bincount(mesh.triangle_instances, minlength=len(mesh.instance_groups))
                                  if mesh.triangle_instances is not None else None)
@@ -353,7 +345,7 @@ class CadPreviewDialog(QDialog):
         self._clear_measurement()
         self._mesh = None
         self._loaded_deviation = None
-        self._quality_value_changed()
+        self._update_quality_status()
         self._instance_counts = None
         self._parts.setEnabled(False)
         self._clear_instances()
@@ -376,8 +368,7 @@ class CadPreviewDialog(QDialog):
             reader.deleteLater()
         self._choose.setEnabled(True)
         self._reload.setEnabled(self._path is not None)
-        self._deviation.setEnabled(True)
-        self._quality.setEnabled(True)
+        self._quality_settings.setEnabled(True)
         self._buttons.setEnabled(True)
         self._cancel.setEnabled(False)
 
