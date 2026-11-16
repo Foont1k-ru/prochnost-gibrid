@@ -19,6 +19,7 @@ from .model.templates import list_templates
 from .ui.analysis_dialog import AnalysisDialog
 from .ui.antiroll_dialog import AntiRollDialog
 from .ui.cad_registration_dialog import CadRegistrationDialog
+from .ui.cad_registration_overlay_dialog import CadRegistrationOverlayDialog
 from .ui.damper_conversion_dialog import DamperConversionDialog
 from .ui.equilibrium_dialog import EquilibriumDialog
 from .ui.equilibrium_path_dialog import EquilibriumPathDialog
@@ -268,6 +269,20 @@ def run_packaging_check() -> None:
         assert registration._report is not None
         write_csv_report(registration._report, temporary / "registration.csv")
         _require(b"control" in (temporary / "registration.csv").read_bytes(), "Отчёт совмещения недоступен")
+        overlay_seen: list[bool] = []
+        def check_registration_overlay() -> None:
+            overlay = registration.findChild(CadRegistrationOverlayDialog)
+            if overlay is not None:
+                overlay._confirm.setChecked(True)
+                overlay._show_mesh(CadMesh(np.array([[[0., 0, 0], [100., 0, 0], [0, 100., 0]]]), 1))
+                overlay.show()
+                app.processEvents()
+                overlay._canvas.grab()
+                overlay_seen.append(overlay._canvas.mesh is not None and len(overlay._canvas.positions()) == 4)
+                overlay.reject()
+        QTimer.singleShot(0, check_registration_overlay)
+        registration._open_overlay()
+        _require(overlay_seen == [True], "Просмотр совмещения недоступен")
         registration.close()
         registration.deleteLater()
         app.processEvents()
