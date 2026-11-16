@@ -18,6 +18,7 @@ from .model.project_io import load_project
 from .model.templates import list_templates
 from .ui.analysis_dialog import AnalysisDialog
 from .ui.antiroll_dialog import AntiRollDialog
+from .ui.cad_registration_dialog import CadRegistrationDialog
 from .ui.damper_conversion_dialog import DamperConversionDialog
 from .ui.equilibrium_dialog import EquilibriumDialog
 from .ui.equilibrium_path_dialog import EquilibriumPathDialog
@@ -140,6 +141,7 @@ def run_packaging_check() -> None:
     import numpy as np
     from PySide6.QtCore import QEvent, QPointF, Qt
     from PySide6.QtGui import QMouseEvent
+    from PySide6.QtWidgets import QComboBox, QLineEdit
 
     from .core.cad_measurement import measurement_distance, point_on_projected_triangle
     from .core.cad_mesh import CadMesh
@@ -244,6 +246,30 @@ def run_packaging_check() -> None:
         _require(first_point.x == old_x + 1, "Отмена импорта точек недоступна")
         window.controller.undo_last()
         _require(first_point.x == old_x, "Отмена правки точки недоступна")
+        app.processEvents()
+        registration = CadRegistrationDialog(window.controller, window)
+        registration._add_row()
+        for row, code in enumerate(("ubj", "lbj", "lca_f_in", "lca_r_in")):
+            index = next(i for i, p in enumerate(registration._records) if p.role == "front" and p.code == code)
+            combo = registration._table.cellWidget(row, 0)
+            purpose = registration._table.cellWidget(row, 4)
+            assert isinstance(combo, QComboBox) and isinstance(purpose, QComboBox)
+            combo.setCurrentIndex(combo.findData(index))
+            if row == 3:
+                purpose.setCurrentIndex(1)
+            for column, coordinate in enumerate(registration._records[index].xyz, 1):
+                coordinate_edit = registration._table.cellWidget(row, column)
+                assert isinstance(coordinate_edit, QLineEdit)
+                coordinate_edit.setText(str(coordinate))
+        registration._confirmed.setChecked(True)
+        registration._run()
+        _require(registration._export.isEnabled() and registration._report is not None,
+                 "Совмещение и контрольные точки недоступны")
+        assert registration._report is not None
+        write_csv_report(registration._report, temporary / "registration.csv")
+        _require(b"control" in (temporary / "registration.csv").read_bytes(), "Отчёт совмещения недоступен")
+        registration.close()
+        registration.deleteLater()
         app.processEvents()
         window.controller.project.add_snapshot("Проверка сравнения")
         window.controller.project.add_snapshot("Проверка второго снимка")

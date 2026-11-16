@@ -62,3 +62,53 @@ def register_points(cad_points: object, project_points: object) -> Registration:
     residuals = np.linalg.norm((a @ rotation.T) - b, axis=1)
     return Registration(transform, tuple(float(x) for x in residuals),
                         float(np.sqrt(np.mean(residuals ** 2))), float(np.max(residuals)))
+
+@dataclass(frozen=True, slots=True)
+class PointResidual:
+    """Кандидатная точка и разность (преобразованная CAD − точка схемы), мм."""
+
+    predicted_mm: tuple[float, float, float]
+    delta_mm: tuple[float, float, float]
+    distance_mm: float
+
+
+@dataclass(frozen=True, slots=True)
+class RegistrationEvaluation:
+    fit: Registration
+    points: tuple[PointResidual, ...]  # исходный порядок строк
+    control_rms_mm: float | None
+    control_max_mm: float | None
+
+
+def evaluate_registration(cad_points: object, project_points: object,
+                          fit_mask: tuple[bool, ...]) -> RegistrationEvaluation:
+    """Совместить по fit, затем отдельно оценить оставленные контрольные пары.
+
+    Наличие контрольных пар не подтверждает независимость их источника; это
+    определяет пользователь. Совпадающие точки между строками не допускаются.
+    """
+    try:
+        cad = np.asarray(cad_points, dtype=np.float64)
+        target = np.asarray(project_points, dtype=np.float64)
+    except (TypeError, ValueError, OverflowError) as error:
+        raise ValueError("coordinates") from error
+    if (cad.ndim != 2 or cad.shape[1:] != (3,) or target.shape != cad.shape or
+            not 3 <= len(cad) <= MAX_PAIRS or len(fit_mask) != len(cad) or
+            any(type(value) is not bool for value in fit_mask) or sum(fit_mask) < 3):
+        raise ValueError("count")
+    if (not np.isfinite(cad).all() or not np.isfinite(target).all() or
+            np.any(np.abs(cad) > MAX_COORDINATE_MM) or np.any(np.abs(target) > MAX_COORDINATE_MM)):
+        raise ValueError("coordinates")
+    if len({tuple(row) for row in cad}) != len(cad) or len({tuple(row) for row in target}) != len(target):
+        raise ValueError("duplicate")
+    mask = np.asarray(fit_mask, dtype=bool)
+    fit = register_points(cad[mask], target[mask])
+    predicted = cad @ np.asarray(fit.transform.rotation).T + np.asarray(fit.transform.translation)
+    delta = predicted - target
+    distances = np.linalg.norm(delta, axis=1)
+    points = tuple(PointResidual(tuple(map(float, pred)), tuple(map(float, diff)), float(distance))  # type: ignore[arg-type]
+                   for pred, diff, distance in zip(predicted, delta, distances, strict=True))
+    controls = distances[~mask]
+    return RegistrationEvaluation(fit, points,
+                                  float(np.sqrt(np.mean(controls ** 2))) if len(controls) else None,
+                                  float(np.max(controls)) if len(controls) else None)

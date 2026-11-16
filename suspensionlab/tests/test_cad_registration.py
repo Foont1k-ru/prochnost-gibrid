@@ -69,3 +69,64 @@ def test_arbitrary_points_match_independently_computed_errors():
                  for point, expected in zip(source, target, strict=True)]
     assert result.residuals_mm == pytest.approx(distances)
     assert result.rms_mm == pytest.approx(math.sqrt(sum(d*d for d in distances) / len(distances)))
+
+
+def test_independent_control_does_not_change_fit_and_reports_vector():
+    from suspensionlab.core.cad_registration import evaluate_registration
+
+    cad = [(0, 0, 0), (100, 0, 0), (0, 100, 0), (20, 30, 80)]
+    # Identity on fitting pairs. Control target deliberately differs by (2, -3, 4).
+    target = [(0, 0, 0), (100, 0, 0), (0, 100, 0), (22, 27, 84)]
+    result = evaluate_registration(cad, target, (True, True, True, False))
+    original = register_points(cad[:3], target[:3])
+    assert result.fit.transform.rotation == original.transform.rotation
+    assert result.fit.transform.translation == original.transform.translation
+    assert result.fit.rms_mm == original.rms_mm
+    assert result.points[3].predicted_mm == pytest.approx((20, 30, 80))
+    assert result.points[3].delta_mm == pytest.approx((-2, 3, -4))
+    assert result.control_rms_mm == pytest.approx(math.sqrt(29))
+    assert result.control_max_mm == pytest.approx(math.sqrt(29))
+
+
+def test_controls_can_reveal_mirror_hidden_by_fit_plane():
+    from suspensionlab.core.cad_registration import evaluate_registration
+
+    cad = [(0, 0, 0), (100, 0, 0), (0, 100, 0), (10, 20, 50)]
+    reflected = [(x, y, -z) for x, y, z in cad]
+    result = evaluate_registration(cad, reflected, (True, True, True, False))
+    assert result.fit.rms_mm == pytest.approx(0, abs=1e-10)
+    assert result.control_max_mm == pytest.approx(100)
+
+
+def test_without_controls_is_explicit_and_control_order_is_preserved():
+    from suspensionlab.core.cad_registration import evaluate_registration
+
+    cad = [(0, 0, 0), (100, 0, 0), (0, 100, 0), (20, 30, 80), (10, 20, 20)]
+    target = [cad[0], cad[1], cad[2], (23, 34, 80), (10, 20, 32)]
+    no_control = evaluate_registration(cad[:3], target[:3], (True, True, True))
+    assert no_control.control_rms_mm is None and no_control.control_max_mm is None
+    mixed = evaluate_registration(cad, target, (True, True, True, False, False))
+    assert mixed.points[3].distance_mm == pytest.approx(5)
+    assert mixed.points[4].distance_mm == pytest.approx(12)
+    assert mixed.control_rms_mm == pytest.approx(math.sqrt((25 + 144) / 2))
+    assert mixed.control_max_mm == pytest.approx(12)
+
+
+@pytest.mark.parametrize('mask', [(True, True, False), (True, True), (1, True, True)])
+def test_control_mask_is_strict(mask):
+    from suspensionlab.core.cad_registration import evaluate_registration
+
+    pts = [(0, 0, 0), (10, 0, 0), (0, 10, 0)]
+    with pytest.raises(ValueError, match='count'):
+        evaluate_registration(pts, pts, mask)
+
+
+@pytest.mark.parametrize('duplicate_side', ['cad', 'target'])
+def test_controls_cannot_repeat_coordinates(duplicate_side):
+    from suspensionlab.core.cad_registration import evaluate_registration
+
+    pts = [(0, 0, 0), (10, 0, 0), (0, 10, 0), (0, 0, 10)]
+    duplicate = [*pts[:3], pts[0]]
+    a, b = (duplicate, pts) if duplicate_side == 'cad' else (pts, duplicate)
+    with pytest.raises(ValueError, match='duplicate'):
+        evaluate_registration(a, b, (True, True, True, False))
