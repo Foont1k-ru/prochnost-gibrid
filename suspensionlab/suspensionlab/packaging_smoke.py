@@ -335,6 +335,14 @@ def run_packaging_check() -> None:
             view._candidate_min_coil.click()
             _require(view._table.currentRow() >= 0 and view._plot.row == view._table.currentRow(),
                      "Переход к минимуму запасов не работает")
+            _require(view._candidate_plot is not None, "График запасов кандидата отсутствует")
+            assert view._candidate_plot is not None
+            view.show()
+            view._views.setCurrentIndex(2)
+            app.processEvents()
+            _require(view._candidate_plot._geometry() is not None and not view._candidate_plot.grab().isNull()
+                     and view._candidate_plot.row == view._table.currentRow(),
+                     "График запасов кандидата недоступен")
             write_csv_report(report, temporary / "candidate-path.csv")
             view.close()
             balance.reject()

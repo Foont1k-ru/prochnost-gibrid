@@ -5,6 +5,8 @@ from ..core.equilibrium import EquilibriumPath, EquilibriumSample
 from ..core.spring_candidate import (
     CandidateGeometrySummary,
     SpringCandidate,
+    SpringCandidatePoint,
+    SpringComparison,
     candidate_geometry,
     summarize_candidate_geometry,
 )
@@ -16,6 +18,16 @@ PATH_COLUMNS = ("travel", "length", "coil_clearance", "force", "ratio", "support
 
 CANDIDATE_PATH_COLUMNS = ("candidate_compression", "candidate_coil_condition",
                           "candidate_compression_condition", "candidate_status")
+
+
+def candidate_path_comparison(path: EquilibriumPath, candidate: SpringCandidate) -> SpringComparison:
+    """Адаптер существующего графика: только сохранённые длины, не пересчёт сравнения."""
+    points = []
+    for sample in path.samples:
+        geometry = candidate_geometry(candidate, sample.spring.length_mm)
+        points.append(SpringCandidatePoint(sample.travel_mm, geometry.length_mm, geometry.coil_clearance_mm,
+                                           geometry.compression_mm, geometry.status, None, "disabled"))
+    return SpringComparison(candidate, candidate.installed_mm, tuple(points))
 
 
 def candidate_path_summary(path: EquilibriumPath, candidate: SpringCandidate) -> CandidateGeometrySummary:

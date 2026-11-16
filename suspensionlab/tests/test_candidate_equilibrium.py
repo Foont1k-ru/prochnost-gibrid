@@ -206,6 +206,8 @@ def test_candidate_failed_path_exports_only_retained_samples(qtbot, monkeypatch,
     assert view._candidate_min_coil.isEnabled() == (not empty)
     assert view._candidate_min_compression.isEnabled() == (not empty)
     if empty:
+        assert view._candidate_plot is not None and view._candidate_plot._geometry() is None
+        assert not view._candidate_plot.grab().isNull()
         assert "минимум не определён" in view._candidate_minima.text()
         assert "минимум не определён" in dict(report.metadata)[tr("equilibrium_path.candidate_report_coil_min")]
     else:
@@ -268,4 +270,102 @@ def test_candidate_mismatch_marks_diagnostic_extremum_and_report(qtbot, monkeypa
     assert "Конечная точка диагностическая" in minimum and minimum in view._candidate_minima.text()
     view._candidate_min_coil.click()
     assert view._table.currentRow() == len(path.samples) - 1
+    assert view._candidate_plot is not None and view._candidate_plot_selection is not None
+    assert view._candidate_plot.diagnostic_rows == frozenset((len(path.samples) - 1,))
+    assert "Конечная точка диагностическая" in view._candidate_plot_selection.text()
     assert dialog._result is None
+
+
+def test_candidate_path_plot_adapter_preserves_saved_samples_and_raw_boundaries():
+    from dataclasses import replace
+    from math import nextafter
+
+    from suspensionlab.core.equilibrium import PathFailure
+    from suspensionlab.export.equilibrium_path import candidate_path_comparison, candidate_path_diagnostic_row
+
+    candidate = SpringCandidate(300, 200, 100, 10, 10, 12.5)
+    path = SpringEquilibrium(load_template("ring").front, 230).check_path(2, 1000, step_mm=1)
+    original = path.samples[0]
+    low = replace(original, travel_mm=-3, spring=replace(original.spring, length_mm=nextafter(110, 0)))
+    high = replace(original, travel_mm=4, spring=replace(original.spring, length_mm=290))
+    path = replace(path, samples=(low, high), failure=PathFailure(9, 9, "kinematics", "нет данных"))
+    result = candidate_path_comparison(path, candidate)
+    assert result.candidate is candidate and len(result.points) == 2
+    assert result.points[0].travel_mm == -3 and result.points[0].length_mm == nextafter(110, 0)
+    assert result.points[0].status == "reserve_short" and result.points[1].status == "clear"
+    assert candidate_path_diagnostic_row(path) is None
+    mismatch = replace(path, failure=PathFailure(4, 4, "branch_mismatch", "ветвь"))
+    assert candidate_path_diagnostic_row(mismatch) == 1
+    empty = replace(mismatch, samples=())
+    assert not candidate_path_comparison(empty, candidate).points and candidate_path_diagnostic_row(empty) is None
+
+
+def test_candidate_path_plot_actual_view_click_and_csv(qtbot, monkeypatch):
+    from PySide6.QtCore import Qt, QTimer
+
+    from suspensionlab.i18n import tr
+    from suspensionlab.ui import equilibrium_path_dialog
+    from suspensionlab.ui.controller import AppController
+    from suspensionlab.ui.equilibrium_dialog import EquilibriumDialog
+
+    c = AppController()
+    c.new_project("ring")
+    candidate = SpringCandidate(350, 230, 150, 77, 120, 12.5)
+    characteristic = SpringCharacteristic(350, 12.5, coil_bind_length_mm=150)
+    model = SpringEquilibrium(c.project.front, 230, coil_bind_length_mm=150, spring_characteristic=characteristic)
+    dialog = EquilibriumDialog(c, candidate=candidate)
+    qtbot.addWidget(dialog)
+    dialog._load.setValue(model.evaluate(12, 1).wheel_support_n)
+    dialog._run.click()
+    path = dialog._path
+    assert path is not None and path.completed
+    captured = []
+    monkeypatch.setattr(equilibrium_path_dialog, "save_table_dialog", lambda parent, report: captured.append(report))
+    observed = []
+
+    def inspect():
+        view = dialog._path_dialog
+        assert view is not None and view._candidate_plot is not None and view._candidate_plot_selection is not None
+        plot = view._candidate_plot
+        view._views.setCurrentIndex(2)
+        assert not plot.grab().isNull()
+        geometry = plot._geometry()
+        assert geometry is not None
+        row = len(path.samples) - 1
+        pos = plot._screen(path.samples[row].travel_mm, (geometry[3] + geometry[4]) / 2, geometry).toPoint()
+        qtbot.mouseClick(plot, Qt.MouseButton.LeftButton, pos=pos)
+        assert view._table.currentRow() == view._plot.row == plot.row == row
+        assert f"Строка {row + 1}" in view._candidate_plot_selection.text()
+        view._table.setCurrentCell(0, 0)
+        assert plot.row == 0 and "Строка 1" in view._candidate_plot_selection.text()
+        assert view._candidate_plot_export is not None and view._candidate_plot_export.isEnabled()
+        view._candidate_plot_export.click()
+        report = captured[0]
+        assert len(report.rows) == len(path.samples)
+        assert dict(report.metadata)[tr("export.plot_selected")] == tr("equilibrium_path.candidate_plot_selected")
+        assert tr("equilibrium_path.column.candidate_status") in report.columns
+        assert "границы" in dict(report.metadata)[tr("export.plot_selected")]
+        observed.append(True)
+        view.reject()
+
+    QTimer.singleShot(0, inspect)
+    dialog._show_path()
+    assert observed == [True]
+
+
+@pytest.mark.parametrize("reserve, expected", [(100, "совпадают"), (110, "пересекаются")])
+def test_path_plot_marks_crossed_and_coincident_limits(qtbot, reserve, expected):
+    from PySide6.QtWidgets import QLabel
+
+    from suspensionlab.ui.equilibrium_path_dialog import EquilibriumPathDialog
+
+    candidate = SpringCandidate(300, 200, 100, reserve, reserve, 10)
+    path = SpringEquilibrium(load_template("ring").front, 230).check_path(0, 1000)
+    view = EquilibriumPathDialog(path, candidate=candidate)
+    qtbot.addWidget(view)
+    assert any(expected in label.text() for label in view.findChildren(QLabel))
+    assert view._candidate_plot is not None
+    assert view._candidate_plot.comparison.points[0].length_mm == path.samples[0].spring.length_mm
+    ordinary = EquilibriumPathDialog(path)
+    qtbot.addWidget(ordinary)
+    assert ordinary._candidate_plot is None and ordinary._views.count() == 2

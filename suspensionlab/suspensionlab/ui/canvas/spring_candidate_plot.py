@@ -18,10 +18,12 @@ class SpringCandidatePlot(QWidget):
     _COLORS = {"clear": "#398bd1", "reserve_short": "#d78b18", "coil_bind": "#d94b46",
                "invalid": "#d94b46", "uncompressed": "#a778d1"}
 
-    def __init__(self, comparison: SpringComparison, parent: QWidget | None = None, *, force: bool = False) -> None:
+    def __init__(self, comparison: SpringComparison, parent: QWidget | None = None, *, force: bool = False,
+                 diagnostic_rows: frozenset[int] = frozenset()) -> None:
         super().__init__(parent)
         self.comparison = comparison
         self.force = force
+        self.diagnostic_rows = diagnostic_rows
         self.row = -1
         self.setMinimumSize(300, 230)
 
@@ -116,6 +118,10 @@ class SpringCandidatePlot(QWidget):
                 painter.setBrush(color)
                 painter.drawEllipse(center, 3, 3)
                 painter.setBrush(Qt.BrushStyle.NoBrush)
+            if i in self.diagnostic_rows:
+                painter.setPen(QPen(QColor("#c13fa7"), 2, Qt.PenStyle.DashLine))
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawRect(QRectF(center.x() - 9, center.y() - 9, 18, 18))
             if i == self.row:
                 painter.setPen(QPen(self.palette().text().color(), 1.5))
                 painter.setBrush(Qt.BrushStyle.NoBrush)

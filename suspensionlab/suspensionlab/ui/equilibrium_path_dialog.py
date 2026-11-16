@@ -28,6 +28,7 @@ from ..export.csv_report import CSVReport
 from ..export.equilibrium_path import (
     CANDIDATE_PATH_COLUMNS,
     PATH_COLUMNS,
+    candidate_path_comparison,
     candidate_path_diagnostic_row,
     candidate_path_summary,
     format_candidate_path_minima,
@@ -35,6 +36,7 @@ from ..export.equilibrium_path import (
     format_path_sample,
 )
 from ..i18n import tr
+from .canvas.spring_candidate_plot import SpringCandidatePlot
 from .canvas.sweep_plot import SweepPlot
 from .table_export import save_table_dialog
 
@@ -135,6 +137,38 @@ class EquilibriumPathDialog(QDialog):
         self._views = QTabWidget(self)
         self._views.addTab(self._table, tr("equilibrium_path.tab_table"))
         self._views.addTab(plot_container, tr("analysis.tab_plot"))
+        self._candidate_plot: SpringCandidatePlot | None = None
+        self._candidate_plot_selection: QLabel | None = None
+        self._candidate_plot_export: QPushButton | None = None
+        if candidate is not None:
+            comparison = candidate_path_comparison(path, candidate)
+            diagnostic = candidate_path_diagnostic_row(path)
+            self._candidate_plot = SpringCandidatePlot(
+                comparison, self, diagnostic_rows=frozenset((diagnostic,)) if diagnostic is not None else frozenset())
+            self._candidate_plot.rowSelected.connect(lambda row: self._table.setCurrentCell(row, 0))
+            self._candidate_plot_selection = QLabel(tr("spring_candidate.plot.selection_empty"), self)
+            self._candidate_plot_selection.setWordWrap(True)
+            lower = candidate.coil_bind_mm + candidate.coil_reserve_mm
+            upper = candidate.free_mm - candidate.compression_reserve_mm
+            candidate_notice = QLabel(tr("equilibrium_path.candidate_plot_notice", coil=repr(candidate.coil_bind_mm),
+                                         free=repr(candidate.free_mm), lower=repr(lower), upper=repr(upper)), self)
+            candidate_notice.setWordWrap(True)
+            if lower > upper:
+                candidate_notice.setText(candidate_notice.text() + "\n" + tr("spring_candidate.plot.crossed"))
+            elif lower == upper:
+                candidate_notice.setText(candidate_notice.text() + "\n" + tr("spring_candidate.plot.touching"))
+            self._candidate_plot_export = QPushButton(tr("export.plot_button"), self)
+            self._candidate_plot_export.setEnabled(graph_report_factory is not None and (bool(path.samples) or path.failure is not None))
+            self._candidate_plot_export.clicked.connect(self._export_candidate_graph)
+            candidate_page = QWidget(self)
+            candidate_layout = QVBoxLayout(candidate_page)
+            candidate_layout.setContentsMargins(0, 0, 0, 0)
+            candidate_layout.addWidget(self._candidate_plot, 1)
+            candidate_layout.addWidget(self._candidate_plot_selection)
+            candidate_layout.addWidget(candidate_notice)
+            candidate_layout.addWidget(self._candidate_plot_export)
+            self._views.addTab(candidate_page, tr("equilibrium_path.candidate_plot_tab"))
+            self._table.currentCellChanged.connect(self._update_candidate_plot)
         self._plot.set_points(equilibrium_path_plot_points(path))
         if path.samples:
             self._table.setCurrentCell(0, 0)
@@ -161,6 +195,32 @@ class EquilibriumPathDialog(QDialog):
         layout.addLayout(candidate_buttons)
         layout.addWidget(self._views, 1)
         layout.addLayout(bottom)
+
+    def _update_candidate_plot(self, row: int, *_args: object) -> None:
+        plot, label = self._candidate_plot, self._candidate_plot_selection
+        if plot is None or label is None:
+            return
+        plot.set_row(row)
+        if not 0 <= row < len(plot.comparison.points):
+            label.setText(tr("spring_candidate.plot.selection_empty"))
+            return
+        point = plot.comparison.points[row]
+        text = tr("spring_candidate.plot.selection", row=row + 1, travel=f"{point.travel_mm:+.4f}",
+                  length=f"{point.length_mm:.4f}" if point.length_mm is not None else "—",
+                  status=tr(f"spring_candidate.report.status.{point.status}"))
+        if row in plot.diagnostic_rows:
+            text += " " + tr("equilibrium_path.candidate_min_diagnostic")
+        label.setText(text)
+
+    def _export_candidate_graph(self) -> None:
+        if self._graph_report_factory is None:
+            return
+        try:
+            report = self._graph_report_factory(self._table, self._plot.points, tr("equilibrium_path.candidate_plot_selected"))
+        except (ValueError, UnicodeError) as error:
+            QMessageBox.warning(self, tr("export.error_title"), tr("export.error", reason=str(error)))
+            return
+        save_table_dialog(self, report)
 
     def _select_candidate_minimum(self, row: int, column: int) -> None:
         self._views.setCurrentIndex(0)
