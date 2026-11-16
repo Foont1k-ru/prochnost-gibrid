@@ -414,8 +414,22 @@ def test_path_filters_combine_exact_conditions_and_reveal_selected_rows(qtbot):
     assert path.samples == samples
 
 
-def test_path_filter_does_not_filter_table_or_graph_csv(qtbot):
+def test_path_filter_does_not_filter_table_or_graph_csv(qtbot, monkeypatch):
+    from dataclasses import replace
+    from datetime import datetime, timedelta
+
     from suspensionlab.i18n import tr
+    from suspensionlab.ui import table_export
+
+    class AdvancingClock:
+        calls = 0
+
+        @classmethod
+        def now(cls, tz):
+            cls.calls += 1
+            return datetime(2025, 1, 1, tzinfo=tz) + timedelta(seconds=cls.calls)
+
+    monkeypatch.setattr(table_export, "datetime", AdvancingClock)
     from suspensionlab.ui.controller import AppController
     from suspensionlab.ui.equilibrium_dialog import EquilibriumDialog
     from suspensionlab.ui.equilibrium_path_dialog import EquilibriumPathDialog
@@ -440,7 +454,18 @@ def test_path_filter_does_not_filter_table_or_graph_csv(qtbot):
     assert any(not view._table.isRowHidden(i) for i in range(len(path.samples)))
     after = dialog._path_report(path, view._table)
     graph_after = dialog._path_graph_report(path, view._table, view._plot.points, view._plot_metric.currentText())
-    assert after == before and graph_after == graph_before
+    def without_export_time(report):
+        timestamps = [value for key, value in report.metadata if key == tr("export.timestamp")]
+        assert len(timestamps) == 1
+        return replace(report, metadata=tuple((key, value) for key, value in report.metadata
+                                              if key != tr("export.timestamp"))), timestamps[0]
+
+    before_normalized, before_time = without_export_time(before)
+    after_normalized, after_time = without_export_time(after)
+    graph_before_normalized, graph_before_time = without_export_time(graph_before)
+    graph_after_normalized, graph_after_time = without_export_time(graph_after)
+    assert before_time != after_time and graph_before_time != graph_after_time
+    assert after_normalized == before_normalized and graph_after_normalized == graph_before_normalized
     assert len(after.rows) == len(graph_after.rows) == len(path.samples)
     assert "все точки" in view._filter_count.text()
     assert tr("equilibrium_path.column.candidate_status") in graph_after.columns
