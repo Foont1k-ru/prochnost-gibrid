@@ -17,6 +17,7 @@ def test_previous_session_requires_explicit_approval_and_blocks_changed_copy(qtb
     controller = AppController()
     window = MainWindow(controller, QSettings(str(tmp_path / 'settings.ini'), QSettings.Format.IniFormat))
     qtbot.addWidget(window)
+    window._confirm_discard_changes = lambda: True
     assert controller.autosave_waiting and 'приостановлено' in window.windowTitle()
     controller.set_value(controller.project.vehicle, 'mass_kg', 1777.)
     assert not controller.autosave() and backup.read_bytes() == prior
