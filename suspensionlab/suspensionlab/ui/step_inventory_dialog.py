@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import logging
+from itertools import count
 from pathlib import Path
+from time import monotonic
 
 from PySide6.QtCore import QThread, Signal
 from PySide6.QtWidgets import (
@@ -18,9 +20,11 @@ from PySide6.QtWidgets import (
 
 from ..core.step_candidate import CandidateTransform, candidate_transforms
 from ..core.step_inventory import StepInventory, StepInventoryError, read_step_inventory
+from ..diagnostic_events import event
 from ..i18n import tr
 
 LOG = logging.getLogger(__name__)
+_OPERATIONS = count(1)
 
 
 class _Reader(QThread):
@@ -138,6 +142,8 @@ class StepInventoryDialog(QDialog):
         self.setWindowTitle(tr("step_inventory.title"))
         self.resize(850, 650)
         self._reader: _Reader | None = None
+        self._operation: int | None = None
+        self._operation_started = 0.0
         self._result: StepInventory | None = None
         self._candidates: tuple[CandidateTransform, ...] = ()
         layout = QVBoxLayout(self)
@@ -150,6 +156,8 @@ class StepInventoryDialog(QDialog):
         self._status = QLabel(tr("step_inventory.empty"), self)
         self._status.setWordWrap(True)
         layout.addWidget(self._status)
+        self._event_label = QLabel(tr("diagnostic_events.no_attempt"), self)
+        layout.addWidget(self._event_label)
         self._show_candidates = QCheckBox(tr("step_inventory.candidate_toggle"), self)
         self._show_candidates.setEnabled(False)
         self._show_candidates.toggled.connect(self._render)
@@ -169,6 +177,10 @@ class StepInventoryDialog(QDialog):
     def load_file(self, path: Path) -> None:
         if self._reader is not None:
             return
+        self._operation = next(_OPERATIONS)
+        self._operation_started = monotonic()
+        self._event_label.setText(tr("diagnostic_events.inventory_attempt", number=self._operation))
+        event("inventory.start", operation=self._operation)
         self._result = None
         self._candidates = ()
         self._show_candidates.setChecked(False)
@@ -186,6 +198,11 @@ class StepInventoryDialog(QDialog):
 
     def _show_result(self, payload: tuple[StepInventory, tuple[CandidateTransform, ...]]) -> None:
         self._result, self._candidates = payload
+        if self._operation is not None:
+            event("inventory.result", warning=bool(self._result.unresolved_occurrences), operation=self._operation,
+                  result="ok", duration_ms=round((monotonic() - self._operation_started) * 1000),
+                  products=len(self._result.products), occurrences=len(self._result.occurrences),
+                  unresolved=self._result.unresolved_occurrences)
         self._show_candidates.setEnabled(True)
         self._render()
         self._status.setText(tr("step_inventory.done"))
@@ -196,6 +213,9 @@ class StepInventoryDialog(QDialog):
             self._text.setPlainText(inventory_text(self._result, candidates))
 
     def _show_error(self, error: str) -> None:
+        if self._operation is not None:
+            event("inventory.result", warning=True, operation=self._operation, result="failed",
+                  duration_ms=round((monotonic() - self._operation_started) * 1000))
         self._result = None
         self._candidates = ()
         self._show_candidates.setEnabled(False)
@@ -205,6 +225,7 @@ class StepInventoryDialog(QDialog):
     def _finished(self) -> None:
         reader = self._reader
         self._reader = None
+        self._operation = None
         if reader is not None:
             reader.deleteLater()
         self._choose.setEnabled(True)

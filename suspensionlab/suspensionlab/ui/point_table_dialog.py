@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..diagnostic_events import event
 from ..i18n import tr
 from ..model.units import LENGTH_UNITS, UnitConversionError, UnitKind
 from .controller import AppController
@@ -147,6 +148,7 @@ class PointTableDialog(QDialog):
             role, code = self._rows[row]
             point = self._controller.project.axle(role).hardpoints[code]
             if point.locked or self._controller.is_locked(f"{role}.point.{code}.{'xyz'[col - 4]}"):
+                event("points.apply", warning=True, result="locked", cells=len(self._changed))
                 self._message.setText(tr("point_table.locked"))
                 return
             item = self._table.item(row, col)
@@ -159,6 +161,7 @@ class PointTableDialog(QDialog):
                 if self._table.isRowHidden(row):
                     self._filter.setCurrentIndex(0)
                 self._table.setCurrentCell(row, col)
+                event("points.apply", warning=True, result="invalid", cells=len(self._changed))
                 self._message.setText(tr("point_table.invalid", code=code, axis="XYZ"[col - 4]))
                 return
             coords = edits.setdefault((role, code), list(point.as_tuple()))
@@ -166,6 +169,7 @@ class PointTableDialog(QDialog):
         self._applying = True
         try:
             self._controller.move_points({key: tuple(values) for key, values in edits.items()})
+            event("points.apply", result="ok", points=len(edits), cells=len(self._changed))
             self._populate()
             self._message.setText(tr("point_table.applied"))
         finally:

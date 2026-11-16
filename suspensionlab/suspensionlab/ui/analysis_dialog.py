@@ -46,6 +46,7 @@ from ..core.spring_range import SpringRange, summarize_spring_range
 from ..core.stroke import StrokeLimits
 from ..core.sweep import travel_grid
 from ..core.sweep_plot import PLOT_METRICS, sweep_plot_points
+from ..diagnostic_events import event
 from ..export.axis_alignment import axis_alignment_rows
 from ..export.csv_report import CSVReport
 from ..export.damper_candidate_report import candidate_report_rows
@@ -739,8 +740,11 @@ class AnalysisDialog(QDialog):
     def _calculate(self) -> None:
         self._clear_results()
         role = str(self._role.currentData())
+        side_code = "left" if self._side.currentData() == "left" else "right"
+        event("analysis.start", axis=role, side=side_code, spring=self._spring.isChecked(), damper=self._damper.isChecked())
         axle = self.controller.project.axle(role)
         if axle.type_code != "double_wishbone":
+            event("analysis.result", warning=True, axis=role, side=side_code, result="unsupported")
             self._status.setText(tr("analysis.unsupported"))
             return
         try:
@@ -766,6 +770,7 @@ class AnalysisDialog(QDialog):
                 max_step_mm=1.0,
             )
         except (ValueError, ArithmeticError) as error:
+            event("analysis.result", warning=True, axis=role, side=side_code, result="failed")
             LOG.warning("Расчёт хода не выполнен: %s", error)
             self._status.setText(tr("analysis.error", reason=str(error)))
             return
@@ -878,6 +883,15 @@ class AnalysisDialog(QDialog):
             self._candidate_compare.setEnabled(any(length is not None for _, length in lengths))
         else:
             self._damper_range.setPlainText(tr("damper_range.disabled"))
+        spring_conflicts = sum(1 for sample in result.samples if sample is not None and sample.spring is not None
+                               and (sample.spring.error is not None or (sample.spring.state is not None
+                                    and sample.spring.state.status == "coil_bind")))
+        damper_conflicts = sum(1 for sample in result.samples if sample is not None and sample.damper is not None
+                               and sample.damper.has_detected_conflict)
+        frames_missing = sum(frame is None for frame in frames3d)
+        event("analysis.result", warning=bool(failures or spring_conflicts or damper_conflicts or frames_missing),
+              axis=role, side=side_code, result="ok", rows=len(travels), missing=failures,
+              spring_conflicts=spring_conflicts, damper_conflicts=damper_conflicts, frames_missing=frames_missing)
         if failures:
             first_error = next((point.error for point in result.sweep.points if point.error is not None), None)
             LOG.warning("Расчёт хода: нерешённых строк %d; первый отказ: %s", failures, first_error or "не указан")

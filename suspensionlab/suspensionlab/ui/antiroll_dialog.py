@@ -36,6 +36,7 @@ from ..core.sample_summary import antiroll_summary
 from ..core.stroke import StrokeLimits
 from ..core.sweep import travel_grid
 from ..core.sweep_plot import ANTIROLL_METRICS, antiroll_partner, antiroll_plot_points
+from ..diagnostic_events import event
 from ..export.plot_report import plot_number
 from ..i18n import tr
 from .analysis_dialog import AnalysisDialog
@@ -259,8 +260,10 @@ class AntiRollDialog(QDialog):
 
     def _calculate(self) -> None:
         self._clear_results()
-        axle = self.controller.project.axle(str(self._role.currentData()))
+        role = str(self._role.currentData())
+        axle = self.controller.project.axle(role)
         if axle.type_code != "double_wishbone":
+            event("antiroll.result", warning=True, axis=role, result="unsupported")
             self._status.setText(tr("analysis.unsupported"))
             return
         try:
@@ -286,6 +289,7 @@ class AntiRollDialog(QDialog):
             direction = 1 if self._mode.currentData() == "bounce" else -1
             result = study.sweep([(h, direction * h) for h in grid], max_step_mm=min(1, self._step.value()))
         except (ValueError, ArithmeticError) as error:
+            event("antiroll.result", warning=True, axis=role, result="failed")
             LOG.warning("Расчёт стабилизатора не выполнен: %s", error)
             self._status.setText(tr("analysis.error", reason=str(error)))
             return
@@ -339,6 +343,7 @@ class AntiRollDialog(QDialog):
                 item.setToolTip(value)
                 self._table.setItem(row, column, item)
         self._summary.set_samples(antiroll_summary(result.points, self._checks))
+        event("antiroll.result", warning=bool(failures), axis=role, result="ok", rows=len(result.points), missing=failures)
         if failures:
             first_error = next((point.error for point in result.points if point.error), None)
             LOG.warning("Расчёт стабилизатора: нерешённых строк %d; первый отказ: %s", failures, first_error or "не указан")

@@ -50,6 +50,11 @@ def log_file_path() -> Path:
     return logs_dir() / "suspensionlab.log"
 
 
+def diagnostic_log_path() -> Path:
+    """Путь к отдельному журналу событий без путей и данных проекта."""
+    return logs_dir() / "events.log"
+
+
 def autosave_path() -> Path:
     """Путь к файлу автосохранения текущего проекта."""
     return app_data_dir() / "autosave.susp.json"

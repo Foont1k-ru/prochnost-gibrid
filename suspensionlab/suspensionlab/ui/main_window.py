@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
 )
 
 from .. import APP_NAME, __version__
-from ..config import log_file_path, settings_path
+from ..config import diagnostic_log_path, log_file_path, settings_path
 from ..i18n import tr
 from ..model.project_io import ProjectIOError
 from ..model.suspension_types import types_for_role
@@ -255,6 +255,9 @@ class MainWindow(QMainWindow):
         self.action_equilibrium = QAction(tr("equilibrium_ui.menu"), self)
         self.action_equilibrium.triggered.connect(self._open_equilibrium)
 
+        self.action_events = QAction(tr("diagnostic_events.menu"), self)
+        self.action_events.triggered.connect(self._open_events)
+
         self.action_log = QAction(tr("menu.help.log"), self)
         self.action_log.triggered.connect(self._open_log)
 
@@ -319,6 +322,7 @@ class MainWindow(QMainWindow):
 
         menu_help = bar.addMenu(tr("menu.help"))
         menu_help.addAction(self.action_manual)
+        menu_help.addAction(self.action_events)
         menu_help.addAction(self.action_log)
         menu_help.addSeparator()
         menu_help.addAction(self.action_about)
@@ -760,6 +764,15 @@ class MainWindow(QMainWindow):
     def _open_log(self) -> None:
         """Показывает журнал в нативном окне."""
         self._show_text_file(log_file_path(), tr("menu.help.log"))
+
+    def _open_events(self) -> None:
+        """Отдельный журнал основных событий, без данных проекта."""
+        try:
+            path = diagnostic_log_path()
+        except OSError:
+            QMessageBox.warning(self, tr("diagnostic_events.menu"), tr("diagnostic_events.unavailable"))
+            return
+        self._show_text_file(path, tr("diagnostic_events.menu"))
 
     def _open_manual(self) -> None:
         """Показывает руководство из комплекта ресурсов."""

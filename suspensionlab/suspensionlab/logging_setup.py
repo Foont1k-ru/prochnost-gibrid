@@ -50,6 +50,9 @@ def setup_logging(level: int | None = None) -> logging.Logger:
         console.setLevel(max(level, logging.INFO))
         root.addHandler(console)
 
+    from .diagnostic_events import setup_event_logging
+
+    setup_event_logging()
     _configured = True
     root.debug("Журналирование запущено, уровень %s", logging.getLevelName(level))
     return root

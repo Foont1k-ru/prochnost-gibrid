@@ -1,7 +1,9 @@
 """Экспериментальный просмотр CAD-граней без связи с расчётным проектом."""
 from __future__ import annotations
 
+from itertools import count
 from pathlib import Path
+from time import monotonic
 
 import numpy as np
 from PySide6.QtCore import QSettings, Qt, QThread, Signal
@@ -21,10 +23,16 @@ from ..config import settings_path
 from ..core.cad_measurement import measurement_distance
 from ..core.cad_mesh import CadMesh
 from ..core.cad_transport import CadJob, CadPreviewError
+from ..diagnostic_events import event
 from ..i18n import tr
 from .cad_preview_settings import CadPreviewSettingsDialog, read_cad_deviation
 from .canvas.cad_preview import CadPreview
 from .widgets.camera_views import CameraViews
+
+_OPERATIONS = count(1)
+_CAD_ERROR_CODES = frozenset({"cancelled", "start", "timeout", "crash", "file_size", "deviation",
+                              "missing_cad", "units", "read", "no_shape", "mesh", "limit",
+                              "missing_face", "coordinates", "no_faces", "unexpected", "output"})
 
 
 class _CadReader(QThread):
@@ -55,6 +63,8 @@ class CadPreviewDialog(QDialog):
         self.resize(960, 750)
         self._reader: _CadReader | None = None
         self._path: Path | None = None
+        self._operation: int | None = None
+        self._operation_started = 0.0
         self._mesh: CadMesh | None = None
         self._loaded_deviation: float | None = None
         self._requested_deviation: float | None = None
@@ -137,6 +147,8 @@ class CadPreviewDialog(QDialog):
         self._status = QLabel(tr("cad_preview.empty"), self)
         self._status.setWordWrap(True)
         layout.addWidget(self._status)
+        self._event_label = QLabel(tr("diagnostic_events.no_attempt"), self)
+        layout.addWidget(self._event_label)
         self._measurement = QLabel(tr("cad_preview.measure_warning"), self)
         self._measurement.setWordWrap(True)
         self._measurement.setMinimumHeight(self._measurement.fontMetrics().lineSpacing() * 4)
@@ -186,6 +198,10 @@ class CadPreviewDialog(QDialog):
         self._mesh = None
         self._loaded_deviation = None
         self._requested_deviation = self._selected_deviation
+        self._operation = next(_OPERATIONS)
+        self._operation_started = monotonic()
+        self._event_label.setText(tr("diagnostic_events.cad_attempt", number=self._operation))
+        event("cad.start", operation=self._operation, deviation_um=round(self._requested_deviation * 1000))
         self._update_quality_status()
         self._instance_counts = None
         self._parts.blockSignals(True)
@@ -211,6 +227,11 @@ class CadPreviewDialog(QDialog):
         reader.start()
 
     def _show_mesh(self, mesh: CadMesh) -> None:
+        if self._operation is not None:
+            event("cad.result", warning=bool(mesh.skipped_faces or mesh.recovered_faces),
+                  operation=self._operation, result="ok", duration_ms=round((monotonic() - self._operation_started) * 1000),
+                  faces=mesh.face_count, skipped=mesh.skipped_faces, recovered=mesh.recovered_faces,
+                  triangles=len(mesh.triangles))
         self._mesh = mesh
         self._loaded_deviation = self._requested_deviation if self._requested_deviation is not None else self._selected_deviation
         self._update_quality_status()
@@ -340,6 +361,10 @@ class CadPreviewDialog(QDialog):
             self._view.set_mesh(self._mesh.isolated(group))
 
     def _show_error(self, code: str) -> None:
+        if self._operation is not None:
+            result = code if code in _CAD_ERROR_CODES else "unexpected"
+            event("cad.result", warning=result != "cancelled", operation=self._operation, result=result,
+                  duration_ms=round((monotonic() - self._operation_started) * 1000))
         self._measure.setChecked(False)
         self._measure.setEnabled(False)
         self._clear_measurement()
@@ -364,6 +389,7 @@ class CadPreviewDialog(QDialog):
         reader = self._reader
         self._reader = None
         self._requested_deviation = None
+        self._operation = None
         if reader is not None:
             reader.deleteLater()
         self._choose.setEnabled(True)

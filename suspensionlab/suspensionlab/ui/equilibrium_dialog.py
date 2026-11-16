@@ -29,6 +29,7 @@ from ..core.spring_candidate import SpringCandidate, candidate_geometry
 from ..core.spring_characteristics import SpringCharacteristic
 from ..core.stroke import StrokeLimits
 from ..core.sweep_plot import PATH_PLOT_METRICS, PlotPoint, equilibrium_path_plot_points
+from ..diagnostic_events import event
 from ..export.csv_report import CSVReport
 from ..export.equilibrium_path import (
     CANDIDATE_PATH_COLUMNS,
@@ -243,8 +244,11 @@ class EquilibriumDialog(QDialog):
         self._display_values = None
         self._export_button.setEnabled(False)
         self._output.clear()
-        axle = self.controller.project.axle(str(self._role.currentData()))
+        role = str(self._role.currentData())
+        side_code = "left" if self._side.currentData() == "left" else "right"
+        axle = self.controller.project.axle(role)
         if axle.type_code != "double_wishbone":
+            event("equilibrium.result", warning=True, axis=role, side=side_code, result="unsupported")
             self._status.setText(tr("analysis.unsupported"))
             return
         try:
@@ -277,18 +281,22 @@ class EquilibriumDialog(QDialog):
             self._path_button.setEnabled(True)
             failure = error.path.failure
             assert failure is not None
+            event("equilibrium.result", warning=True, axis=role, side=side_code, result="path_failed",
+                  failure_kind=failure.kind, samples=len(error.path.samples))
             LOG.warning("Проверка пути баланса прервана: точка %.3f мм, отказ %.3f мм: %s",
                         failure.requested_travel_mm, failure.failure_travel_mm, failure.reason)
             self._status.setText(tr("equilibrium_ui.path_error", requested=f"{failure.requested_travel_mm:.3f}",
                                     failure=f"{failure.failure_travel_mm:.3f}", reason=failure.reason))
             return
         except (ValueError, ArithmeticError) as error:
+            event("equilibrium.result", warning=True, axis=role, side=side_code, result="failed")
             LOG.warning("Поиск баланса не выполнен: %s", error)
             self._status.setText(tr("equilibrium_ui.error", reason=str(error)))
             return
         self._result = result
         point = result.estimate
         assert result.path is not None
+        event("equilibrium.result", axis=role, side=side_code, result="ok", samples=len(result.path.samples))
         self._path = result.path
         self._path_button.setEnabled(True)
         self._status.setText(tr("equilibrium_ui.success"))

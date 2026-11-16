@@ -8,7 +8,7 @@ from tempfile import TemporaryDirectory
 from PySide6.QtCore import QSettings, QTimer
 
 from .app import create_application
-from .config import log_file_path, resources_dir
+from .config import diagnostic_log_path, log_file_path, resources_dir
 from .core.equilibrium import SpringEquilibrium
 from .core.sweep_plot import ANTIROLL_METRICS, PLOT_METRICS
 from .export.csv_report import write_csv_report
@@ -53,6 +53,9 @@ def run_startup_check() -> None:
         exit_code = application.main([])
         _require(exit_code == 0 and opened == [True], "Обычный запуск не открыл главное окно")
         _require("Запуск" in log_file_path().read_text(encoding="utf-8"), "Нет записи о запуске в журнале")
+        events = diagnostic_log_path().read_text(encoding="utf-8")
+        _require('"event":"session.start"' in events and '"event":"session.end"' in events,
+                 "Журнал событий запуска недоступен")
     finally:
         application.create_application = original
 

@@ -18,6 +18,7 @@ from pathlib import Path
 from PySide6.QtCore import QObject, Signal
 
 from ..config import autosave_path
+from ..diagnostic_events import event
 from ..model.commands import (
     ChangeLinkLengthCommand,
     DictFlagCommand,
@@ -95,7 +96,13 @@ class AppController(QObject):
 
     def open_project(self, path: str | Path) -> None:
         """Открывает проект из файла; ошибки — в виде исключения ProjectIOError."""
-        project = load_project(path)
+        event("project.open", result="start")
+        try:
+            project = load_project(path)
+        except ProjectIOError as error:
+            event("project.open", warning=True, result="failed", error_code=error.message_key)
+            raise
+        event("project.open", result="ok")
         self.project = project
         self._recovery_source = None
         self.undo.clear()
@@ -108,6 +115,16 @@ class AppController(QObject):
 
     def save_project(self, path: str | Path | None = None) -> Path:
         """Сохраняет проект; возвращает путь файла."""
+        event("project.save", result="start")
+        try:
+            saved = self._save_project(path)
+        except ProjectIOError as error:
+            event("project.save", warning=True, result="failed", error_code=error.message_key)
+            raise
+        event("project.save", result="ok")
+        return saved
+
+    def _save_project(self, path: str | Path | None = None) -> Path:
         target = path or self.project.path
         if not target:
             raise ProjectIOError("error.project.write_failed", path="")
@@ -162,17 +179,20 @@ class AppController(QObject):
         self._revalidate()
         self.projectReplaced.emit()
         self.selectionChanged.emit(None)
+        event("project.recovery", result="ok")
         self.statusMessage.emit("autosave.recovered")
 
     def autosave(self) -> bool:
         """Тихое автосохранение рабочей копии (раз в минуту)."""
         if self.recovery_pending or self._recovery_guard is not None:
+            event("project.autosave", warning=True, result="paused")
             self.statusMessage.emit("autosave.paused")
             return False
         original_path = self.project.path
         try:
             save_project(self.project, autosave_path())
         except (OSError, ProjectIOError):
+            event("project.autosave", warning=True, result="failed")
             LOG.warning("Автосохранение не удалось", exc_info=True)
             self.statusMessage.emit("autosave.failed")
             return False

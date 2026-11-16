@@ -9,15 +9,18 @@
 from __future__ import annotations
 
 import logging
+import platform
 import sys
 import traceback
 
+from PySide6 import __version__ as pyside_version
 from PySide6.QtCore import QSettings, Qt
 from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from . import APP_ID, APP_NAME, ORG_ID, __version__
 from .config import log_file_path, settings_path
+from .diagnostic_events import event
 from .i18n import tr
 from .logging_setup import setup_logging
 
@@ -71,6 +74,7 @@ def install_exception_hook() -> None:
         if issubclass(exc_type, KeyboardInterrupt):
             sys.__excepthook__(exc_type, exc_value, exc_tb)
             return
+        event("session.exception", warning=True, error_type=exc_type.__name__)
         LOG.critical(
             "Необработанное исключение: %s",
             "".join(traceback.format_exception(exc_type, exc_value, exc_tb)),
@@ -92,6 +96,8 @@ def main(argv: list[str] | None = None) -> int:
     setup_logging()
     install_exception_hook()
     LOG.info("Запуск %s %s", APP_NAME, __version__)
+    event("session.start", app=__version__, python=platform.python_version(), pyside=pyside_version,
+          os=platform.system(), arch=platform.machine(), frozen=bool(getattr(sys, "frozen", False)))
 
     app = create_application(argv)
     # импорт окна — после создания QApplication: модули интерфейса
@@ -101,7 +107,9 @@ def main(argv: list[str] | None = None) -> int:
     settings = QSettings(str(settings_path()), QSettings.Format.IniFormat)
     window = MainWindow(settings=settings)
     window.show()
-    return app.exec()
+    exit_code = app.exec()
+    event("session.end", exit_code=exit_code)
+    return exit_code
 
 
 if __name__ == "__main__":
