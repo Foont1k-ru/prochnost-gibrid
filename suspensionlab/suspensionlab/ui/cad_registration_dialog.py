@@ -26,7 +26,7 @@ from ..config import autosave_path, settings_path
 from ..core.cad_registration import MAX_PAIRS, DistanceComparison, RegistrationEvaluation, evaluate_registration
 from ..core.cad_registration_overlay import overlay_pairs
 from ..core.cad_source_guard import summarize_sources
-from ..export.cad_registration_report import registration_report
+from ..export.cad_registration_report import distance_report, registration_report
 from ..export.csv_report import CSVReport, write_csv_report
 from ..i18n import tr
 from ..model.point_csv import PointRecord, capture_points
@@ -48,6 +48,7 @@ class CadRegistrationDialog(QDialog):
         self._snapshot_digest: bytes | None = None
         self._picker: CadRegistrationPicker | None = None
         self._report: CSVReport | None = None
+        self._distance_report: CSVReport | None = None
         self._snapshot: tuple[tuple[PointRecord, ...], tuple[bool, ...], RegistrationEvaluation] | None = None
         self.setWindowTitle(tr("cad_registration.title"))
         self.resize(1100, 750)
@@ -86,6 +87,10 @@ class CadRegistrationDialog(QDialog):
         self._export.clicked.connect(self._save_report)
         run_row.addWidget(self._calculate)
         run_row.addWidget(self._export)
+        self._export_distances = QPushButton(tr("cad_registration.distance_export"), self)
+        self._export_distances.setEnabled(False)
+        self._export_distances.clicked.connect(self._save_distances)
+        run_row.addWidget(self._export_distances)
         self._overlay = QPushButton(tr("cad_registration_overlay.button"), self)
         self._overlay.setEnabled(False)
         self._overlay.clicked.connect(self._open_overlay)
@@ -108,10 +113,12 @@ class CadRegistrationDialog(QDialog):
         self.registrationChanged.emit()
         self._revision += 1
         self._report = None
+        self._distance_report = None
         self._snapshot = None
         self._snapshot_digest = None
         self._update_source_status()
         self._export.setEnabled(False)
+        self._export_distances.setEnabled(False)
         self._overlay.setEnabled(False)
         self._result.clear()
 
@@ -274,6 +281,7 @@ class CadRegistrationDialog(QDialog):
             mask = tuple(fit_mask)
             result = evaluate_registration(points, tuple(record.xyz for record in records), mask)
             report = registration_report(result, tuple(records), points, mask, tr, tuple(sources), summary)
+            distances_report = distance_report(result, tuple(records), mask, tr)
         except ValueError as error:
             code = str(error)
             if code not in ("selection", "coordinates", "count", "degenerate", "duplicate"):
@@ -306,12 +314,20 @@ class CadRegistrationDialog(QDialog):
             delta = ", ".join(f"{value:.6g}" for value in point.delta_mm)
             lines.append(f"{i}: {tr('cad_registration.fit' if is_fit else 'cad_registration.control')} / "
                          f"{record.role} / {record.code}: Δ=({delta}) mm; {point.distance_mm:.6g} mm")
+        lines.extend(["", tr("cad_registration.distance_list")])
+        for segment in sorted(result.segments, key=lambda item: (-abs(item.difference_mm), item.first_row, item.second_row)):
+            group = tr("cad_registration.distance_control" if segment.involves_control else "cad_registration.distance_fit")
+            lines.append(tr("cad_registration.distance_entry", row1=segment.first_row + 1, row2=segment.second_row + 1,
+                            group=group, cad=f"{segment.cad_length_mm:.6g}",
+                            project=f"{segment.project_length_mm:.6g}", diff=f"{segment.difference_mm:.6g}"))
         self._result.setPlainText("\n".join(lines))
         self._result.moveCursor(self._result.textCursor().MoveOperation.Start)
         self._report = report
+        self._distance_report = distances_report
         self._snapshot = (tuple(records), mask, result)
         self._snapshot_digest = next(iter(self._source_digests.values()), None)
         self._export.setEnabled(True)
+        self._export_distances.setEnabled(True)
         self._overlay.setEnabled(True)
 
     def _open_overlay(self) -> None:
@@ -333,17 +349,26 @@ class CadRegistrationDialog(QDialog):
             dialog.deleteLater()
 
     def _save_report(self) -> None:
-        if self._stale or self._report is None:
+        self._save_csv(False)
+
+    def _save_distances(self) -> None:
+        self._save_csv(True)
+
+    def _save_csv(self, distances: bool) -> None:
+        report = self._distance_report if distances else self._report
+        if self._stale or report is None:
             return
-        report, revision = self._report, self._revision
-        selected, _ = QFileDialog.getSaveFileName(self, tr("export.title"), "cad_registration.csv", tr("export.filter"))
+        revision = self._revision
+        default = "cad_registration_distances.csv" if distances else "cad_registration.csv"
+        selected, _ = QFileDialog.getSaveFileName(self, tr("export.title"), default, tr("export.filter"))
         if not selected:
             return
         path = Path(selected)
         if path.suffix.lower() != ".csv":
             path = path.with_name(path.name + ".csv")
         try:
-            if self._stale or revision != self._revision or report is not self._report:
+            if (self._stale or revision != self._revision or
+                    report is not (self._distance_report if distances else self._report)):
                 raise ValueError(tr("snapshot_compare.export_changed"))
             protected = [autosave_path()]
             if self.controller.project.path:

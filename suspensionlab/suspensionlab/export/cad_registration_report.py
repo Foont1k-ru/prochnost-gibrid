@@ -62,3 +62,24 @@ def registration_report(result: RegistrationEvaluation, records: tuple[PointReco
                "transformed_cad_x_mm", "transformed_cad_y_mm", "transformed_cad_z_mm",
                "delta_x_mm", "delta_y_mm", "delta_z_mm", "distance_mm")
     return CSVReport(tuple(metadata), columns, tuple(rows))
+
+
+def distance_report(result: RegistrationEvaluation, records: tuple[PointRecord, ...],
+                    fit_mask: tuple[bool, ...], translate: Callable[[str], str]) -> CSVReport:
+    """Все отрезки в исходном порядке строк, независимо от показанной сортировки."""
+    if len(records) != len(result.points) or len(fit_mask) != len(records):
+        raise ValueError("Несогласованные данные отчёта")
+    rows = []
+    for segment in result.segments:
+        i, j = segment.first_row, segment.second_row
+        a, b = records[i], records[j]
+        rows.append((str(i + 1), str(j + 1), "fit" if fit_mask[i] else "control",
+                     "fit" if fit_mask[j] else "control", a.role, a.code, a.representation,
+                     b.role, b.code, b.representation,
+                     repr(segment.cad_length_mm), repr(segment.project_length_mm),
+                     repr(segment.difference_mm), repr(abs(segment.difference_mm))))
+    columns = ("row_1", "row_2", "purpose_1", "purpose_2", "axle_1", "point_code_1", "representation_1",
+               "axle_2", "point_code_2", "representation_2", "cad_length_mm", "project_length_mm",
+               "project_minus_cad_mm", "absolute_difference_mm")
+    return CSVReport(((translate("cad_registration.distance_report_warning"),
+                       translate("cad_registration.distance_warning")),), columns, tuple(rows))

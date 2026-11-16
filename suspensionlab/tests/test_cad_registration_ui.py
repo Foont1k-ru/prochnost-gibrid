@@ -295,3 +295,44 @@ def test_mixed_picked_sources_block_registration_until_fixed(qtbot, monkeypatch)
     assert ('manual_or_edited_unverified', '2') in dialog._report.metadata
     assert dialog._snapshot_digest == b'a' * 32
     assert b'a'.decode() * 32 not in repr(dialog._report)
+
+
+def test_distance_list_export_and_stale_protection(qtbot, tmp_path, monkeypatch):
+    import csv
+
+    from suspensionlab.ui import cad_registration_dialog as module
+
+    controller = AppController()
+    for code, xyz in zip(('ubj', 'lbj', 'lca_f_in'), ((0, 0, 0), (100, 0, 0), (0, 100, 0)), strict=True):
+        point = controller.project.front.hardpoints[code]
+        point.x, point.y, point.z = xyz
+    dialog = CadRegistrationDialog(controller)
+    qtbot.addWidget(dialog)
+    assert not dialog._export_distances.isEnabled()
+    fill_identity(dialog)
+    dialog._table.cellWidget(1, 1).setText('90')
+    dialog._confirmed.setChecked(True)
+    dialog._run()
+    assert dialog._export_distances.isEnabled()
+    text = dialog._result.toPlainText()
+    assert text.index('Строки 1–2 / Только подбор') < text.index('Строки 2–3 / Только подбор')
+    path = tmp_path / 'distances.csv'
+    monkeypatch.setattr(module.QFileDialog, 'getSaveFileName', lambda *args: (str(path), 'CSV'))
+    dialog._save_distances()
+    with path.open(encoding='utf-8-sig', newline='') as stream:
+        rows = list(csv.reader(stream, delimiter=';'))
+    header = next(i for i, row in enumerate(rows) if row and row[0] == 'row_1')
+    assert len(rows[header + 1:]) == 3
+    warnings = []
+    monkeypatch.setattr(module.QMessageBox, 'warning', lambda *args: warnings.append(args))
+    controller.project.path = str(path)
+    old = path.read_bytes()
+    dialog._save_distances()
+    assert warnings and path.read_bytes() == old
+    def mutate_during_save(*args):
+        dialog._table.cellWidget(0, 1).setText('2')
+        return str(tmp_path / 'stale.csv'), 'CSV'
+    monkeypatch.setattr(module.QFileDialog, 'getSaveFileName', mutate_during_save)
+    dialog._save_distances()
+    assert not (tmp_path / 'stale.csv').exists() and len(warnings) == 2
+    assert not dialog._export_distances.isEnabled() and dialog._distance_report is None

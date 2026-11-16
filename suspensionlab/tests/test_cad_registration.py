@@ -177,3 +177,27 @@ def test_distance_comparison_signed_shorter_project_and_control_not_in_fit_summa
     assert result.control_distances is not None
     assert result.control_distances.count == 3
     assert result.control_distances.difference_mm < 0
+
+
+def test_all_segments_cover_each_unordered_pair_and_match_summary():
+    from suspensionlab.core.cad_registration import evaluate_registration
+
+    cad = [(float(i), float(i * i), float(i % 3)) for i in range(MAX_PAIRS)]
+    target = [(x * 2, y, z) for x, y, z in cad]
+    mask = tuple(i < 10 for i in range(MAX_PAIRS))
+    result = evaluate_registration(cad, target, mask)
+    assert len(result.segments) == 190
+    assert [(s.first_row, s.second_row) for s in result.segments] == [
+        (i, j) for i in range(MAX_PAIRS) for j in range(i + 1, MAX_PAIRS)]
+    for segment in result.segments:
+        i, j = segment.first_row, segment.second_row
+        assert segment.involves_control == (not (mask[i] and mask[j]))
+        assert segment.cad_length_mm == pytest.approx(math.dist(cad[i], cad[j]))
+        assert segment.difference_mm == pytest.approx(math.dist(target[i], target[j]) - math.dist(cad[i], cad[j]))
+    for group, is_control in ((result.fit_distances, False), (result.control_distances, True)):
+        assert group is not None
+        items = [s for s in result.segments if s.involves_control == is_control]
+        worst = max(items, key=lambda item: abs(item.difference_mm))
+        assert group.count == len(items)
+        assert (group.first_row, group.second_row) == (worst.first_row, worst.second_row)
+        assert group.difference_mm == worst.difference_mm

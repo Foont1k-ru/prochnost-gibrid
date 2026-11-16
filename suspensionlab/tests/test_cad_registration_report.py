@@ -94,3 +94,30 @@ def test_distance_summary_metadata_uses_row_numbers_and_full_precision():
     no_metadata = dict(registration_report(no_control, records[:3], source[:3], mask[:3], str).metadata)
     assert no_metadata['control_segments_count'] == '0'
     assert 'control_segments_worst_row_1' not in no_metadata
+
+
+def test_distance_report_all_pairs_precision_and_spreadsheet_safety(tmp_path):
+    from suspensionlab.export.cad_registration_report import distance_report
+
+    cad = ((0., 0., 0.), (3., 0., 0.), (0., 4., 0.), (0., 0., 12.))
+    target = ((0., 0., 0.), (6.123456789012, 0., 0.), (0., 8., 0.), (0., 0., 9.))
+    mask = (True, True, True, False)
+    result = evaluate_registration(cad, target, mask)
+    records = tuple(replace(record, xyz=target[i], code='=BAD' if i == 3 else record.code)
+                    for i, record in enumerate(capture_points(Project.create_default())[:4]))
+    report = distance_report(result, records, mask, str)
+    assert len(report.rows) == 6
+    path = tmp_path / 'distances.csv'
+    write_csv_report(report, path)
+    with path.open(encoding='utf-8-sig', newline='') as stream:
+        rows = list(csv.reader(stream, delimiter=';'))
+    idx = next(i for i, row in enumerate(rows) if row and row[0] == 'row_1')
+    data = [dict(zip(rows[idx], row, strict=True)) for row in rows[idx + 1:]]
+    assert [(r['row_1'], r['row_2']) for r in data] == [
+        ('1', '2'), ('1', '3'), ('1', '4'), ('2', '3'), ('2', '4'), ('3', '4')]
+    assert data[0]['project_length_mm'] == repr(target[1][0])
+    assert data[2]['point_code_2'] == "'=BAD" and data[2]['purpose_2'] == 'control'
+    assert float(data[2]['project_minus_cad_mm']) == -3
+    assert float(data[2]['absolute_difference_mm']) == 3
+    with pytest.raises(ValueError):
+        distance_report(result, records[:3], mask, str)

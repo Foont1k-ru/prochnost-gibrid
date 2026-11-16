@@ -74,6 +74,19 @@ class PointResidual:
 
 
 @dataclass(frozen=True, slots=True)
+class DistanceSegment:
+    first_row: int  # indices are zero-based
+    second_row: int
+    cad_length_mm: float
+    project_length_mm: float
+    involves_control: bool
+
+    @property
+    def difference_mm(self) -> float:
+        return self.project_length_mm - self.cad_length_mm
+
+
+@dataclass(frozen=True, slots=True)
 class DistanceComparison:
     """Наибольшее расхождение длин среди отрезков между строками; индексы с нуля."""
 
@@ -94,6 +107,7 @@ class RegistrationEvaluation:
     control_max_mm: float | None
     fit_distances: DistanceComparison
     control_distances: DistanceComparison | None
+    segments: tuple[DistanceSegment, ...]  # original row order, each pair occurs once
 
 
 def evaluate_registration(cad_points: object, project_points: object,
@@ -127,20 +141,24 @@ def evaluate_registration(cad_points: object, project_points: object,
     controls = distances[~mask]
     # Translation and rotation do not affect segment lengths. Compare fit-fit
     # separately from every segment involving at least one control row.
-    groups: tuple[list[tuple[int, int, float, float]], list[tuple[int, int, float, float]]] = ([], [])
+    groups: tuple[list[DistanceSegment], list[DistanceSegment]] = ([], [])
+    segments = []
     for i, j in combinations(range(len(cad)), 2):
         cad_length = float(np.linalg.norm(cad[i] - cad[j]))
         project_length = float(np.linalg.norm(target[i] - target[j]))
-        groups[0 if fit_mask[i] and fit_mask[j] else 1].append((i, j, cad_length, project_length))
+        involves_control = not (fit_mask[i] and fit_mask[j])
+        segment = DistanceSegment(i, j, cad_length, project_length, involves_control)
+        groups[int(involves_control)].append(segment)
+        segments.append(segment)
 
-    def summarize(segments: list[tuple[int, int, float, float]]) -> DistanceComparison:
+    def summarize(items: list[DistanceSegment]) -> DistanceComparison:
         # max() retains the first segment in row order for exact ties.
-        i, j, cad_length, project_length = max(segments, key=lambda v: abs(v[3] - v[2]))
-        rms = float(np.sqrt(np.mean([(p - c) ** 2 for _, _, c, p in segments])))
-        return DistanceComparison(len(segments), rms, i, j, cad_length, project_length,
-                                  project_length - cad_length)
+        worst = max(items, key=lambda v: abs(v.difference_mm))
+        rms = float(np.sqrt(np.mean([segment.difference_mm ** 2 for segment in items])))
+        return DistanceComparison(len(items), rms, worst.first_row, worst.second_row,
+                                  worst.cad_length_mm, worst.project_length_mm, worst.difference_mm)
 
     return RegistrationEvaluation(fit, points,
                                   float(np.sqrt(np.mean(controls ** 2))) if len(controls) else None,
                                   float(np.max(controls)) if len(controls) else None,
-                                  summarize(groups[0]), summarize(groups[1]) if groups[1] else None)
+                                  summarize(groups[0]), summarize(groups[1]) if groups[1] else None, tuple(segments))
