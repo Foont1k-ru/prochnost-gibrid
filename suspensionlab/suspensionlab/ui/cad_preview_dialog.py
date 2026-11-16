@@ -48,10 +48,13 @@ class CadPreviewDialog(QDialog):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle(tr("cad_preview.title"))
+        self.setWindowFlag(Qt.WindowType.WindowMaximizeButtonHint, True)
         self.resize(960, 750)
         self._reader: _CadReader | None = None
         self._path: Path | None = None
         self._mesh: CadMesh | None = None
+        self._loaded_deviation: float | None = None
+        self._requested_deviation: float | None = None
         self._instance_counts: np.ndarray | None = None
         self._measurement_points: list[tuple[float, float, float]] = []
         layout = QVBoxLayout(self)
@@ -61,6 +64,9 @@ class CadPreviewDialog(QDialog):
         row = QHBoxLayout()
         self._choose = QPushButton(tr("cad_preview.choose"), self)
         self._choose.clicked.connect(self._choose_file)
+        self._quality = QComboBox(self)
+        for key, value in (("fast", 10.0), ("balanced", 2.0), ("detailed", 0.2), ("custom", None)):
+            self._quality.addItem(tr(f"cad_preview.quality.{key}"), value)
         self._deviation = QDoubleSpinBox(self)
         self._deviation.setRange(0.2, 20.)
         self._deviation.setDecimals(1)
@@ -76,13 +82,25 @@ class CadPreviewDialog(QDialog):
         self._reset = QPushButton(tr("cad_preview.reset"), self)
         self._camera_views = CameraViews(self, cad=True)
         row.addWidget(self._choose)
-        row.addWidget(QLabel(tr("cad_preview.deviation"), self))
-        row.addWidget(self._deviation)
-        row.addWidget(self._reload)
-        row.addWidget(self._cancel)
+        row.addStretch()
         row.addWidget(self._camera_views)
         row.addWidget(self._reset)
         layout.addLayout(row)
+        quality_row = QHBoxLayout()
+        quality_row.addWidget(QLabel(tr("cad_preview.quality_label"), self))
+        quality_row.addWidget(self._quality)
+        quality_row.addWidget(QLabel(tr("cad_preview.deviation"), self))
+        quality_row.addWidget(self._deviation)
+        quality_row.addWidget(self._reload)
+        quality_row.addWidget(self._cancel)
+        quality_row.addStretch()
+        layout.addLayout(quality_row)
+        self._quality_status = QLabel(self)
+        self._quality_status.setWordWrap(True)
+        layout.addWidget(self._quality_status)
+        self._quality.currentIndexChanged.connect(self._quality_preset_changed)
+        self._deviation.valueChanged.connect(self._quality_value_changed)
+        self._quality_value_changed()
         parts_row = QHBoxLayout()
         parts_row.addWidget(QLabel(tr("cad_preview.parts_label"), self))
         self._parts = QComboBox(self)
@@ -137,6 +155,25 @@ class CadPreviewDialog(QDialog):
         self._buttons.rejected.connect(self.reject)
         layout.addWidget(self._buttons)
 
+    def _quality_preset_changed(self) -> None:
+        value = self._quality.currentData()
+        if value is not None:
+            self._deviation.setValue(float(value))
+
+    def _quality_value_changed(self) -> None:
+        value = self._deviation.value()
+        index = self._quality.findData(value)
+        self._quality.blockSignals(True)
+        self._quality.setCurrentIndex(index if index >= 0 else self._quality.findData(None))
+        self._quality.blockSignals(False)
+        if self._loaded_deviation is None:
+            self._quality_status.setText(tr("cad_preview.quality_pending_open", value=f"{value:.1f}"))
+        elif self._loaded_deviation == value:
+            self._quality_status.setText(tr("cad_preview.quality_applied", value=f"{value:.1f}"))
+        else:
+            self._quality_status.setText(tr("cad_preview.quality_pending", current=f"{self._loaded_deviation:.1f}",
+                                            value=f"{value:.1f}"))
+
     def _choose_file(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, tr("cad_preview.choose"), "", tr("step_inventory.filter"))
         if path:
@@ -154,6 +191,9 @@ class CadPreviewDialog(QDialog):
         self._measure.setEnabled(False)
         self._clear_measurement()
         self._mesh = None
+        self._loaded_deviation = None
+        self._requested_deviation = self._deviation.value()
+        self._quality_value_changed()
         self._instance_counts = None
         self._parts.blockSignals(True)
         self._parts.clear()
@@ -168,9 +208,10 @@ class CadPreviewDialog(QDialog):
         self._choose.setEnabled(False)
         self._reload.setEnabled(False)
         self._deviation.setEnabled(False)
+        self._quality.setEnabled(False)
         self._buttons.setEnabled(False)
         self._cancel.setEnabled(True)
-        reader = _CadReader(path, self._deviation.value(), self)
+        reader = _CadReader(path, self._requested_deviation, self)
         self._reader = reader
         reader.result_ready.connect(self._show_mesh)
         reader.failed.connect(self._show_error)
@@ -179,6 +220,8 @@ class CadPreviewDialog(QDialog):
 
     def _show_mesh(self, mesh: CadMesh) -> None:
         self._mesh = mesh
+        self._loaded_deviation = self._requested_deviation if self._requested_deviation is not None else self._deviation.value()
+        self._quality_value_changed()
         self._measure.setEnabled(True)
         self._instance_counts = (np.bincount(mesh.triangle_instances, minlength=len(mesh.instance_groups))
                                  if mesh.triangle_instances is not None else None)
@@ -309,6 +352,8 @@ class CadPreviewDialog(QDialog):
         self._measure.setEnabled(False)
         self._clear_measurement()
         self._mesh = None
+        self._loaded_deviation = None
+        self._quality_value_changed()
         self._instance_counts = None
         self._parts.setEnabled(False)
         self._clear_instances()
@@ -326,11 +371,13 @@ class CadPreviewDialog(QDialog):
     def _finished(self) -> None:
         reader = self._reader
         self._reader = None
+        self._requested_deviation = None
         if reader is not None:
             reader.deleteLater()
         self._choose.setEnabled(True)
         self._reload.setEnabled(self._path is not None)
         self._deviation.setEnabled(True)
+        self._quality.setEnabled(True)
         self._buttons.setEnabled(True)
         self._cancel.setEnabled(False)
 

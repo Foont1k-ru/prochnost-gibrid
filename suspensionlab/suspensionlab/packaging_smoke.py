@@ -94,7 +94,10 @@ def run_cad_check() -> None:
         _require(writer.Write(str(path)) == IFSelect_ReturnStatus.IFSelect_RetDone,
                  "Не удалось записать тестовый STEP")
         path.rename(unicode_path)
-        mesh = CadJob().run(unicode_path, 2., timeout=90)
+        meshes = [CadJob().run(unicode_path, deviation, timeout=90) for deviation in (10., 2., 0.2)]
+        _require(all(item.face_count == 6 and len(item.triangles) >= 12 for item in meshes),
+                 "Режимы детализации STEP недоступны")
+        mesh = meshes[1]
         vertices = mesh.triangles.reshape(-1, 3)
         _require(mesh.face_count == 6 and len(mesh.triangles) >= 12 and
                  np.allclose(vertices.min(axis=0), (0., 0., 0.), atol=1e-6, rtol=0) and
@@ -133,6 +136,7 @@ def run_packaging_check() -> None:
     from .core.cad_mesh import CadMesh
     from .core.cad_raster import pick_triangle
     from .core.camera_views import camera_view_angles
+    from .ui.cad_preview_dialog import CadPreviewDialog
     from .ui.canvas.cad_preview import CadPreview
     from .ui.widgets.camera_views import CameraViews
 
@@ -159,6 +163,12 @@ def run_packaging_check() -> None:
     preview.reset_camera()
     _require((preview.pan_x, preview.pan_y) == (0., 0.), "Сброс камеры CAD-просмотра недоступен")
     preview.close()
+    quality_dialog = CadPreviewDialog()
+    quality_dialog._show_mesh(CadMesh(np.array([[[0, 0, 0], [10, 0, 0], [0, 0, 10]]]), 1))
+    quality_dialog._quality.setCurrentIndex(quality_dialog._quality.findData(0.2))
+    _require(quality_dialog._deviation.value() == 0.2 and "Перестроить" in quality_dialog._quality_status.text(),
+             "Режимы детализации не отражают ожидающее перестроение")
+    quality_dialog.close()
     sample = np.array([[[-2., 0., -2.], [2., 0., -2.], [0., 0., 2.]]])
     _require(pick_triangle(sample, np.zeros(3), 3., 0., 0., 1., 100, 100, 50, 50) == 0,
              "Выбор детали CAD-просмотра недоступен")

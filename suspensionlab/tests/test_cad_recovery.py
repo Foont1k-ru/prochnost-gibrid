@@ -92,3 +92,22 @@ def test_worker_counts_and_draws_recovered_face(tmp_path, monkeypatch):
     assert instance_groups[int(instances[0])] == groups[0]
     # The artificial cap is at the origin, while the STEP assembly is elsewhere.
     assert triangles.min(axis=(0, 1)) == pytest.approx((-2., 0., -2.), abs=1e-5)
+
+
+def test_worker_quality_settings_for_synthetic_curved_step(tmp_path):
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeSphere
+    from OCP.IFSelect import IFSelect_ReturnStatus
+    from OCP.STEPControl import STEPControl_StepModelType, STEPControl_Writer
+
+    from suspensionlab.core.cad_transport import CadJob
+
+    path = tmp_path / "sphere.step"
+    writer = STEPControl_Writer()
+    assert writer.Transfer(BRepPrimAPI_MakeSphere(100.).Shape(), STEPControl_StepModelType.STEPControl_AsIs) == IFSelect_ReturnStatus.IFSelect_RetDone
+    assert writer.Write(str(path)) == IFSelect_ReturnStatus.IFSelect_RetDone
+    coarse = CadJob().run(path, 10.)
+    medium = CadJob().run(path, 2.)
+    fine = CadJob().run(path, 0.2)
+    assert coarse.face_count == medium.face_count == fine.face_count == 1
+    assert 0 < len(coarse.triangles) <= len(medium.triangles) < len(fine.triangles)
+    assert fine.skipped_faces == medium.skipped_faces == coarse.skipped_faces == 0
