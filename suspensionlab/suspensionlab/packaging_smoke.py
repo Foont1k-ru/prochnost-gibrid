@@ -21,6 +21,7 @@ from .ui.damper_conversion_dialog import DamperConversionDialog
 from .ui.equilibrium_dialog import EquilibriumDialog
 from .ui.equilibrium_path_dialog import EquilibriumPathDialog
 from .ui.main_window import MainWindow
+from .ui.spring_rate_dialog import SpringRateDialog
 from .ui.table_export import make_plot_report
 
 
@@ -298,8 +299,20 @@ def run_packaging_check() -> None:
                  "Устаревшие точки пружины не очищены")
         _require(spring_candidate.report is None and not spring_candidate._export.isEnabled(),
                  "Устаревший отчёт пружины не очищен")
-        spring_candidate._force_enable.setChecked(True)
-        spring_candidate._force_rate.setText("12.5")
+        def enter_spring_rate() -> None:
+            helper = app.activeModalWidget()
+            _require(isinstance(helper, SpringRateDialog), "Оценка жёсткости не открыта")
+            assert isinstance(helper, SpringRateDialog)
+            for key, value in (("length1", "300"), ("force1", "625"), ("length2", "280"), ("force2", "875")):
+                helper._fields[key].setText(value)
+            _require(helper._apply.isEnabled() and helper.estimate is not None
+                     and helper.estimate.rate_n_mm == 12.5, "Оценка по двум точкам недоступна")
+            helper._apply.click()
+
+        QTimer.singleShot(0, enter_spring_rate)
+        spring_candidate._estimate_rate.click()
+        _require(spring_candidate._force_enable.isChecked() and spring_candidate._force_rate.text() == "12.5",
+                 "Жёсткость по двум точкам не перенесена")
         spring_candidate._compare.click()
         _require(spring_candidate.comparison is not None and spring_candidate.report is not None
                  and spring_candidate.comparison.points[0].force_n is not None

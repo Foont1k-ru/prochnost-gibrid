@@ -28,6 +28,7 @@ from ..core.spring_candidate import (
 from ..export.csv_report import CSVReport
 from ..i18n import tr
 from .spring_candidate_points_dialog import SpringCandidatePointsDialog
+from .spring_rate_dialog import MAX_CANDIDATE_RATE, SpringRateDialog
 from .table_export import save_table_dialog
 
 
@@ -68,7 +69,13 @@ class SpringCandidateDialog(QDialog):
         self._force_enable.toggled.connect(self._force_rate.setEnabled)
         self._force_enable.toggled.connect(self._clear)
         self._force_rate.textChanged.connect(self._clear)
-        form.addRow(self._force_enable, self._force_rate)
+        self._estimate_rate = QPushButton(tr("spring_rate.open"), self)
+        self._estimate_rate.setToolTip(tr("spring_rate.title"))
+        self._estimate_rate.clicked.connect(self._open_rate_estimate)
+        rate_row = QHBoxLayout()
+        rate_row.addWidget(self._force_rate, 1)
+        rate_row.addWidget(self._estimate_rate)
+        form.addRow(self._force_enable, rate_row)
         self._compare = QPushButton(tr("spring_candidate.compare"), self)
         self._compare.clicked.connect(self._calculate)
         self._result = QTextEdit(self)
@@ -133,7 +140,7 @@ class SpringCandidateDialog(QDialog):
             rate = None
             if self._force_enable.isChecked():
                 rate = float(self._force_rate.text().strip().replace(",", "."))
-                if not isfinite(rate) or not 0 < rate <= 10000:
+                if not isfinite(rate) or not 0 < rate <= MAX_CANDIDATE_RATE:
                     raise ValueError
             candidate = SpringCandidate(parse("free"), parse("installed"), parse("coil"), parse("coil_reserve"),
                                         parse("compression_reserve"), linear_rate_n_mm=rate)
@@ -180,6 +187,14 @@ class SpringCandidateDialog(QDialog):
             except (ValueError, UnicodeError) as error:
                 lines.append(tr("spring_candidate.report.unavailable", reason=str(error)))
         self._result.setPlainText("\n\n".join(lines))
+
+    def _open_rate_estimate(self) -> None:
+        free_length_text = self._fields["free"].text()
+        dialog = SpringRateDialog(free_length_text, self)
+        if (dialog.exec() == QDialog.DialogCode.Accepted and dialog.estimate is not None
+                and self._fields["free"].text() == free_length_text):
+            self._force_enable.setChecked(True)
+            self._force_rate.setText(repr(dialog.estimate.rate_n_mm))
 
     def _select_force_extremum(self, row: int | None) -> None:
         if row is not None:
