@@ -21,6 +21,7 @@ from ..config import autosave_path
 from ..model.commands import (
     ChangeLinkLengthCommand,
     DictFlagCommand,
+    MultiCommand,
     PointMoveCommand,
     SetAxleTypeCommand,
     UndoStack,
@@ -218,6 +219,25 @@ class AppController(QObject):
             return
         self.undo.push(PointMoveCommand(point, (point.x, point.y, point.z), xyz))
         self._touch()
+
+    def move_points(self, edits: dict[tuple[str, str], tuple[float, ...]]) -> None:
+        """Применяет пакет координат одним шагом, предварительно проверив все точки."""
+        import math
+
+        commands = []
+        for (role, code), xyz in edits.items():
+            point = self.project.axle(role).hardpoints[code]
+            if len(xyz) != 3 or any(not math.isfinite(v) or abs(v) > 1_000_000_000 for v in xyz):
+                raise ValueError("Invalid coordinates")
+            old = point.as_tuple()
+            if any(old[i] != xyz[i] and (point.locked or self.is_locked(f"{role}.point.{code}.{axis}"))
+                   for i, axis in enumerate("xyz")):
+                raise ValueError("Locked coordinate")
+            if old != xyz:
+                commands.append(PointMoveCommand(point, old, (xyz[0], xyz[1], xyz[2])))
+        if commands:
+            self.undo.push(MultiCommand(commands, "undo.points_table"))
+            self._touch()
 
     def set_link_length(self, axle: Axle, code: str, length: float) -> None:
         """Меняет длину рычага числом, смещая выбранный конец (Р-3)."""

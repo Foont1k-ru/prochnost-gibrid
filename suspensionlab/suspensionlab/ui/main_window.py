@@ -40,6 +40,7 @@ from .docks.diagnostics import DiagnosticsPanel
 from .docks.inspector import Inspector
 from .docks.project_tree import ProjectTree
 from .equilibrium_dialog import EquilibriumDialog
+from .point_table_dialog import PointTableDialog
 from .step_inventory_dialog import StepInventoryDialog
 from .theme import THEMES, apply_theme
 from .widgets.empty_state import EmptyState
@@ -204,6 +205,9 @@ class MainWindow(QMainWindow):
         self.action_redo.setShortcut(QKeySequence(QKeySequence.StandardKey.Redo))
         self.action_redo.triggered.connect(self.controller.redo_last)
 
+        self.action_point_table = QAction(tr("point_table.menu"), self)
+        self.action_point_table.triggered.connect(self._open_point_table)
+
         self.action_snapshot = QAction(tr("menu.edit.snapshot"), self)
         self.action_snapshot.triggered.connect(self._save_snapshot)
 
@@ -281,6 +285,8 @@ class MainWindow(QMainWindow):
         menu_edit = bar.addMenu(tr("menu.edit"))
         menu_edit.addAction(self.action_undo)
         menu_edit.addAction(self.action_redo)
+        menu_edit.addSeparator()
+        menu_edit.addAction(self.action_point_table)
         menu_edit.addSeparator()
         menu_edit.addAction(self.action_snapshot)
         menu_edit.addAction(self.action_restore_snapshot)
@@ -531,6 +537,13 @@ class MainWindow(QMainWindow):
                 length = units.display(axle.link_length(selection.code), UnitKind.LENGTH)
                 return f"{tr(link_spec.name_key)}: {length} {tr('unit.length.' + units.length)}"
         return ""
+
+    def _open_point_table(self) -> None:
+        dialog = PointTableDialog(self.controller, self)
+        try:
+            dialog.exec()
+        finally:
+            dialog.deleteLater()
 
     def _open_analysis(self) -> None:
         """Показывает экспериментальный расчёт выбранной стороны оси."""

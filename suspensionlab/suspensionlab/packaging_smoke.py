@@ -21,6 +21,7 @@ from .ui.damper_conversion_dialog import DamperConversionDialog
 from .ui.equilibrium_dialog import EquilibriumDialog
 from .ui.equilibrium_path_dialog import EquilibriumPathDialog
 from .ui.main_window import MainWindow
+from .ui.point_table_dialog import PointTableDialog
 from .ui.spring_rate_dialog import SpringRateDialog
 from .ui.table_export import make_plot_report
 
@@ -195,6 +196,25 @@ def run_packaging_check() -> None:
         window.show()
         window.controller.new_project("ring")
         window._show_workspace()
+        app.processEvents()
+        point_table = PointTableDialog(window.controller, window)
+        _require(bool(window.action_point_table.text()) and bool(point_table._rows), "Таблица исходных точек недоступна")
+        first_role, first_code = point_table._rows[0]
+        first_point = window.controller.project.axle(first_role).hardpoints[first_code]
+        old_x = first_point.x
+        cell = point_table._table.item(0, 4)
+        _require(cell is not None, "Координата точки недоступна")
+        assert cell is not None
+        cell.setText(str(old_x + 1))
+        point_table._apply_changes()
+        _require(first_point.x == old_x + 1, "Правка точки не применена")
+        point_table.export_csv(temporary / "model-points.csv")
+        _require((temporary / "model-points.csv").read_bytes().startswith(b"\xef\xbb\xbf"),
+                 "CSV исходных точек не записан")
+        point_table.close()
+        point_table.deleteLater()
+        window.controller.undo_last()
+        _require(first_point.x == old_x, "Отмена правки точки недоступна")
         app.processEvents()
         dialog = AnalysisDialog(window.controller, window)
         dialog.show()
