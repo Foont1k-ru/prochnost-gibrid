@@ -4326,6 +4326,9 @@ def test_spring_candidate_points_hide_stale_snapshot(window, qtbot):
     candidate._compare.click()
     candidate._details.click()
     assert candidate._details_dialog is not None
+    detail = candidate._details_dialog
+    detail._force_filter.setCurrentIndex(detail._force_filter.findData("disabled"))
+    assert "2 из 2" in detail._count.text()
     candidate._fields["free"].setText("340")
     assert candidate._details_dialog is None and not candidate._details.isEnabled()
     candidate._compare.click()

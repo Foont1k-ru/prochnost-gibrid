@@ -292,7 +292,11 @@ def run_packaging_check() -> None:
         app.processEvents()
         _require(force_detail._force_plot._geometry() is not None and not force_detail._force_plot.grab().isNull(),
                  "График силы пружины недоступен")
+        force_detail._force_filter.setCurrentIndex(force_detail._force_filter.findData("unavailable"))
+        _require(all(force_detail._table.isRowHidden(row) for row in range(2)),
+                 "Фильтр отсутствующей силы работает неправильно")
         force_detail._select_plot_row(0)
+        _require(force_detail._force_filter.currentData() == "all", "Скрытая точка не раскрыта фильтром силы")
         _require(force_detail._table.currentRow() == 0 and force_detail._force_plot.row == 0,
                  "Выбор на графике силы не синхронизирован")
         spring_candidate.reject()

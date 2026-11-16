@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..core.spring_candidate import SpringComparison
+from ..core.spring_candidate import SpringCandidatePoint, SpringComparison
 from ..export.csv_report import CSVReport
 from ..i18n import tr
 from .canvas.spring_candidate_plot import SpringCandidatePlot
@@ -42,11 +42,19 @@ class SpringCandidatePointsDialog(QDialog):
         self._filter = QComboBox(self)
         for key in ("all", "invalid", "coil_bind", "uncompressed", "reserve_short", "missing", "clear"):
             self._filter.addItem(tr(f"spring_candidate.details.filter.{key}"), key)
+        self._force_filter = QComboBox(self)
+        for key in ("all", "calculated", "positive", "zero", "unavailable", "disabled", "missing", "invalid",
+                    "coil_bind", "overflow"):
+            self._force_filter.addItem(tr(f"spring_candidate.details.force_filter.{key}"), key)
         self._count = QLabel(self)
         controls = QHBoxLayout()
         controls.addWidget(QLabel(tr("spring_candidate.details.filter_label"), self))
         controls.addWidget(self._filter)
-        controls.addWidget(self._count, 1)
+        controls.addStretch()
+        force_controls = QHBoxLayout()
+        force_controls.addWidget(QLabel(tr("spring_candidate.details.force_filter_label"), self))
+        force_controls.addWidget(self._force_filter)
+        force_controls.addWidget(self._count, 1)
         self._table = QTableWidget(len(report.rows), len(report.columns), self)
         self._table.setHorizontalHeaderLabels(report.columns)
         self._table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
@@ -68,6 +76,7 @@ class SpringCandidatePointsDialog(QDialog):
         self._table.cellDoubleClicked.connect(self._choose_row)
         self._table.currentCellChanged.connect(self._update_choice)
         self._filter.currentIndexChanged.connect(self._apply_filter)
+        self._force_filter.currentIndexChanged.connect(self._apply_filter)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close, self)
         buttons.button(QDialogButtonBox.StandardButton.Close).setText(tr("analysis.close"))
         buttons.rejected.connect(self.reject)
@@ -80,6 +89,7 @@ class SpringCandidatePointsDialog(QDialog):
         table_layout = QVBoxLayout(table_page)
         table_layout.setContentsMargins(0, 0, 0, 0)
         table_layout.addLayout(controls)
+        table_layout.addLayout(force_controls)
         table_layout.addWidget(self._table, 1)
         self._plot = SpringCandidatePlot(comparison, self)
         self._plot.rowSelected.connect(self._select_plot_row)
@@ -120,13 +130,26 @@ class SpringCandidatePointsDialog(QDialog):
         layout.addLayout(bottom)
         self._apply_filter()
 
+    @staticmethod
+    def _matches_force(point: SpringCandidatePoint, key: str) -> bool:
+        if key == "all":
+            return True
+        if key == "unavailable":
+            return point.force_status != "calculated"
+        if key == "zero":
+            return point.force_status == "calculated" and point.force_n == 0
+        if key == "positive":
+            return point.force_status == "calculated" and point.force_n is not None and point.force_n > 0
+        return point.force_status == key
+
     def _apply_filter(self, *_args: object) -> None:
         key = self._filter.currentData()
+        force_key = self._force_filter.currentData()
         visible = 0
         self._table.clearSelection()
         self._table.setCurrentCell(-1, -1)
         for row, point in enumerate(self.comparison.points):
-            show = key == "all" or point.status == key
+            show = (key == "all" or point.status == key) and self._matches_force(point, force_key)
             self._table.setRowHidden(row, not show)
             visible += int(show)
         self._choose.setEnabled(False)
@@ -152,8 +175,11 @@ class SpringCandidatePointsDialog(QDialog):
 
     def _select_plot_row(self, row: int) -> None:
         if 0 <= row < self._table.rowCount():
-            if self._table.isRowHidden(row):
+            point = self.comparison.points[row]
+            if self._filter.currentData() not in ("all", point.status):
                 self._filter.setCurrentIndex(self._filter.findData("all"))
+            if not self._matches_force(point, self._force_filter.currentData()):
+                self._force_filter.setCurrentIndex(self._force_filter.findData("all"))
             self._table.setCurrentCell(row, 0)
 
     def _choose_row(self, *_args: object) -> None:

@@ -69,6 +69,7 @@ def test_force_plot_selection_missing_zero_and_synchronization(qtbot):
     geometry = plot._geometry()
     assert geometry is not None and not plot.grab().isNull()
     dialog._filter.setCurrentIndex(dialog._filter.findData("clear"))
+    dialog._force_filter.setCurrentIndex(dialog._force_filter.findData("positive"))
     for row, text in [(0, "Смыкание"), (1, "Нет исходной длины"), (2, "3900.000"), (4, "0.000")]:
         pos = plot._screen(comparison.points[row].travel_mm, (geometry[3] + geometry[4]) / 2, geometry).toPoint()
         qtbot.mouseClick(plot, Qt.MouseButton.LeftButton, pos=pos)
@@ -76,6 +77,7 @@ def test_force_plot_selection_missing_zero_and_synchronization(qtbot):
         assert plot.row == dialog._plot.row == row
         assert text in dialog._force_selection.text()
     assert dialog._filter.currentData() == "all"
+    assert dialog._force_filter.currentData() == "all"
     chosen = []
     dialog.rowSelected.connect(chosen.append)
     dialog._choose.click()
