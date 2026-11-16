@@ -41,6 +41,7 @@ from .docks.inspector import Inspector
 from .docks.project_tree import ProjectTree
 from .equilibrium_dialog import EquilibriumDialog
 from .point_table_dialog import PointTableDialog
+from .snapshot_compare_dialog import SnapshotCompareDialog
 from .step_inventory_dialog import StepInventoryDialog
 from .theme import THEMES, apply_theme
 from .widgets.empty_state import EmptyState
@@ -211,6 +212,9 @@ class MainWindow(QMainWindow):
         self.action_snapshot = QAction(tr("menu.edit.snapshot"), self)
         self.action_snapshot.triggered.connect(self._save_snapshot)
 
+        self.action_compare_snapshot = QAction(tr("snapshot_compare.menu"), self)
+        self.action_compare_snapshot.triggered.connect(self._compare_snapshot)
+
         self.action_restore_snapshot = QAction(tr("snapshot_restore.menu"), self)
         self.action_restore_snapshot.triggered.connect(self._restore_snapshot)
 
@@ -293,6 +297,7 @@ class MainWindow(QMainWindow):
         menu_edit.addSeparator()
         menu_edit.addAction(self.action_snapshot)
         menu_edit.addAction(self.action_restore_snapshot)
+        menu_edit.addAction(self.action_compare_snapshot)
 
         menu_view = bar.addMenu(tr("menu.view"))
         menu_view.addAction(self.view_actions["front"])
@@ -660,6 +665,16 @@ class MainWindow(QMainWindow):
         dialog = SnapshotDialog(self.controller.project.meta.name, self)
         if dialog.exec() and dialog.name():
             self.controller.add_snapshot(dialog.name())
+
+    def _compare_snapshot(self) -> None:
+        """Сравнивает снимок с текущей геометрией без восстановления."""
+        dialog = SnapshotCompareDialog(self.controller, self)
+        try:
+            if dialog.exec() and dialog.selection is not None:
+                self._show_workspace()
+                self.controller.select(dialog.selection)
+        finally:
+            dialog.deleteLater()
 
     def _restore_snapshot(self) -> None:
         """Восстанавливает выбранный снимок без сохранения в файл."""

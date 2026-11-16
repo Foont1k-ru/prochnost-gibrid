@@ -24,6 +24,7 @@ from .ui.equilibrium_path_dialog import EquilibriumPathDialog
 from .ui.main_window import MainWindow
 from .ui.point_import_dialog import PointImportDialog
 from .ui.point_table_dialog import PointTableDialog
+from .ui.snapshot_compare_dialog import SnapshotCompareDialog
 from .ui.spring_rate_dialog import SpringRateDialog
 from .ui.table_export import make_plot_report
 
@@ -243,6 +244,14 @@ def run_packaging_check() -> None:
         window.controller.undo_last()
         _require(first_point.x == old_x, "Отмена правки точки недоступна")
         app.processEvents()
+        window.controller.project.add_snapshot("Проверка сравнения")
+        compare = SnapshotCompareDialog(window.controller, window)
+        _require(bool(window.action_compare_snapshot.text()) and compare._result is not None,
+                 "Сравнение снимка недоступно")
+        _require(bool(compare._report().rows), "Отчёт сравнения снимка пуст")
+        compare.close()
+        compare.deleteLater()
+        window.controller.project.snapshots.pop()
         dialog = AnalysisDialog(window.controller, window)
         dialog.show()
         dialog._from.setValue(0)
