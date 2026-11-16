@@ -33,10 +33,12 @@ from .table_export import save_table_dialog
 
 class SpringCandidateDialog(QDialog):
     rowSelected = Signal(int)
+    snapshotInvalidated = Signal()
 
     def __init__(self, points: tuple[tuple[float, float | None], ...], reference_installed_mm: float,
                  context: str, parent: QWidget | None = None, *,
-                 report_factory: Callable[[SpringComparison], CSVReport] | None = None) -> None:
+                 report_factory: Callable[[SpringComparison], CSVReport] | None = None,
+                 balance_factory: Callable[[SpringCandidate], None] | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle(tr("spring_candidate.title"))
         self.resize(680, 620)
@@ -44,6 +46,7 @@ class SpringCandidateDialog(QDialog):
         self._reference_installed = reference_installed_mm
         self.comparison: SpringComparison | None = None
         self._report_factory = report_factory
+        self._balance_factory = balance_factory
         self.report: CSVReport | None = None
         self._details_dialog: SpringCandidatePointsDialog | None = None
         notice = QLabel(tr("spring_candidate.notice"), self)
@@ -76,6 +79,9 @@ class SpringCandidateDialog(QDialog):
         self._force_max_button = QPushButton(tr("spring_candidate.force.go_max"), self)
         self._force_min_button.clicked.connect(lambda: self._select_force_extremum(self._force_min_row))
         self._force_max_button.clicked.connect(lambda: self._select_force_extremum(self._force_max_row))
+        self._balance = QPushButton(tr("spring_candidate.balance.button"), self)
+        self._balance.setToolTip(tr("spring_candidate.balance.tip"))
+        self._balance.clicked.connect(self._open_balance)
         self._details = QPushButton(tr("spring_candidate.details.button"), self)
         self._details.clicked.connect(self._open_details)
         self._export = QPushButton(tr("spring_candidate.report.button"), self)
@@ -93,6 +99,7 @@ class SpringCandidateDialog(QDialog):
         force_actions.addWidget(self._force_min_button)
         force_actions.addWidget(self._force_max_button)
         layout.addLayout(force_actions)
+        layout.addWidget(self._balance)
         actions = QHBoxLayout()
         actions.addWidget(self._details)
         actions.addWidget(self._export)
@@ -102,10 +109,13 @@ class SpringCandidateDialog(QDialog):
         self._clear()
 
     def _clear(self, *_args: object) -> None:
+        if self.comparison is not None:
+            self.snapshotInvalidated.emit()
         self._close_details()
         self.comparison = None
         self.report = None
         self._force_min_row = self._force_max_row = None
+        self._balance.setEnabled(False)
         self._force_min_button.setEnabled(False)
         self._force_max_button.setEnabled(False)
         self._details.setEnabled(False)
@@ -132,6 +142,7 @@ class SpringCandidateDialog(QDialog):
             self._result.setPlainText(tr("spring_candidate.invalid"))
             return
         comparison = self.comparison
+        self._balance.setEnabled(self._balance_factory is not None and comparison.candidate.linear_rate_n_mm is not None)
         counts = {key: sum(point.status == key for point in comparison.points) for key in
                   ("missing", "invalid", "coil_bind", "uncompressed", "reserve_short", "clear")}
         lines = [tr("spring_candidate.counts", total=len(comparison.points), **counts)]
@@ -173,6 +184,11 @@ class SpringCandidateDialog(QDialog):
     def _select_force_extremum(self, row: int | None) -> None:
         if row is not None:
             self._select_row(row)
+
+    def _open_balance(self) -> None:
+        if (self.comparison is not None and self.comparison.candidate.linear_rate_n_mm is not None
+                and self._balance_factory is not None):
+            self._balance_factory(self.comparison.candidate)
 
     def _close_details(self) -> None:
         if self._details_dialog is not None:

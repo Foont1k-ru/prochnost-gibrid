@@ -4418,3 +4418,166 @@ def test_candidate_force_extremum_goes_to_original_analysis_row(window, qtbot):
     assert dialog._table.currentRow() == row and dialog._view_tabs.currentIndex() == 0
     assert dialog._spring_candidate_dialog is None
     assert window.controller.project.to_dict() == original
+
+
+def test_spring_candidate_balance_bridge_and_snapshot_export(window, qtbot, monkeypatch):
+    import json
+
+    from PySide6.QtCore import QTimer
+
+    from suspensionlab.core.equilibrium import SpringEquilibrium
+    from suspensionlab.core.spring_characteristics import SpringCharacteristic
+    from suspensionlab.i18n import tr
+    from suspensionlab.ui import equilibrium_dialog
+    from suspensionlab.ui.analysis_dialog import AnalysisDialog
+    from suspensionlab.ui.equilibrium_dialog import EquilibriumDialog
+    from suspensionlab.ui.equilibrium_path_dialog import EquilibriumPathDialog
+
+    window.controller.new_project("ring")
+    original = window.controller.project.to_dict()
+    dialog = AnalysisDialog(window.controller, window)
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog._spring.setChecked(True)
+    dialog._spring_length.setValue(320)
+    dialog._side.setCurrentIndex(dialog._side.findData("right"))
+    dialog._from.setValue(0)
+    dialog._to.setValue(2)
+    dialog._run.click()
+    dialog._spring_compare_button.click()
+    candidate_dialog = dialog._spring_candidate_dialog
+    assert candidate_dialog is not None and not candidate_dialog._balance.isEnabled()
+    for key, value in (("free", "350"), ("installed", "230.000000000001"), ("coil", "150.000000000001"),
+                       ("coil_reserve", "10"), ("compression_reserve", "5")):
+        candidate_dialog._fields[key].setText(value)
+    candidate_dialog._compare.click()
+    assert candidate_dialog.comparison is not None and not candidate_dialog._balance.isEnabled()
+    candidate_dialog._force_enable.setChecked(True)
+    candidate_dialog._force_rate.setText("12.5")
+    candidate_dialog._compare.click()
+    assert candidate_dialog.comparison is not None and candidate_dialog._balance.isEnabled()
+    snapshot = candidate_dialog.comparison.candidate
+    characteristic = SpringCharacteristic(snapshot.free_mm, snapshot.linear_rate_n_mm,
+                                          coil_bind_length_mm=snapshot.coil_bind_mm)
+    target = SpringEquilibrium(window.controller.project.front, snapshot.installed_mm, side="right",
+                               coil_bind_length_mm=snapshot.coil_bind_mm,
+                               spring_characteristic=characteristic).evaluate(12, 1).wheel_support_n
+    seen = []
+    captured = []
+    monkeypatch.setattr(equilibrium_dialog, "save_table_dialog", lambda _parent, report: captured.append(report))
+
+    def check_balance():
+        balance = candidate_dialog.findChild(EquilibriumDialog)
+        assert balance is not None
+        try:
+            assert balance._candidate == snapshot and not balance._role.isEnabled() and not balance._side.isEnabled()
+            assert not balance._length.isVisible() and not balance._bind.isVisible()
+            assert balance._candidate_length.isReadOnly() and balance._candidate_bind.isReadOnly()
+            assert balance._role.currentData() == "front" and balance._side.currentData() == "right"
+            assert balance._candidate_length.text() == repr(snapshot.installed_mm)
+            assert balance._effective_length() == snapshot.installed_mm
+            assert balance._effective_bind() == snapshot.coil_bind_mm
+            balance._load.setValue(target)
+            balance._run.click()
+            assert balance._result is not None and balance._result.estimate.travel_mm == pytest.approx(12, abs=0.1)
+            metadata = dict(balance._report_parameters())
+            assert "кандидат" in metadata[tr("equilibrium_ui.spring_source")]
+            data = json.loads(metadata[tr("equilibrium_ui.candidate_metadata")])
+            assert data["installed_mm"] == snapshot.installed_mm and data["coil_bind_mm"] == snapshot.coil_bind_mm
+            assert data["linear_rate_n_mm"] == 12.5 and data["coil_reserve_mm_not_checked"] == 10
+            assert "НЕ проверяются" in metadata[tr("equilibrium_ui.model_metadata")]
+            balance._export_button.click()
+            assert dict(captured[0].metadata)[tr("equilibrium_ui.spring_source")] == metadata[tr("equilibrium_ui.spring_source")]
+            path = balance._path
+            assert path is not None
+            view = EquilibriumPathDialog(path, balance)
+            qtbot.addWidget(view)
+            path_report = balance._path_report(path, view._table)
+            assert dict(path_report.metadata)[tr("equilibrium_ui.candidate_metadata")] == metadata[tr("equilibrium_ui.candidate_metadata")]
+            seen.append(True)
+        finally:
+            balance.reject()
+
+    QTimer.singleShot(0, check_balance)
+    candidate_dialog._balance.click()
+    assert seen == [True] and window.controller.project.to_dict() == original
+    candidate_dialog._force_rate.setText("20")
+    assert candidate_dialog.comparison is None and not candidate_dialog._balance.isEnabled()
+
+
+def test_candidate_balance_closes_when_source_invalidated(window, qtbot):
+    from PySide6.QtCore import QTimer
+
+    from suspensionlab.ui.analysis_dialog import AnalysisDialog
+    from suspensionlab.ui.equilibrium_dialog import EquilibriumDialog
+
+    window.controller.new_project("ring")
+    dialog = AnalysisDialog(window.controller, window)
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog._spring.setChecked(True)
+    dialog._spring_length.setValue(320)
+    dialog._from.setValue(0)
+    dialog._to.setValue(2)
+    dialog._run.click()
+    dialog._spring_compare_button.click()
+    candidate_dialog = dialog._spring_candidate_dialog
+    assert candidate_dialog is not None
+    for key, value in (("free", "350"), ("installed", "230"), ("coil", "150"),
+                       ("coil_reserve", "10"), ("compression_reserve", "5")):
+        candidate_dialog._fields[key].setText(value)
+    candidate_dialog._force_enable.setChecked(True)
+    candidate_dialog._force_rate.setText("12.5")
+    candidate_dialog._compare.click()
+    assert candidate_dialog._balance.isEnabled()
+    seen = []
+
+    def invalidate():
+        balance = candidate_dialog.findChild(EquilibriumDialog)
+        assert balance is not None
+        seen.append(balance)
+        window.controller.set_value(window.controller.project.vehicle, "mass_kg",
+                                    window.controller.project.vehicle.mass_kg + 1)
+
+    QTimer.singleShot(0, invalidate)
+    candidate_dialog._balance.click()
+    assert len(seen) == 1 and not seen[0].isVisible()
+    assert dialog._spring_candidate_dialog is None
+
+
+def test_candidate_balance_closes_on_candidate_field_edit(window, qtbot):
+    from PySide6.QtCore import QTimer
+
+    from suspensionlab.ui.analysis_dialog import AnalysisDialog
+    from suspensionlab.ui.equilibrium_dialog import EquilibriumDialog
+
+    window.controller.new_project("ring")
+    dialog = AnalysisDialog(window.controller, window)
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog._spring.setChecked(True)
+    dialog._spring_length.setValue(320)
+    dialog._from.setValue(0)
+    dialog._to.setValue(2)
+    dialog._run.click()
+    dialog._spring_compare_button.click()
+    candidate = dialog._spring_candidate_dialog
+    assert candidate is not None
+    for key, value in (("free", "350"), ("installed", "230"), ("coil", "150"),
+                       ("coil_reserve", "10"), ("compression_reserve", "5")):
+        candidate._fields[key].setText(value)
+    candidate._force_enable.setChecked(True)
+    candidate._force_rate.setText("12.5")
+    candidate._compare.click()
+    assert candidate._balance.isEnabled()
+    seen = []
+
+    def edit():
+        balance = candidate.findChild(EquilibriumDialog)
+        assert balance is not None
+        seen.append(balance)
+        candidate._fields["free"].setText("360")
+
+    QTimer.singleShot(0, edit)
+    candidate._balance.click()
+    assert seen and not seen[0].isVisible() and candidate.comparison is None and not candidate._balance.isEnabled()

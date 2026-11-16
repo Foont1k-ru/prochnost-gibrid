@@ -103,7 +103,9 @@ class SpringEquilibrium:
     """Пружина с нижней опорой на рычаге, заданная длина при ходе 0.
 
     Расстояние опор определяет только изменение длины пружины. Для правой
-    стороны исходные точки модели зеркалируются автоматически.
+    стороны исходные точки модели зеркалируются автоматически. Необязательная
+    характеристика заменяет параметры проекта только в этом экземпляре; её
+    длина смыкания должна совпадать с отдельно заданным пределом.
     """
 
     def __init__(
@@ -113,6 +115,7 @@ class SpringEquilibrium:
         *,
         side: Literal["left", "right"] = "left",
         coil_bind_length_mm: float | None = None,
+        spring_characteristic: SpringCharacteristic | None = None,
         bump_stop: BumpStopCharacteristic | None = None,
         damper_mount: Literal["lower_arm"] | None = None,
         damper_limits: StrokeLimits | None = None,
@@ -129,7 +132,9 @@ class SpringEquilibrium:
         self.model = DoubleWishbone(axle, side)
         self.damper = LowerArmDamper(self.model, axle) if damper_mount is not None else None
         self.damper_limits = damper_limits
-        self.characteristic = SpringCharacteristic(
+        if spring_characteristic is not None and spring_characteristic.coil_bind_length_mm != coil_bind_length_mm:
+            raise ValueError("Характеристика и заданная длина смыкания не совпадают")
+        self.characteristic = spring_characteristic or SpringCharacteristic(
             axle.spring.free_len_mm, axle.spring.rate_N_mm, tuple(axle.spring.progressive), coil_bind_length_mm,
         )
         try:

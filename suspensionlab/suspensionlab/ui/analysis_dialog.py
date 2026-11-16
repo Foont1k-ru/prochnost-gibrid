@@ -40,7 +40,7 @@ from ..core.double_wishbone import DoubleWishbone
 from ..core.pose_view import PoseView, pose_view
 from ..core.sample_summary import corner_summary
 from ..core.scene3d import POINT_CODES, Scene3D, pose_scene
-from ..core.spring_candidate import SpringComparison
+from ..core.spring_candidate import SpringCandidate, SpringComparison
 from ..core.spring_range import SpringRange, summarize_spring_range
 from ..core.stroke import StrokeLimits
 from ..core.sweep import travel_grid
@@ -60,6 +60,7 @@ from .controller import AppController
 from .damper_candidate_dialog import DamperCandidateDialog
 from .damper_conversion_dialog import MAX_DAMPING_COEFFICIENT, DamperConversionDialog
 from .damper_range_text import candidate_text, damper_range_text
+from .equilibrium_dialog import EquilibriumDialog
 from .spring_candidate_dialog import SpringCandidateDialog
 from .spring_range_text import spring_range_text
 from .table_export import make_plot_report, make_report, make_table_report, save_table_dialog
@@ -915,12 +916,33 @@ class AnalysisDialog(QDialog):
                                [*parameters, *inputs, (tr("spring_candidate.report.scope_label"),
                                                        tr("spring_candidate.report.scope"))],
                                columns, rows, precision_text=tr("spring_candidate.report.precision"))
-        dialog = SpringCandidateDialog(source, self._spring_length.value(), context, self, report_factory=report_factory)
+        dialog = SpringCandidateDialog(source, self._spring_length.value(), context, self, report_factory=report_factory,
+                                       balance_factory=self._open_candidate_balance)
         dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         self._spring_candidate_dialog = dialog
         dialog.rowSelected.connect(lambda row: self._select_spring_candidate_row(dialog, row))
         dialog.finished.connect(lambda _result: self._forget_spring_candidate(dialog))
         dialog.show()
+
+    def _open_candidate_balance(self, candidate: SpringCandidate) -> None:
+        source = self._spring_candidate_dialog
+        if source is None or source.comparison is None or source.comparison.candidate is not candidate:
+            return
+        role, side = str(self._role.currentData()), str(self._side.currentData())
+        dialog = EquilibriumDialog(self.controller, source, candidate=candidate, initial_role=role, initial_side=side)
+        # Проект или исходная сетка больше не соответствуют снимку — закрываем вложенный баланс.
+        self.controller.modelChanged.connect(dialog.reject)
+        self.controller.projectReplaced.connect(dialog.reject)
+        source.finished.connect(dialog.reject)
+        source.snapshotInvalidated.connect(dialog.reject)
+        try:
+            dialog.exec()
+        finally:
+            self.controller.modelChanged.disconnect(dialog.reject)
+            self.controller.projectReplaced.disconnect(dialog.reject)
+            source.finished.disconnect(dialog.reject)
+            source.snapshotInvalidated.disconnect(dialog.reject)
+            dialog.deleteLater()
 
     def _select_spring_candidate_row(self, dialog: SpringCandidateDialog, row: int) -> None:
         if (self._spring_candidate_dialog is not dialog or dialog.comparison is None

@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMessageBox,
     QPushButton,
     QTableWidget,
@@ -24,6 +25,8 @@ from PySide6.QtWidgets import (
 
 from ..core.equilibrium import EquilibriumPath, EquilibriumPathError, EquilibriumResult, SpringEquilibrium
 from ..core.mass_load import CornerKey, CornerMassLoad, FourWheelMassLoad, MassLoadEstimate, SymmetricMassLoad
+from ..core.spring_candidate import SpringCandidate
+from ..core.spring_characteristics import SpringCharacteristic
 from ..core.stroke import StrokeLimits
 from ..core.sweep_plot import PATH_PLOT_METRICS, PlotPoint, equilibrium_path_plot_points
 from ..export.csv_report import CSVReport
@@ -45,9 +48,15 @@ _RESULT_FIELDS = ("lower", "upper", "lower_residual", "upper_residual", "travel"
 class EquilibriumDialog(QDialog):
     """Отдельное исследование без записи входов и результатов в проект."""
 
-    def __init__(self, controller: AppController, parent: QWidget | None = None) -> None:
+    def __init__(self, controller: AppController, parent: QWidget | None = None, *,
+                 candidate: SpringCandidate | None = None, initial_role: str = "front", initial_side: str = "left") -> None:
         super().__init__(parent)
+        if candidate is not None and (candidate.linear_rate_n_mm is None or initial_role not in ("front", "rear")
+                                      or initial_side not in ("left", "right")):
+            raise ValueError("Для баланса кандидата нужны жёсткость, ось и сторона")
         self.controller = controller
+        self._candidate = candidate
+        self._candidate_role, self._candidate_side = initial_role, initial_side
         self.setWindowTitle(tr("equilibrium_ui.title"))
         self.resize(860, 650)
         self._role = QComboBox(self)
@@ -56,6 +65,11 @@ class EquilibriumDialog(QDialog):
             self._role.addItem(tr(f"tree.{role}"), role)
         for side in ("left", "right"):
             self._side.addItem(tr(f"hp.side.{side}"), side)
+        if candidate is not None:
+            self._role.setCurrentIndex(self._role.findData(initial_role))
+            self._side.setCurrentIndex(self._side.findData(initial_side))
+            self._role.setEnabled(False)
+            self._side.setEnabled(False)
         self._from = self._number(-100, 100, -30)
         self._to = self._number(-100, 100, 30)
         self._load = self._number(0, 100000, 0)
@@ -77,15 +91,31 @@ class EquilibriumDialog(QDialog):
             left.addRow(tr(f"equilibrium_ui.{key}"), widget)
         left.addRow(self._mass_load_button)
         left.addRow(self._load_source_label)
-        for key, widget in (("length", self._length), ("bind", self._bind)):
-            right.addRow(tr(f"equilibrium_ui.{key}"), widget)
+        if candidate is None:
+            for key, widget in (("length", self._length), ("bind", self._bind)):
+                right.addRow(tr(f"equilibrium_ui.{key}"), widget)
+        else:
+            self._length.hide()
+            self._bind.hide()
+            self._candidate_length = QLineEdit(repr(candidate.installed_mm), self)
+            self._candidate_bind = QLineEdit(repr(candidate.coil_bind_mm), self)
+            self._candidate_length.setReadOnly(True)
+            self._candidate_bind.setReadOnly(True)
+            right.addRow(tr("equilibrium_ui.candidate_length"), self._candidate_length)
+            right.addRow(tr("equilibrium_ui.bind"), self._candidate_bind)
         right.addRow(self._damper)
         right.addRow(tr("equilibrium_ui.damper_min"), self._damper_min)
         right.addRow(tr("equilibrium_ui.damper_max"), self._damper_max)
         fields = QHBoxLayout()
         fields.addLayout(left)
         fields.addLayout(right)
-        notice = QLabel(tr("equilibrium_ui.notice"), self)
+        if candidate is None:
+            notice_text = tr("equilibrium_ui.notice")
+        else:
+            notice_text = tr("equilibrium_ui.candidate_notice", free=repr(candidate.free_mm),
+                             rate=repr(candidate.linear_rate_n_mm), coil_reserve=repr(candidate.coil_reserve_mm),
+                             compression_reserve=repr(candidate.compression_reserve_mm))
+        notice = QLabel(notice_text, self)
         notice.setWordWrap(True)
         self._status = QLabel(self)
         self._status.setWordWrap(True)
@@ -189,6 +219,12 @@ class EquilibriumDialog(QDialog):
         self._run.setEnabled(supported)
         self._status.setText(tr("equilibrium_ui.ready" if supported else "analysis.unsupported"))
 
+    def _effective_length(self) -> float:
+        return self._candidate.installed_mm if self._candidate is not None else self._length.value()
+
+    def _effective_bind(self) -> float | None:
+        return self._candidate.coil_bind_mm if self._candidate is not None else self._bind.value() or None
+
     def _calculate(self) -> None:
         if self._path_dialog is not None:
             self._path_dialog.reject()
@@ -203,7 +239,10 @@ class EquilibriumDialog(QDialog):
             self._status.setText(tr("analysis.unsupported"))
             return
         try:
-            if self._load.value() <= 0 or self._length.value() <= 0:
+            if (self._candidate is not None and (self._role.currentData() != self._candidate_role
+                                                or self._side.currentData() != self._candidate_side)):
+                raise ValueError(tr("equilibrium_ui.candidate_context_error"))
+            if self._load.value() <= 0 or self._effective_length() <= 0:
                 raise ValueError(tr("equilibrium_ui.required"))
             limits = None
             if self._damper.isChecked():
@@ -211,8 +250,14 @@ class EquilibriumDialog(QDialog):
                     raise ValueError(tr("equilibrium_ui.damper_required"))
                 limits = StrokeLimits(self._damper_min.value(), self._damper_max.value())
             side: Literal["left", "right"] = "left" if self._side.currentData() == "left" else "right"
+            characteristic = None
+            if self._candidate is not None:
+                assert self._candidate.linear_rate_n_mm is not None
+                characteristic = SpringCharacteristic(self._candidate.free_mm, self._candidate.linear_rate_n_mm,
+                                                      coil_bind_length_mm=self._candidate.coil_bind_mm)
             problem = SpringEquilibrium(
-                axle, self._length.value(), side=side, coil_bind_length_mm=self._bind.value() or None,
+                axle, self._effective_length(), side=side, coil_bind_length_mm=self._effective_bind(),
+                spring_characteristic=characteristic,
                 damper_mount="lower_arm" if self._damper.isChecked() else None, damper_limits=limits,
                 max_step_mm=1.0,
             )
@@ -245,7 +290,7 @@ class EquilibriumDialog(QDialog):
             "spring_force": f"{point.spring.force_n:.4f}", "ratio": f"{point.motion_ratio:.6f}",
             "support": f"{point.wheel_support_n:.4f}", "residual": f"{point.residual_n:+.4f}",
             "samples": str(len(result.path.samples)), "step": f"{result.path.actual_step_mm:.4f}",
-            "bind": tr("equilibrium_ui.checked" if self._bind.value() else "equilibrium_ui.unchecked"),
+            "bind": tr("equilibrium_ui.checked" if self._effective_bind() is not None else "equilibrium_ui.unchecked"),
             "damper": tr("equilibrium_ui.checked" if self._damper.isChecked() else "equilibrium_ui.unchecked"),
         }
         self._output.setText(tr("equilibrium_ui.result", **self._display_values))
@@ -354,7 +399,26 @@ class EquilibriumDialog(QDialog):
         else:
             source_key = "load_source_manual"
             source_details = "—"
+        if self._candidate is None:
+            spring_source = tr("equilibrium_ui.spring_source_project")
+            spring_data = json.dumps(axle.spring.to_dict(), ensure_ascii=False, sort_keys=True, allow_nan=False)
+            spring_label = tr("equilibrium_ui.spring_metadata")
+            limitations = tr("equilibrium_ui.notice")
+        else:
+            spring_source = tr("equilibrium_ui.spring_source_candidate")
+            spring_data = json.dumps({"free_mm": self._candidate.free_mm, "installed_mm": self._candidate.installed_mm,
+                                      "coil_bind_mm": self._candidate.coil_bind_mm,
+                                      "linear_rate_n_mm": self._candidate.linear_rate_n_mm,
+                                      "coil_reserve_mm_not_checked": self._candidate.coil_reserve_mm,
+                                      "compression_reserve_mm_not_checked": self._candidate.compression_reserve_mm},
+                                     ensure_ascii=False, sort_keys=True, allow_nan=False)
+            spring_label = tr("equilibrium_ui.candidate_metadata")
+            limitations = tr("equilibrium_ui.candidate_notice", free=repr(self._candidate.free_mm),
+                             rate=repr(self._candidate.linear_rate_n_mm),
+                             coil_reserve=repr(self._candidate.coil_reserve_mm),
+                             compression_reserve=repr(self._candidate.compression_reserve_mm))
         return [
+            (tr("equilibrium_ui.spring_source"), spring_source),
             (tr("equilibrium_ui.load_source"), tr(f"equilibrium_ui.{source_key}")),
             (tr("equilibrium_ui.load_mass_inputs"), source_details),
             (tr("equilibrium_ui.role"), self._role.currentText()),
@@ -363,15 +427,15 @@ class EquilibriumDialog(QDialog):
             (tr("equilibrium_ui.from"), str(self._from.value())),
             (tr("equilibrium_ui.to"), str(self._to.value())),
             (tr("equilibrium_ui.load"), str(self._load.value())),
-            (tr("equilibrium_ui.length"), str(self._length.value())),
-            (tr("equilibrium_ui.bind"), str(self._bind.value()) if self._bind.value() else unknown),
+            (tr("equilibrium_ui.candidate_length" if self._candidate is not None else "equilibrium_ui.length"),
+             repr(self._effective_length())),
+            (tr("equilibrium_ui.bind"), repr(self._effective_bind()) if self._effective_bind() is not None else unknown),
             (tr("equilibrium_ui.damper"), tr("export.yes") if self._damper.isChecked() else tr("export.no")),
             (tr("equilibrium_ui.damper_min"), str(self._damper_min.value()) if self._damper.isChecked() else disabled),
             (tr("equilibrium_ui.damper_max"), str(self._damper_max.value()) if self._damper.isChecked() else disabled),
-            (tr("equilibrium_ui.spring_metadata"), json.dumps(axle.spring.to_dict(), ensure_ascii=False,
-                                                               sort_keys=True, allow_nan=False)),
+            (spring_label, spring_data),
             (tr("equilibrium_ui.search_metadata"), tr("equilibrium_ui.search_settings")),
-            (tr("equilibrium_ui.model_metadata"), tr("equilibrium_ui.notice")),
+            (tr("equilibrium_ui.model_metadata"), limitations),
         ]
 
     def _export(self) -> None:

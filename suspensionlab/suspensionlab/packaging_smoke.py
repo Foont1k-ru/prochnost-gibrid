@@ -299,6 +299,29 @@ def run_packaging_check() -> None:
         _require(force_detail._force_filter.currentData() == "all", "Скрытая точка не раскрыта фильтром силы")
         _require(force_detail._table.currentRow() == 0 and force_detail._force_plot.row == 0,
                  "Выбор на графике силы не синхронизирован")
+        _require(spring_candidate._balance.isEnabled(), "Баланс кандидата недоступен")
+
+        def inspect_candidate_balance() -> None:
+            from .core.spring_characteristics import SpringCharacteristic
+
+            balance = app.activeModalWidget()
+            _require(isinstance(balance, EquilibriumDialog) and balance._candidate is not None,
+                     "Баланс кандидата не открылся")
+            assert isinstance(balance, EquilibriumDialog) and balance._candidate is not None
+            c = balance._candidate
+            assert c.linear_rate_n_mm is not None
+            characteristic = SpringCharacteristic(c.free_mm, c.linear_rate_n_mm, coil_bind_length_mm=c.coil_bind_mm)
+            problem = SpringEquilibrium(window.controller.project.front, c.installed_mm,
+                                        coil_bind_length_mm=c.coil_bind_mm, spring_characteristic=characteristic)
+            balance._load.setValue(problem.evaluate(12, 1).wheel_support_n)
+            balance._run.click()
+            _require(balance._result is not None and "кандидат" in
+                     dict(balance._report_parameters())[tr("equilibrium_ui.spring_source")],
+                     "Условный баланс кандидата не рассчитан")
+            balance.reject()
+
+        QTimer.singleShot(0, inspect_candidate_balance)
+        spring_candidate._balance.click()
         spring_candidate.reject()
         _require(dialog._spring_candidate_dialog is None, "Окно сравнения пружины не закрыто")
         _require("Точек на упоре или за ним: 2" in dialog._damper_range.toPlainText(),
