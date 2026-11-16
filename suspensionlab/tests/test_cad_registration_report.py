@@ -40,3 +40,17 @@ def test_inconsistent_report_is_rejected():
     records = capture_points(Project.create_default())[:3]
     with pytest.raises(ValueError):
         registration_report(result, records[:2], points, (True, True, True), str)
+
+
+def test_report_marks_approximate_surface_and_rejects_invalid_source():
+    points = ((0., 0., 0.), (10., 0., 0.), (0., 10., 0.))
+    mask = (True, True, True)
+    result = evaluate_registration(points, points, mask)
+    records = capture_points(Project.create_default())[:3]
+    sources = ('surface_preview', 'manual_or_edited', 'surface_preview')
+    report = registration_report(result, records, points, mask, str, sources)
+    source_column = report.columns.index('cad_input')
+    assert tuple(row[source_column] for row in report.rows) == sources
+    for invalid in (('surface_preview',), ('surface_preview', 'manual_or_edited', '=formula')):
+        with pytest.raises(ValueError):
+            registration_report(result, records, points, mask, str, invalid)

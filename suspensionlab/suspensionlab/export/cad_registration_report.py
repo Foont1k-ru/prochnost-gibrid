@@ -10,8 +10,12 @@ from .csv_report import CSVReport
 
 def registration_report(result: RegistrationEvaluation, records: tuple[PointRecord, ...],
                         cad: tuple[tuple[float, float, float], ...], fit_mask: tuple[bool, ...],
-                        translate: Callable[[str], str]) -> CSVReport:
-    if not (len(records) == len(cad) == len(fit_mask) == len(result.points)):
+                        translate: Callable[[str], str], sources: tuple[str, ...] | None = None) -> CSVReport:
+    if sources is None:
+        sources = ("manual_or_edited",) * len(cad)
+    if not (len(records) == len(cad) == len(fit_mask) == len(result.points) == len(sources)):
+        raise ValueError("Несогласованные данные отчёта")
+    if any(source not in ("manual_or_edited", "surface_preview") for source in sources):
         raise ValueError("Несогласованные данные отчёта")
     t = translate
     tf = result.fit.transform
@@ -24,14 +28,14 @@ def registration_report(result: RegistrationEvaluation, records: tuple[PointReco
     metadata.extend((f"R{i + 1}{j + 1}", repr(tf.rotation[i][j])) for i in range(3) for j in range(3))
     metadata.extend((f"t_{axis}_mm", repr(value)) for axis, value in zip("xyz", tf.translation, strict=True))
     rows = []
-    for row, (record, point, selected, residual) in enumerate(zip(records, cad, fit_mask, result.points, strict=True), 1):
+    for row, (record, point, selected, residual, source) in enumerate(zip(records, cad, fit_mask, result.points, sources, strict=True), 1):
         name = t(record.name_key) if record.name_key else record.code
         rows.append((str(row), "fit" if selected else "control", record.role, record.type_code, record.code,
-                     name, record.representation, *(repr(v) for v in point), *(repr(v) for v in record.xyz),
+                     name, record.representation, source, *(repr(v) for v in point), *(repr(v) for v in record.xyz),
                      *(repr(v) for v in residual.predicted_mm), *(repr(v) for v in residual.delta_mm),
                      repr(residual.distance_mm)))
     columns = ("row", "purpose", "axle", "axle_type", "point_code", "point_name", "representation",
-               "cad_x_mm", "cad_y_mm", "cad_z_mm", "project_x_mm", "project_y_mm", "project_z_mm",
+               "cad_input", "cad_x_mm", "cad_y_mm", "cad_z_mm", "project_x_mm", "project_y_mm", "project_z_mm",
                "transformed_cad_x_mm", "transformed_cad_y_mm", "transformed_cad_z_mm",
                "delta_x_mm", "delta_y_mm", "delta_z_mm", "distance_mm")
     return CSVReport(tuple(metadata), columns, tuple(rows))

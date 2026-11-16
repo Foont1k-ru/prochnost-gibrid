@@ -154,3 +154,96 @@ def test_replacing_project_invalidates_open_registration(qtbot):
     qtbot.addWidget(dialog)
     controller.new_project()
     assert dialog._stale and not dialog._calculate.isEnabled() and not dialog._export.isEnabled()
+
+
+def test_explicit_surface_transfer_reuses_picker_and_tracks_manual_edit(qtbot, monkeypatch):
+    from PySide6.QtWidgets import QDialog, QLabel
+
+    from suspensionlab.ui import cad_registration_dialog as module
+    created = []
+    class FakePicker:
+        def __init__(self, settings, parent):
+            self.chosen = None
+            created.append(self)
+        def exec(self):
+            self.chosen = (1.234567890123, -2., 3.)
+            return QDialog.DialogCode.Accepted
+    monkeypatch.setattr(module, 'CadRegistrationPicker', FakePicker)
+    dialog = CadRegistrationDialog(AppController())
+    qtbot.addWidget(dialog)
+    dialog._table.setCurrentCell(0, 1)
+    dialog._pick_for_row()
+    label = dialog._table.cellWidget(0, 5)
+    assert isinstance(label, QLabel) and label.property('cad_source') == 'surface_preview'
+    assert [float(dialog._table.cellWidget(0, c).text()) for c in range(1, 4)] == [1.234567890123, -2., 3.]
+    dialog._table.setCurrentCell(1, 1)
+    dialog._pick_for_row()
+    assert len(created) == 1
+    second = dialog._table.cellWidget(1, 5)
+    assert second.property('cad_source') == 'surface_preview'
+    dialog._table.cellWidget(1, 2).setText('42')
+    assert second.property('cad_source') == 'manual_or_edited'
+    assert label.property('cad_source') == 'surface_preview'
+
+
+def test_picker_rejection_and_changes_during_modal_never_apply(qtbot, monkeypatch):
+    from PySide6.QtWidgets import QDialog
+
+    from suspensionlab.ui import cad_registration_dialog as module
+    controller = AppController()
+    dialog = CadRegistrationDialog(controller)
+    qtbot.addWidget(dialog)
+    dialog._table.setCurrentCell(0, 1)
+    class FakePicker:
+        def __init__(self, settings, parent):
+            self.chosen = None
+            self.action = lambda: None
+            self.result = QDialog.DialogCode.Rejected
+        def exec(self):
+            self.chosen = (10., 20., 30.)
+            self.action()
+            return self.result
+    monkeypatch.setattr(module, 'CadRegistrationPicker', FakePicker)
+    dialog._pick_for_row()
+    assert dialog._table.cellWidget(0, 1).text() == ''
+    picker = dialog._picker
+    picker.result = QDialog.DialogCode.Accepted
+    picker.action = lambda: dialog._table.cellWidget(0, 1).setText('123')
+    dialog._pick_for_row()
+    assert dialog._table.cellWidget(0, 1).text() == '123'
+    assert dialog._table.cellWidget(0, 2).text() == ''
+    picker.action = controller.modelChanged.emit
+    dialog._pick_for_row()
+    assert dialog._stale and not dialog._pick.isEnabled()
+    assert dialog._table.cellWidget(0, 1).text() == '123'
+    assert dialog._table.cellWidget(0, 2).text() == ''
+
+
+def test_picked_rows_marked_in_csv_and_invalidate_old_result(qtbot, monkeypatch):
+    from PySide6.QtWidgets import QDialog
+
+    from suspensionlab.ui import cad_registration_dialog as module
+    controller = AppController()
+    for code, xyz in zip(('ubj', 'lbj', 'lca_f_in'), ((0, 0, 0), (100, 0, 0), (0, 100, 0)), strict=True):
+        point = controller.project.front.hardpoints[code]
+        point.x, point.y, point.z = xyz
+    dialog = CadRegistrationDialog(controller)
+    qtbot.addWidget(dialog)
+    fill_identity(dialog)
+    dialog._confirmed.setChecked(True)
+    dialog._run()
+    assert dialog._report is not None
+    class FakePicker:
+        def __init__(self, settings, parent):
+            self.chosen = None
+        def exec(self):
+            self.chosen = (0., 0., 0.)
+            return QDialog.DialogCode.Accepted
+    monkeypatch.setattr(module, 'CadRegistrationPicker', FakePicker)
+    dialog._table.setCurrentCell(0, 1)
+    dialog._pick_for_row()
+    assert dialog._report is None and not dialog._export.isEnabled()
+    dialog._run()
+    assert dialog._report is not None
+    source_col = dialog._report.columns.index('cad_input')
+    assert [r[source_col] for r in dialog._report.rows] == ['surface_preview', 'manual_or_edited', 'manual_or_edited']

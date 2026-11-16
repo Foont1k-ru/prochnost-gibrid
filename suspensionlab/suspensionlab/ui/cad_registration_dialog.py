@@ -30,6 +30,7 @@ from ..export.csv_report import CSVReport, write_csv_report
 from ..i18n import tr
 from ..model.point_csv import PointRecord, capture_points
 from .cad_registration_overlay_dialog import CadRegistrationOverlayDialog
+from .cad_registration_picker import CadRegistrationPicker
 from .controller import AppController
 
 
@@ -42,6 +43,7 @@ class CadRegistrationDialog(QDialog):
         self._records = capture_points(controller.project)
         self._stale = False
         self._revision = 0
+        self._picker: CadRegistrationPicker | None = None
         self._report: CSVReport | None = None
         self._snapshot: tuple[tuple[PointRecord, ...], tuple[bool, ...], RegistrationEvaluation] | None = None
         self.setWindowTitle(tr("cad_registration.title"))
@@ -50,9 +52,9 @@ class CadRegistrationDialog(QDialog):
         notice = QLabel(tr("cad_registration.notice"), self)
         notice.setWordWrap(True)
         layout.addWidget(notice)
-        self._table = QTableWidget(0, 5, self)
+        self._table = QTableWidget(0, 6, self)
         self._table.setHorizontalHeaderLabels([tr("cad_registration.point"), "CAD X, mm", "CAD Y, mm", "CAD Z, mm",
-                                               tr("cad_registration.purpose")])
+                                               tr("cad_registration.purpose"), tr("cad_registration.input_source")])
         self._table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         layout.addWidget(self._table, 1)
         buttons = QHBoxLayout()
@@ -60,8 +62,11 @@ class CadRegistrationDialog(QDialog):
         self._remove = QPushButton(tr("cad_registration.remove"), self)
         self._add.clicked.connect(self._add_row)
         self._remove.clicked.connect(self._remove_row)
+        self._pick = QPushButton(tr("cad_registration.pick_button"), self)
+        self._pick.clicked.connect(self._pick_for_row)
         buttons.addWidget(self._add)
         buttons.addWidget(self._remove)
+        buttons.addWidget(self._pick)
         buttons.addStretch()
         layout.addLayout(buttons)
         self._confirmed = QCheckBox(tr("cad_registration.confirm"), self)
@@ -115,10 +120,13 @@ class CadRegistrationDialog(QDialog):
             combo.addItem(f"{point.role} / {point.code} / {name} / {point.representation} / ({xyz}) mm", index)
         combo.currentIndexChanged.connect(self._clear_result)
         self._table.setCellWidget(row, 0, combo)
+        source = QLabel(self._table)
+        self._set_source(source, "manual_or_edited")
+        self._table.setCellWidget(row, 5, source)
         for column in range(1, 4):
             edit = QLineEdit(self._table)
             edit.setPlaceholderText("mm")
-            edit.textChanged.connect(self._clear_result)
+            edit.textChanged.connect(lambda _text, label=source: self._coordinate_changed(label))
             self._table.setCellWidget(row, column, edit)
         purpose = QComboBox(self._table)
         purpose.addItem(tr("cad_registration.fit"), True)
@@ -126,6 +134,51 @@ class CadRegistrationDialog(QDialog):
         purpose.currentIndexChanged.connect(self._clear_result)
         self._table.setCellWidget(row, 4, purpose)
         self._add.setEnabled(self._table.rowCount() < MAX_PAIRS)
+        self._clear_result()
+
+    @staticmethod
+    def _set_source(label: QLabel, source: str) -> None:
+        label.setProperty("cad_source", source)
+        label.setText(tr(f"cad_registration.source_{source}"))
+        label.setToolTip(tr("cad_registration.source_hint"))
+
+    def _coordinate_changed(self, source: QLabel) -> None:
+        self._set_source(source, "manual_or_edited")
+        self._clear_result()
+
+    def _pick_for_row(self) -> None:
+        if self._stale:
+            return
+        row = self._table.currentRow()
+        if row < 0:
+            QMessageBox.information(self, tr("cad_registration.pick_title"), tr("cad_registration.pick_row"))
+            return
+        source = self._table.cellWidget(row, 5)
+        fields = [self._table.cellWidget(row, column) for column in range(1, 4)]
+        if not isinstance(source, QLabel) or not all(isinstance(field, QLineEdit) for field in fields):
+            return
+        revision = self._revision
+        if self._picker is None:
+            settings = QSettings(str(settings_path()), QSettings.Format.IniFormat)
+            self._picker = CadRegistrationPicker(settings, self)
+        picker = self._picker
+        picker.chosen = None
+        accepted = picker.exec() == QDialog.DialogCode.Accepted
+        point = picker.chosen
+        if (not accepted or point is None or self._stale or revision != self._revision or
+                self._table.cellWidget(row, 5) is not source or
+                any(self._table.cellWidget(row, i) is not field for i, field in enumerate(fields, 1))):
+            return
+        if len(point) != 3 or any(not math.isfinite(value) for value in point):
+            return
+        for field, value in zip(fields, point, strict=True):
+            assert isinstance(field, QLineEdit)
+            previous = field.blockSignals(True)
+            try:
+                field.setText(repr(float(value)))
+            finally:
+                field.blockSignals(previous)
+        self._set_source(source, "surface_preview")
         self._clear_result()
 
     def _remove_row(self) -> None:
@@ -146,6 +199,7 @@ class CadRegistrationDialog(QDialog):
         self._calculate.setEnabled(False)
         self._add.setEnabled(False)
         self._remove.setEnabled(False)
+        self._pick.setEnabled(False)
         self._result.setPlainText(tr("cad_registration.stale"))
 
     def _run(self) -> None:
@@ -158,6 +212,7 @@ class CadRegistrationDialog(QDialog):
         cad: list[tuple[float, float, float]] = []
         records = []
         fit_mask: list[bool] = []
+        sources: list[str] = []
         selected: set[int] = set()
         try:
             for row in range(self._table.rowCount()):
@@ -179,10 +234,13 @@ class CadRegistrationDialog(QDialog):
                 cad.append((coords[0], coords[1], coords[2]))
                 records.append(self._records[index])
                 fit_mask.append(purpose.currentData() is True)
+                label = self._table.cellWidget(row, 5)
+                assert isinstance(label, QLabel)
+                sources.append(label.property("cad_source"))
             points = tuple(cad)
             mask = tuple(fit_mask)
             result = evaluate_registration(points, tuple(record.xyz for record in records), mask)
-            report = registration_report(result, tuple(records), points, mask, tr)
+            report = registration_report(result, tuple(records), points, mask, tr, tuple(sources))
         except ValueError as error:
             code = str(error)
             if code not in ("selection", "coordinates", "count", "degenerate", "duplicate"):
