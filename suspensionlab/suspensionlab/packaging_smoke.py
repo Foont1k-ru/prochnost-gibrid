@@ -398,6 +398,25 @@ def run_packaging_check() -> None:
         _require(equilibrium._load.value() == 2942.0 and equilibrium._load_source is not None
                  and "показание весов" in dict(equilibrium._report_parameters())[tr("equilibrium_ui.load_source")],
                  "Нагрузка по колесу не перенесена или потерян источник")
+
+        def enter_four_wheels() -> None:
+            helper = app.activeModalWidget()
+            _require(isinstance(helper, MassLoadDialog), "Окно четырёх колёс не открыто")
+            assert isinstance(helper, MassLoadDialog)
+            helper._mode.setCurrentIndex(helper._mode.findData("four_weighed"))
+            for key, value in (("front_left", "350"), ("front_right", "300"), ("rear_left", "250"),
+                               ("rear_right", "200"), ("unsprung", "30")):
+                helper._fields[key].setText(value)
+            helper._calculate_button.click()
+            _require(helper._apply.isEnabled() and "1100.000" in helper._result.text(),
+                     "Сводка четырёх колёс недоступна")
+            helper._apply.click()
+
+        QTimer.singleShot(0, enter_four_wheels)
+        equilibrium._mass_load_button.click()
+        _require(equilibrium._load.value() == 3138.1 and equilibrium._load_source is not None
+                 and "Четыре введённых" in dict(equilibrium._report_parameters())[tr("equilibrium_ui.load_source")],
+                 "Нагрузка по четырём колёсам не перенесена или потерян источник")
         equilibrium._length.setValue(230)
         equilibrium._load.setValue(SpringEquilibrium(window.controller.project.front, 230).evaluate(12, 1).wheel_support_n)
         equilibrium._run.click()

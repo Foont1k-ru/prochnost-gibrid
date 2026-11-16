@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..core.equilibrium import EquilibriumPath, EquilibriumPathError, EquilibriumResult, SpringEquilibrium
-from ..core.mass_load import CornerMassLoad, MassLoadEstimate, SymmetricMassLoad
+from ..core.mass_load import CornerKey, CornerMassLoad, FourWheelMassLoad, MassLoadEstimate, SymmetricMassLoad
 from ..core.stroke import StrokeLimits
 from ..core.sweep_plot import PATH_PLOT_METRICS, PlotPoint, equilibrium_path_plot_points
 from ..export.csv_report import CSVReport
@@ -146,7 +146,13 @@ class EquilibriumDialog(QDialog):
         role, side = self._role.currentData(), self._side.currentData()
         project = self.controller.project
         old_load = self._load.value()
-        dialog = MassLoadDialog(self._role.currentText(), self._side.currentText(), self._load.maximum(), self)
+        corners: dict[tuple[str, str], CornerKey] = {
+            ("front", "left"): "front_left", ("front", "right"): "front_right",
+            ("rear", "left"): "rear_left", ("rear", "right"): "rear_right",
+        }
+        corner = corners.get((str(role), str(side)))
+        dialog = MassLoadDialog(self._role.currentText(), self._side.currentText(), self._load.maximum(), self,
+                                corner_key=corner)
         if (dialog.exec() == QDialog.DialogCode.Accepted and dialog.estimate is not None
                 and dialog.applied_load is not None and self.controller.project is project
                 and self._role.currentData() == role and self._side.currentData() == side
@@ -329,6 +335,17 @@ class EquilibriumDialog(QDialog):
                                 axle=repr(source.axle_percent), unsprung=repr(source.unsprung_corner_kg),
                                 sprung=repr(source.corner_sprung_kg), reaction=repr(source.tire_reaction_n),
                                 load=repr(source.sprung_load_n))
+        elif isinstance(source, FourWheelMassLoad):
+            source_key = f"load_source_four_{source.source_kind}"
+            source_details = tr("equilibrium_ui.load_four_values", fl=repr(source.front_left_kg),
+                                fr=repr(source.front_right_kg), rl=repr(source.rear_left_kg),
+                                rr=repr(source.rear_right_kg), total=repr(source.total_kg),
+                                front=repr(source.front_kg), rear=repr(source.rear_kg),
+                                left=repr(source.left_kg), right=repr(source.right_kg),
+                                front_pct=repr(source.front_percent), rear_pct=repr(source.rear_percent),
+                                selected=tr(f"mass_load.corner.{source.selected}"),
+                                unsprung=repr(source.unsprung_corner_kg), sprung=repr(source.corner_sprung_kg),
+                                reaction=repr(source.tire_reaction_n), load=repr(source.sprung_load_n))
         elif isinstance(source, CornerMassLoad):
             source_key = f"load_source_{source.source_kind}"
             source_details = tr("equilibrium_ui.load_corner_values", wheel=repr(source.corner_total_kg),

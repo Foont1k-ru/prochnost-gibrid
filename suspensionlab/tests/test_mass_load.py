@@ -59,3 +59,37 @@ def test_corner_source_must_be_explicit():
 
     with pytest.raises(ValueError):
         corner_mass_load(300, 35, "unknown")
+
+
+@pytest.mark.parametrize("selected,expected", [
+    ("front_left", 350), ("front_right", 300), ("rear_left", 250), ("rear_right", 200),
+])
+def test_four_wheel_totals_and_explicit_selection(selected, expected):
+    from suspensionlab.core.mass_load import four_wheel_mass_load
+
+    result = four_wheel_mass_load(350, 300, 250, 200, selected, 30, "weighed")
+    assert result.total_kg == 1100 and result.front_kg == 650 and result.rear_kg == 450
+    assert result.left_kg == 600 and result.right_kg == 500
+    assert result.front_percent == pytest.approx(650 / 1100 * 100)
+    assert result.rear_percent == pytest.approx(450 / 1100 * 100)
+    assert result.corner_total_kg == expected and result.corner_sprung_kg == expected - 30
+    assert result.sprung_load_n == pytest.approx((expected - 30) * GRAVITY_M_S2)
+    assert result.tire_reaction_n == pytest.approx(expected * GRAVITY_M_S2)
+    assert result.selected == selected and result.source_kind == "weighed"
+
+
+@pytest.mark.parametrize("readings,selected,unsprung,source", [
+    ((0, 300, 250, 200), "front_left", 30, "weighed"),
+    ((350, nan, 250, 200), "front_left", 30, "weighed"),
+    ((350, 300, inf, 200), "front_left", 30, "weighed"),
+    ((350, 300, 250, -1), "front_left", 30, "weighed"),
+    ((1e308, 1e308, 250, 200), "rear_left", 30, "weighed"),
+    ((350, 300, 250, 200), "rear_left", 250, "weighed"),
+    ((350, 300, 250, 200), "unknown", 30, "weighed"),
+    ((350, 300, 250, 200), "rear_left", 30, "unknown"),
+])
+def test_four_wheel_rejects_missing_invalid_and_overflow(readings, selected, unsprung, source):
+    from suspensionlab.core.mass_load import four_wheel_mass_load
+
+    with pytest.raises(ValueError):
+        four_wheel_mass_load(*readings, selected, unsprung, source)

@@ -261,3 +261,137 @@ def test_corner_source_applies_and_is_saved_in_reports(window, qtbot, monkeypatc
     dialog._side.setCurrentIndex(0)
     assert dialog._load_source is None and dialog._load.value() == 0 and dialog._result is None
     assert window.controller.project.to_dict() == original
+
+
+@pytest.mark.parametrize("kind", ["four_weighed", "four_assumed"])
+def test_four_wheel_preview_change_and_limits(qtbot, kind):
+    from suspensionlab.core.mass_load import FourWheelMassLoad
+
+    dialog = MassLoadDialog("передняя", "правая", 100000, corner_key="front_right")
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog._mode.setCurrentIndex(dialog._mode.findData(kind))
+    assert dialog._form.isRowVisible(dialog._fields["front_left"])
+    assert not dialog._form.isRowVisible(dialog._fields["wheel"])
+    assert not dialog._form.isRowVisible(dialog._fields["mass"])
+    for key, value in (("front_left", "350"), ("front_right", "300"), ("rear_left", "250"),
+                       ("rear_right", "200"), ("unsprung", "30")):
+        dialog._fields[key].setText(value)
+    dialog._calculate_button.click()
+    assert isinstance(dialog.estimate, FourWheelMassLoad)
+    assert dialog.estimate.selected == "front_right" and dialog.estimate.corner_total_kg == 300
+    assert dialog.estimate.total_kg == 1100 and dialog.applied_load == float(f"{270 * GRAVITY_M_S2:.1f}")
+    assert "59.09%" in dialog._result.text() and "проверены" in dialog._result.text()
+    dialog._fields["rear_left"].setText("")
+    assert dialog.estimate is None and not dialog._apply.isEnabled()
+    dialog._calculate_button.click()
+    assert dialog.estimate is None and not dialog._apply.isEnabled()
+    dialog._fields["rear_left"].setText("250")
+    dialog._fields["unsprung"].setText("300")
+    dialog._calculate_button.click()
+    assert dialog.estimate is None and not dialog._apply.isEnabled()
+    dialog._mode.setCurrentIndex(dialog._mode.findData("weighed"))
+    assert not dialog._form.isRowVisible(dialog._fields["front_left"])
+    assert dialog._form.isRowVisible(dialog._fields["wheel"]) and dialog.estimate is None
+
+
+@pytest.mark.parametrize("role,side,expected_corner", [
+    ("front", "left", "front_left"), ("front", "right", "front_right"),
+    ("rear", "left", "rear_left"), ("rear", "right", "rear_right"),
+])
+def test_four_wheel_applies_correct_corner_without_editing_project(window, qtbot, role, side, expected_corner):
+    from suspensionlab.i18n import tr
+    from suspensionlab.ui.equilibrium_dialog import EquilibriumDialog
+
+    window.controller.new_project("ring")
+    original = window.controller.project.to_dict()
+    dialog = EquilibriumDialog(window.controller, window)
+    qtbot.addWidget(dialog)
+    dialog._role.setCurrentIndex(dialog._role.findData(role))
+    dialog._side.setCurrentIndex(dialog._side.findData(side))
+    readings = {"front_left": 350, "front_right": 300, "rear_left": 250, "rear_right": 200}
+
+    def fill_and_apply():
+        child = dialog.findChild(MassLoadDialog)
+        assert child is not None
+        child._mode.setCurrentIndex(child._mode.findData("four_assumed"))
+        for key, value in readings.items():
+            child._fields[key].setText(str(value))
+        child._fields["unsprung"].setText("30")
+        child._calculate_button.click()
+        child._apply.click()
+
+    QTimer.singleShot(0, fill_and_apply)
+    dialog._mass_load_button.click()
+    assert dialog._load.value() == float(f"{(readings[expected_corner] - 30) * GRAVITY_M_S2:.1f}")
+    assert dialog._load_source is not None
+    metadata = dict(dialog._report_parameters())
+    assert "Четыре предполагаемых" in metadata[tr("equilibrium_ui.load_source")]
+    assert tr(f"mass_load.corner.{expected_corner}") in metadata[tr("equilibrium_ui.load_mass_inputs")]
+    assert all(f"{value}.0" in metadata[tr("equilibrium_ui.load_mass_inputs")] for value in readings.values())
+    dialog._load.setValue(dialog._load.value() + 1)
+    assert dialog._load_source is None
+    assert window.controller.project.to_dict() == original
+
+
+def test_four_wheel_snapshot_in_real_balance_csv(window, qtbot, monkeypatch):
+    from suspensionlab.core.equilibrium import SpringEquilibrium
+    from suspensionlab.i18n import tr
+    from suspensionlab.ui import equilibrium_dialog
+    from suspensionlab.ui.equilibrium_dialog import EquilibriumDialog
+    from suspensionlab.ui.equilibrium_path_dialog import EquilibriumPathDialog
+
+    window.controller.new_project("ring")
+    dialog = EquilibriumDialog(window.controller, window)
+    qtbot.addWidget(dialog)
+    dialog._length.setValue(230)
+    target = SpringEquilibrium(window.controller.project.front, 230).evaluate(12, 1).wheel_support_n
+    readings = {"front_left": target / GRAVITY_M_S2 + 40, "front_right": 300, "rear_left": 250, "rear_right": 200}
+
+    def fill_and_apply():
+        child = dialog.findChild(MassLoadDialog)
+        assert child is not None
+        child._mode.setCurrentIndex(child._mode.findData("four_weighed"))
+        for key, value in readings.items():
+            child._fields[key].setText(repr(value))
+        child._fields["unsprung"].setText("40")
+        child._calculate_button.click()
+        child._apply.click()
+
+    QTimer.singleShot(0, fill_and_apply)
+    dialog._mass_load_button.click()
+    metadata = dict(dialog._report_parameters())
+    assert "показания весов" in metadata[tr("equilibrium_ui.load_source")]
+    assert "не проверены" in metadata[tr("equilibrium_ui.load_source")]
+    dialog._run.click()
+    assert dialog._result is not None
+    captured = []
+    monkeypatch.setattr(equilibrium_dialog, "save_table_dialog", lambda _parent, report: captured.append(report))
+    dialog._export_button.click()
+    assert dict(captured[0].metadata)[tr("equilibrium_ui.load_mass_inputs")] == metadata[tr("equilibrium_ui.load_mass_inputs")]
+    path = dialog._path
+    assert path is not None
+    view = EquilibriumPathDialog(path, dialog)
+    qtbot.addWidget(view)
+    report = dialog._path_report(path, view._table)
+    assert dict(report.metadata)[tr("equilibrium_ui.load_source")] == metadata[tr("equilibrium_ui.load_source")]
+    dialog._role.setCurrentIndex(1)
+    assert dialog._load_source is None and dialog._load.value() == 0 and dialog._result is None
+
+
+def test_four_wheel_mode_requires_known_selected_corner(qtbot):
+    dialog = MassLoadDialog("неизвестно", "неизвестно", 100000)
+    qtbot.addWidget(dialog)
+    assert dialog._mode.findData("four_weighed") == -1
+    assert dialog._mode.findData("four_assumed") == -1
+
+
+def test_four_wheel_does_not_clamp_large_selected_load(qtbot):
+    dialog = MassLoadDialog("передняя", "левая", 100000, corner_key="front_left")
+    qtbot.addWidget(dialog)
+    dialog._mode.setCurrentIndex(dialog._mode.findData("four_weighed"))
+    for key, value in (("front_left", "1000000"), ("front_right", "300"), ("rear_left", "250"),
+                       ("rear_right", "200"), ("unsprung", "30")):
+        dialog._fields[key].setText(value)
+    dialog._calculate_button.click()
+    assert dialog.estimate is None and not dialog._apply.isEnabled()

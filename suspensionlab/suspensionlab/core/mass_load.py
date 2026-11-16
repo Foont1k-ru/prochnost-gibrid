@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import isfinite
+from math import fsum, isfinite
 from typing import Literal
 
 from .springs import sprung_mass_per_corner
@@ -52,9 +52,6 @@ class CornerMassLoad:
     sprung_load_n: float
 
 
-MassLoadEstimate = SymmetricMassLoad | CornerMassLoad
-
-
 def corner_mass_load(corner_kg: float, unsprung_corner_kg: float,
                      source_kind: Literal["weighed", "assumed"]) -> CornerMassLoad:
     """Сила на весах в кг-эквиваленте или предположение, не масса детали.
@@ -73,3 +70,67 @@ def corner_mass_load(corner_kg: float, unsprung_corner_kg: float,
     if not all(isfinite(value) and value > 0 for value in (sprung, reaction, load)):
         raise ValueError("Неподрессоренная масса должна быть меньше показания; результат должен быть конечным")
     return CornerMassLoad(source_kind, corner_kg, unsprung_corner_kg, sprung, reaction, load)
+
+
+CornerKey = Literal["front_left", "front_right", "rear_left", "rear_right"]
+
+
+@dataclass(frozen=True)
+class FourWheelMassLoad:
+    """Четыре явно введённых значения одного состояния автомобиля, кг-эквивалент."""
+
+    source_kind: Literal["weighed", "assumed"]
+    selected: CornerKey
+    front_left_kg: float
+    front_right_kg: float
+    rear_left_kg: float
+    rear_right_kg: float
+    total_kg: float
+    front_kg: float
+    rear_kg: float
+    left_kg: float
+    right_kg: float
+    front_percent: float
+    rear_percent: float
+    corner_total_kg: float
+    unsprung_corner_kg: float
+    corner_sprung_kg: float
+    tire_reaction_n: float
+    sprung_load_n: float
+
+
+def four_wheel_mass_load(
+    front_left: float, front_right: float, rear_left: float, rear_right: float,
+    selected: CornerKey, unsprung_corner_kg: float, source_kind: Literal["weighed", "assumed"],
+) -> FourWheelMassLoad:
+    """Суммирование четырёх значений и оценка только выбранной стороны.
+
+    Для реальных весов значения должны относиться к одному состоянию и
+    горизонтальным площадкам одинаковой высоты. Достоверность данных не проверяется.
+    """
+    readings = (front_left, front_right, rear_left, rear_right)
+    if not all(isfinite(x) and x > 0 for x in readings):
+        raise ValueError("Каждое значение под колесом должно быть положительным и конечным")
+    keys: tuple[CornerKey, ...] = ("front_left", "front_right", "rear_left", "rear_right")
+    if selected not in keys:
+        raise ValueError("Не выбрано колесо")
+    corner = corner_mass_load(readings[keys.index(selected)], unsprung_corner_kg, source_kind)
+    try:
+        front, rear = fsum(readings[:2]), fsum(readings[2:])
+        left, right = fsum(readings[::2]), fsum(readings[1::2])
+        total = fsum(readings)
+    except OverflowError as exc:
+        raise ValueError("Сумма значений не является конечной") from exc
+    if not all(isfinite(x) and x > 0 for x in (front, rear, left, right, total)):
+        raise ValueError("Сумма значений не является конечной")
+    front_pct, rear_pct = front / total * 100.0, rear / total * 100.0
+    if not all(isfinite(x) and x > 0 for x in (front_pct, rear_pct)):
+        raise ValueError("Доля оси не представима с доступной точностью")
+    return FourWheelMassLoad(
+        source_kind, selected, *readings, total, front, rear, left, right, front_pct, rear_pct,
+        corner.corner_total_kg, corner.unsprung_corner_kg, corner.corner_sprung_kg,
+        corner.tire_reaction_n, corner.sprung_load_n,
+    )
+
+
+MassLoadEstimate = SymmetricMassLoad | CornerMassLoad | FourWheelMassLoad
