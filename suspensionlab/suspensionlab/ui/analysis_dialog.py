@@ -921,7 +921,7 @@ class AnalysisDialog(QDialog):
         except (ValueError, UnicodeError, ArithmeticError) as error:
             QMessageBox.warning(self, tr("export.error_title"), tr("export.error", reason=str(error)))
             return
-        dialog = AxisAlignmentDialog(rows, report, self)
+        dialog = AxisAlignmentDialog(rows, report, self, source_conflicts=tuple(point.conflict for point in points))
         dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         self._axis_dialog = dialog
         dialog.rowSelected.connect(lambda row: self._table.setCurrentCell(row, 0))

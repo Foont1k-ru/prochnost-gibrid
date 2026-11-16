@@ -80,3 +80,77 @@ def compare_pose_axes(travel_mm: float, frame: PoseView | None) -> AxisAlignment
     except (ValueError, ArithmeticError):
         return AxisAlignmentRow(travel_mm, None, "invalid_geometry")
     return AxisAlignmentRow(travel_mm, result, "available")
+
+
+@dataclass(frozen=True)
+class AxisLimits:
+    """Необязательные пользовательские численные границы, не монтажные допуски."""
+
+    angle_deg: float | None = None
+    lower_distance_mm: float | None = None
+    upper_distance_mm: float | None = None
+
+    def __post_init__(self) -> None:
+        for value in (self.angle_deg, self.lower_distance_mm, self.upper_distance_mm):
+            if value is not None and (not isfinite(value) or value < 0):
+                raise ValueError("Границы должны быть конечными и неотрицательными")
+        if self.angle_deg is not None and self.angle_deg > 90:
+            raise ValueError("Граница угла осей должна быть не более 90 градусов")
+
+
+LimitStatus = Literal["unchecked", "within", "exceeded", "missing"]
+CombinedLimitStatus = Literal["unchecked", "partial", "within", "exceeded", "missing"]
+
+
+@dataclass(frozen=True)
+class AxisLimitCheck:
+    angle: LimitStatus
+    lower: LimitStatus
+    upper: LimitStatus
+    combined: CombinedLimitStatus
+
+
+def check_axis_limits(result: AxisAlignment | None, limits: AxisLimits) -> AxisLimitCheck:
+    """Сравнивает только явно заданные пределы; равенство допускается без округления.
+
+    Ни один статус не является заключением о совместимости, монтаже или безопасности.
+    """
+    if result is None:
+        return AxisLimitCheck("missing", "missing", "missing", "missing")
+    values = (result.angle_deg, result.lower_pair_distance_mm, result.upper_pair_distance_mm)
+    thresholds = (limits.angle_deg, limits.lower_distance_mm, limits.upper_distance_mm)
+    def status(value: float, limit: float | None) -> LimitStatus:
+        if limit is None:
+            return "unchecked"
+        return "within" if value <= limit else "exceeded"
+    a, lo, hi = (status(value, threshold) for value, threshold in zip(values, thresholds, strict=True))
+    checked = sum(threshold is not None for threshold in thresholds)
+    combined: CombinedLimitStatus = ("exceeded" if "exceeded" in (a, lo, hi) else
+                                     "unchecked" if checked == 0 else "partial" if checked < 3 else "within")
+    return AxisLimitCheck(a, lo, hi, combined)
+
+
+@dataclass(frozen=True)
+class AxisMaximum:
+    row: int
+    travel_mm: float
+    value: float
+
+
+@dataclass(frozen=True)
+class AxisMaxima:
+    angle: AxisMaximum | None
+    lower: AxisMaximum | None
+    upper: AxisMaximum | None
+
+
+def summarize_axis_maxima(rows: tuple[AxisAlignmentRow, ...]) -> AxisMaxima:
+    """Максимумы доступных поз, включая конфликты; при равенстве — первая строка."""
+    available = [(i, row) for i, row in enumerate(rows) if row.result is not None]
+    def maximum(attr: str) -> AxisMaximum | None:
+        if not available:
+            return None
+        index, row = max(available, key=lambda pair: getattr(pair[1].result, attr))
+        assert row.result is not None
+        return AxisMaximum(index, row.travel_mm, getattr(row.result, attr))
+    return AxisMaxima(maximum("angle_deg"), maximum("lower_pair_distance_mm"), maximum("upper_pair_distance_mm"))

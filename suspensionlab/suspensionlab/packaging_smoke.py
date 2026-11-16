@@ -267,12 +267,27 @@ def run_packaging_check() -> None:
         _require(dialog._axis_compare_button.isEnabled(), "Сравнение линий опор недоступно")
         dialog._axis_compare_button.click()
         alignment = dialog._axis_dialog
-        _require(alignment is not None and len(alignment._report.rows) == 2
-                 and alignment._report.rows[0][9] == tr("axis_alignment.status.available")
-                 and len(alignment._report.rows[0]) == 11 and alignment._report.rows[0][5] != "—"
-                 and alignment._report.rows[0][7] != "—",
-                 "Сравнение линий опор не открылось или недоступно")
+        _require(alignment is not None, "Сравнение линий опор не открылось")
         assert alignment is not None
+        _require(alignment._report is not None, "Отчёт линий опор недоступен")
+        assert alignment._report is not None
+        _require(len(alignment._report.rows) == 2 and alignment._report.rows[0][9] == tr("axis_alignment.status.available")
+                 and len(alignment._report.rows[0]) == 15 and alignment._report.rows[0][5] != "—"
+                 and alignment._report.rows[0][7] != "—", "Сравнение линий опор недоступно")
+        for key, value in (("angle", "90"), ("lower", "1000"), ("upper", "1000")):
+            alignment._limit_fields[key].setText(value)
+        _require(alignment._report is not None and alignment._report.rows[0][14] == tr("axis_alignment.limits.combined.within"),
+                 "Численные условия линий опор не рассчитаны")
+        alignment._filter.setCurrentIndex(alignment._filter.findData("exceeded"))
+        _require(alignment._table.isRowHidden(0) and alignment._table.isRowHidden(1), "Фильтр пределов не работает")
+        alignment._plot.rowSelected.emit(1)
+        _require(not alignment._table.isRowHidden(1) and alignment._table.currentRow() == 1,
+                 "Выбор на графике линий опор не работает")
+        alignment._tabs.setCurrentIndex(1)
+        app.processEvents()
+        _require(alignment._plot._geometry() is not None and not alignment._plot.grab().isNull(),
+                 "График линий опор недоступен")
+        assert alignment._report is not None
         write_csv_report(alignment._report, temporary / "axis-alignment.csv")
         alignment._table.setCurrentCell(1, 0)
         alignment._choose.click()
