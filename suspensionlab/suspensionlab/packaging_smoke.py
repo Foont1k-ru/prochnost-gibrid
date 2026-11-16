@@ -328,8 +328,13 @@ def run_packaging_check() -> None:
             graph = balance._path_graph_report(path, view._table, view._plot.points, view._plot_metric.currentText())
             column = tr("equilibrium_path.column.candidate_status")
             _require(column in report.columns and column in graph.columns and len(report.rows) == len(path.samples)
-                     and "отказ без данных" in view._candidate_summary.text(),
+                     and "отказ без данных" in view._candidate_summary.text()
+                     and view._candidate_min_coil.isEnabled() and view._candidate_min_compression.isEnabled()
+                     and tr("equilibrium_path.candidate_report_coil_min") in dict(report.metadata),
                      "Запасы кандидата по сохранённым точкам не показаны")
+            view._candidate_min_coil.click()
+            _require(view._table.currentRow() >= 0 and view._plot.row == view._table.currentRow(),
+                     "Переход к минимуму запасов не работает")
             write_csv_report(report, temporary / "candidate-path.csv")
             view.close()
             balance.reject()

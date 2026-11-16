@@ -137,6 +137,18 @@ def test_candidate_path_actual_dialog_and_csv(qtbot, monkeypatch):
         geoms = [candidate_geometry(candidate, s.spring.length_mm) for s in path.samples]
         assert any(g.coil_reserve_ok for g in geoms) and any(not g.coil_reserve_ok for g in geoms)
         assert f"до смыкания не выполнено в {sum(not g.coil_reserve_ok for g in geoms)}" in view._candidate_summary.text()
+        from suspensionlab.export.equilibrium_path import candidate_path_summary, format_candidate_path_minima
+        summary = candidate_path_summary(path, candidate)
+        assert summary.minimum_coil is not None and summary.minimum_compression is not None
+        minima = format_candidate_path_minima(summary)
+        assert view._candidate_minima.text() == "\n".join(minima)
+        view._views.setCurrentIndex(1)
+        view._candidate_min_coil.click()
+        assert view._views.currentIndex() == 0 and view._table.currentRow() == summary.minimum_coil.row
+        assert view._plot.row == summary.minimum_coil.row
+        view._candidate_min_compression.click()
+        assert view._table.currentRow() == summary.minimum_compression.row
+        assert view._plot.row == summary.minimum_compression.row
         table = dialog._path_report(path, view._table)
         graph = dialog._path_graph_report(path, view._table, view._plot.points, view._plot_metric.currentText())
         assert len(table.rows) == len(graph.rows) == len(path.samples)
@@ -146,6 +158,10 @@ def test_candidate_path_actual_dialog_and_csv(qtbot, monkeypatch):
             assert row[column] == tr("candidate_balance_reserve.ok" if geometry.coil_reserve_ok else "candidate_balance_reserve.short")
             assert dict(zip(graph.columns, graph.rows[i], strict=True))[column] == row[column]
         assert "отказ без данных" in dict(table.metadata)[tr("equilibrium_path.candidate_report_limits")]
+        for report in (table, graph):
+            metadata = dict(report.metadata)
+            assert metadata[tr("equilibrium_path.candidate_report_coil_min")] == minima[0]
+            assert metadata[tr("equilibrium_path.candidate_report_compression_min")] == minima[1]
         seen.append(True)
         view.reject()
 
@@ -187,3 +203,69 @@ def test_candidate_failed_path_exports_only_retained_samples(qtbot, monkeypatch,
     assert "НЕ ПРОЙДЕНА" in dict(report.metadata)[tr("equilibrium_path.report_status")]
     assert f"сохранённых точек {len(path.samples)}" in view._candidate_summary.text()
     assert "отказ без данных" in view._candidate_summary.text()
+    assert view._candidate_min_coil.isEnabled() == (not empty)
+    assert view._candidate_min_compression.isEnabled() == (not empty)
+    if empty:
+        assert "минимум не определён" in view._candidate_minima.text()
+        assert "минимум не определён" in dict(report.metadata)[tr("equilibrium_path.candidate_report_coil_min")]
+    else:
+        view._candidate_min_coil.click()
+        assert view._table.currentRow() >= 0
+
+
+def test_candidate_geometry_summary_extrema_are_exact_and_first_on_ties():
+    from math import inf, nextafter
+
+    from suspensionlab.core.spring_candidate import summarize_candidate_geometry
+
+    candidate = SpringCandidate(300, 200, 100, 10, 10)
+    empty = summarize_candidate_geometry(candidate, ())
+    assert empty.total == empty.coil_short == empty.compression_short == 0
+    assert empty.minimum_coil is empty.minimum_compression is None
+    points = ((0, 110), (1, 290), (2, 110), (3, nextafter(290, inf)))
+    result = summarize_candidate_geometry(candidate, points)
+    assert result.total == 4 and result.coil_short == 0 and result.compression_short == 1
+    assert result.minimum_coil is not None and result.minimum_coil.row == 0
+    assert result.minimum_coil.value_mm == 10 and result.minimum_coil.condition_ok
+    assert result.minimum_compression is not None and result.minimum_compression.row == 3
+    assert not result.minimum_compression.condition_ok and result.minimum_compression.value_mm < 10
+    assert summarize_candidate_geometry(candidate, ((1, 290), (2, 290))).minimum_compression.row == 0
+    zero = SpringCandidate(300, 200, 100, 0, 0)
+    result = summarize_candidate_geometry(zero, ((0, 100), (1, 300)))
+    assert result.minimum_coil.value_mm == 0 and not result.minimum_coil.condition_ok
+    assert result.minimum_compression.value_mm == 0 and not result.minimum_compression.condition_ok
+    with pytest.raises(ValueError):
+        summarize_candidate_geometry(candidate, ((inf, 200),))
+    with pytest.raises(ValueError):
+        summarize_candidate_geometry(candidate, ((0, inf),))
+
+
+def test_candidate_mismatch_marks_diagnostic_extremum_and_report(qtbot, monkeypatch):
+    from dataclasses import replace
+
+    from suspensionlab.core.equilibrium import EquilibriumPathError, PathFailure
+    from suspensionlab.i18n import tr
+    from suspensionlab.ui.controller import AppController
+    from suspensionlab.ui.equilibrium_dialog import EquilibriumDialog
+    from suspensionlab.ui.equilibrium_path_dialog import EquilibriumPathDialog
+
+    c = AppController()
+    c.new_project("ring")
+    candidate = SpringCandidate(350, 230, 150, 10, 10, 12.5)
+    problem = SpringEquilibrium(c.project.front, 230, coil_bind_length_mm=150,
+                                spring_characteristic=SpringCharacteristic(350, 12.5, coil_bind_length_mm=150))
+    path = problem.check_path(10, 1000)
+    path = replace(path, failure=PathFailure(10, 10, "branch_mismatch", "ветви не совпали"))
+    monkeypatch.setattr(SpringEquilibrium, "find", lambda *args, **kwargs: (_ for _ in ()).throw(EquilibriumPathError(path)))
+    dialog = EquilibriumDialog(c, candidate=candidate)
+    qtbot.addWidget(dialog)
+    dialog._load.setValue(1000)
+    dialog._run.click()
+    view = EquilibriumPathDialog(path, dialog, candidate=candidate)
+    qtbot.addWidget(view)
+    report = dialog._path_report(path, view._table)
+    minimum = dict(report.metadata)[tr("equilibrium_path.candidate_report_coil_min")]
+    assert "Конечная точка диагностическая" in minimum and minimum in view._candidate_minima.text()
+    view._candidate_min_coil.click()
+    assert view._table.currentRow() == len(path.samples) - 1
+    assert dialog._result is None

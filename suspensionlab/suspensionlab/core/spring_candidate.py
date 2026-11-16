@@ -174,3 +174,48 @@ def summarize_candidate_force(comparison: SpringComparison) -> CandidateForceSum
         overflow=counts["overflow"], minimum=min(values, key=lambda p: p.force_n, default=None),
         maximum=max(values, key=lambda p: p.force_n, default=None),
     )
+
+
+@dataclass(frozen=True)
+class CandidateGeometryExtremum:
+    """Минимальная подписанная разность в сохранённой строке, без округления."""
+
+    row: int
+    travel_mm: float
+    value_mm: float
+    condition_ok: bool
+
+
+@dataclass(frozen=True)
+class CandidateGeometrySummary:
+    total: int
+    coil_short: int
+    compression_short: int
+    minimum_coil: CandidateGeometryExtremum | None
+    minimum_compression: CandidateGeometryExtremum | None
+
+
+def summarize_candidate_geometry(
+    candidate: SpringCandidate, points: tuple[tuple[float, float], ...],
+) -> CandidateGeometrySummary:
+    """Минимумы и количества только по переданным точкам; при равенстве первая строка.
+
+    Точка отказа без данных и промежутки не восстанавливаются. Минимум и
+    выполнение численного условия не подтверждают физическую пригодность.
+    """
+    coil_values: list[CandidateGeometryExtremum] = []
+    compression_values: list[CandidateGeometryExtremum] = []
+    for row, (travel, length) in enumerate(points):
+        if not isfinite(travel):
+            raise ValueError("Ход должен быть конечным")
+        geometry = candidate_geometry(candidate, length)
+        coil_values.append(CandidateGeometryExtremum(row, travel, geometry.coil_clearance_mm,
+                                                     geometry.coil_reserve_ok))
+        compression_values.append(CandidateGeometryExtremum(row, travel, geometry.compression_mm,
+                                                            geometry.compression_reserve_ok))
+    return CandidateGeometrySummary(
+        len(points), sum(not p.condition_ok for p in coil_values),
+        sum(not p.condition_ok for p in compression_values),
+        min(coil_values, key=lambda p: p.value_mm, default=None),
+        min(compression_values, key=lambda p: p.value_mm, default=None),
+    )

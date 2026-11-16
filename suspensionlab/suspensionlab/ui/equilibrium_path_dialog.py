@@ -22,12 +22,15 @@ from PySide6.QtWidgets import (
 )
 
 from ..core.equilibrium import EquilibriumPath
-from ..core.spring_candidate import SpringCandidate, candidate_geometry
+from ..core.spring_candidate import SpringCandidate
 from ..core.sweep_plot import PATH_PLOT_METRICS, PlotPoint, equilibrium_path_plot_points
 from ..export.csv_report import CSVReport
 from ..export.equilibrium_path import (
     CANDIDATE_PATH_COLUMNS,
     PATH_COLUMNS,
+    candidate_path_diagnostic_row,
+    candidate_path_summary,
+    format_candidate_path_minima,
     format_candidate_path_sample,
     format_path_sample,
 )
@@ -65,13 +68,31 @@ class EquilibriumPathDialog(QDialog):
         columns = PATH_COLUMNS + (CANDIDATE_PATH_COLUMNS if candidate is not None else ())
         self._candidate_summary = QLabel(self)
         self._candidate_summary.setWordWrap(True)
+        self._candidate_minima = QLabel(self)
+        self._candidate_minima.setWordWrap(True)
+        self._candidate_min_coil = QPushButton(tr("equilibrium_path.candidate_jump_coil"), self)
+        self._candidate_min_compression = QPushButton(tr("equilibrium_path.candidate_jump_compression"), self)
+        self._candidate_min_coil.setEnabled(False)
+        self._candidate_min_compression.setEnabled(False)
         if candidate is not None:
-            geometries = tuple(candidate_geometry(candidate, sample.spring.length_mm) for sample in path.samples)
-            self._candidate_summary.setText(tr("equilibrium_path.candidate_summary", count=len(geometries),
-                                               coil=sum(not g.coil_reserve_ok for g in geometries),
-                                               compression=sum(not g.compression_reserve_ok for g in geometries)))
+            summary = candidate_path_summary(path, candidate)
+            self._candidate_summary.setText(tr("equilibrium_path.candidate_summary", count=summary.total,
+                                               coil=summary.coil_short, compression=summary.compression_short))
+            self._candidate_minima.setText("\n".join(format_candidate_path_minima(summary, diagnostic_row=candidate_path_diagnostic_row(path))))
+            if summary.minimum_coil is not None and summary.minimum_compression is not None:
+                coil_row = summary.minimum_coil.row
+                compression_row = summary.minimum_compression.row
+                self._candidate_min_coil.setEnabled(True)
+                self._candidate_min_compression.setEnabled(True)
+                self._candidate_min_coil.clicked.connect(lambda: self._select_candidate_minimum(
+                    coil_row, PATH_COLUMNS.index("coil_clearance")))
+                self._candidate_min_compression.clicked.connect(lambda: self._select_candidate_minimum(
+                    compression_row, len(PATH_COLUMNS) + CANDIDATE_PATH_COLUMNS.index("candidate_compression")))
         else:
             self._candidate_summary.hide()
+            self._candidate_minima.hide()
+            self._candidate_min_coil.hide()
+            self._candidate_min_compression.hide()
         self._table = QTableWidget(len(path.samples), len(columns), self)
         self._table.setHorizontalHeaderLabels([tr(f"equilibrium_path.column.{key}") for key in columns])
         self._table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
@@ -132,8 +153,21 @@ class EquilibriumPathDialog(QDialog):
         layout.addWidget(notice)
         layout.addWidget(self._status)
         layout.addWidget(self._candidate_summary)
+        layout.addWidget(self._candidate_minima)
+        candidate_buttons = QHBoxLayout()
+        candidate_buttons.addWidget(self._candidate_min_coil)
+        candidate_buttons.addWidget(self._candidate_min_compression)
+        candidate_buttons.addStretch()
+        layout.addLayout(candidate_buttons)
         layout.addWidget(self._views, 1)
         layout.addLayout(bottom)
+
+    def _select_candidate_minimum(self, row: int, column: int) -> None:
+        self._views.setCurrentIndex(0)
+        self._table.setCurrentCell(row, column)
+        item = self._table.item(row, column)
+        if item is not None:
+            self._table.scrollToItem(item)
 
     def _export_graph(self) -> None:
         if self._graph_report_factory is None:

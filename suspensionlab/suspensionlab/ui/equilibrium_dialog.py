@@ -30,7 +30,13 @@ from ..core.spring_characteristics import SpringCharacteristic
 from ..core.stroke import StrokeLimits
 from ..core.sweep_plot import PATH_PLOT_METRICS, PlotPoint, equilibrium_path_plot_points
 from ..export.csv_report import CSVReport
-from ..export.equilibrium_path import CANDIDATE_PATH_COLUMNS, PATH_COLUMNS
+from ..export.equilibrium_path import (
+    CANDIDATE_PATH_COLUMNS,
+    PATH_COLUMNS,
+    candidate_path_diagnostic_row,
+    candidate_path_summary,
+    format_candidate_path_minima,
+)
 from ..export.plot_report import plot_report_rows
 from ..i18n import tr
 from .controller import AppController
@@ -347,7 +353,13 @@ class EquilibriumDialog(QDialog):
             (tr("equilibrium_path.report_limits"), tr("equilibrium_path.report_warning")),
         ]
         if self._candidate is not None:
-            params.append((tr("equilibrium_path.candidate_report_limits"), tr("equilibrium_path.candidate_report_warning")))
+            summary = candidate_path_summary(path, self._candidate)
+            coil_min, compression_min = format_candidate_path_minima(summary, diagnostic_row=candidate_path_diagnostic_row(path))
+            params.extend((
+                (tr("equilibrium_path.candidate_report_limits"), tr("equilibrium_path.candidate_report_warning")),
+                (tr("equilibrium_path.candidate_report_coil_min"), coil_min),
+                (tr("equilibrium_path.candidate_report_compression_min"), compression_min),
+            ))
 
         def item_text(row: int, column: int) -> str:
             item = table.item(row, column)

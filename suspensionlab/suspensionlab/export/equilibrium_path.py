@@ -1,8 +1,13 @@
 """Форматирование уже рассчитанных точек пути без повторного решения."""
 from __future__ import annotations
 
-from ..core.equilibrium import EquilibriumSample
-from ..core.spring_candidate import SpringCandidate, candidate_geometry
+from ..core.equilibrium import EquilibriumPath, EquilibriumSample
+from ..core.spring_candidate import (
+    CandidateGeometrySummary,
+    SpringCandidate,
+    candidate_geometry,
+    summarize_candidate_geometry,
+)
 from ..i18n import tr
 
 PATH_COLUMNS = ("travel", "length", "coil_clearance", "force", "ratio", "support", "residual",
@@ -11,6 +16,32 @@ PATH_COLUMNS = ("travel", "length", "coil_clearance", "force", "ratio", "support
 
 CANDIDATE_PATH_COLUMNS = ("candidate_compression", "candidate_coil_condition",
                           "candidate_compression_condition", "candidate_status")
+
+
+def candidate_path_summary(path: EquilibriumPath, candidate: SpringCandidate) -> CandidateGeometrySummary:
+    """Только сохранённые данные пути, без повторного решения или выдуманной точки отказа."""
+    return summarize_candidate_geometry(candidate, tuple((s.travel_mm, s.spring.length_mm) for s in path.samples))
+
+
+def candidate_path_diagnostic_row(path: EquilibriumPath) -> int | None:
+    """При несовпадении ветвей последняя сохранённая точка лишь диагностическая."""
+    return len(path.samples) - 1 if path.samples and path.failure and path.failure.kind == "branch_mismatch" else None
+
+
+def format_candidate_path_minima(summary: CandidateGeometrySummary, *,
+                                 diagnostic_row: int | None = None) -> tuple[str, str]:
+    """Общие экранные строки и метаданные CSV с явным округлением."""
+    result = []
+    for key, point in (("coil", summary.minimum_coil), ("compression", summary.minimum_compression)):
+        if point is None:
+            result.append(tr("equilibrium_path.candidate_min_empty"))
+        else:
+            result.append(tr(f"equilibrium_path.candidate_min_{key}", value=f"{point.value_mm:.4f}",
+                             row=point.row + 1, travel=f"{point.travel_mm:+.4f}",
+                             condition=tr("candidate_balance_reserve.ok" if point.condition_ok
+                                          else "candidate_balance_reserve.short"))
+                          + (" " + tr("equilibrium_path.candidate_min_diagnostic") if point.row == diagnostic_row else ""))
+    return result[0], result[1]
 
 
 def format_candidate_path_sample(sample: EquilibriumSample, candidate: SpringCandidate) -> tuple[str, ...]:
