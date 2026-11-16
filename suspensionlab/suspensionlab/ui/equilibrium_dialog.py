@@ -420,6 +420,10 @@ class EquilibriumDialog(QDialog):
                                 front=repr(source.front_kg), rear=repr(source.rear_kg),
                                 left=repr(source.left_kg), right=repr(source.right_kg),
                                 front_pct=repr(source.front_percent), rear_pct=repr(source.rear_percent),
+                                left_pct=repr(source.left_percent), right_pct=repr(source.right_percent),
+                                fl_rr=repr(source.front_left_rear_right_kg), fr_rl=repr(source.front_right_rear_left_kg),
+                                fl_rr_pct=repr(source.front_left_rear_right_percent),
+                                fr_rl_pct=repr(source.front_right_rear_left_percent),
                                 selected=tr(f"mass_load.corner.{source.selected}"),
                                 unsprung=repr(source.unsprung_corner_kg), sprung=repr(source.corner_sprung_kg),
                                 reaction=repr(source.tire_reaction_n), load=repr(source.sprung_load_n))

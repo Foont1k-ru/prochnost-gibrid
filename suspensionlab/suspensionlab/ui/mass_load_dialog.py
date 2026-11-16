@@ -138,6 +138,11 @@ class MassLoadDialog(QDialog):
                                     front=f"{estimate.front_kg:.3f}", rear=f"{estimate.rear_kg:.3f}",
                                     front_pct=f"{estimate.front_percent:.2f}", rear_pct=f"{estimate.rear_percent:.2f}",
                                     left=f"{estimate.left_kg:.3f}", right=f"{estimate.right_kg:.3f}",
+                                    left_pct=f"{estimate.left_percent:.2f}", right_pct=f"{estimate.right_percent:.2f}",
+                                    fl_rr=f"{estimate.front_left_rear_right_kg:.3f}",
+                                    fr_rl=f"{estimate.front_right_rear_left_kg:.3f}",
+                                    fl_rr_pct=f"{estimate.front_left_rear_right_percent:.2f}",
+                                    fr_rl_pct=f"{estimate.front_right_rear_left_percent:.2f}",
                                     corner=f"{estimate.corner_total_kg:.3f}", reaction=f"{estimate.tire_reaction_n:.2f}",
                                     sprung=f"{estimate.corner_sprung_kg:.3f}", load=f"{estimate.sprung_load_n:.2f}",
                                     applied=f"{applied:.1f}"))

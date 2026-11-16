@@ -489,14 +489,17 @@ def run_packaging_check() -> None:
                                ("rear_right", "200"), ("unsprung", "30")):
                 helper._fields[key].setText(value)
             helper._calculate_button.click()
-            _require(helper._apply.isEnabled() and "1100.000" in helper._result.text(),
-                     "Сводка четырёх колёс недоступна")
+            _require(helper._apply.isEnabled() and "1100.000" in helper._result.text()
+                     and "переднее левое + заднее правое 550.000 кг (50.00%)" in helper._result.text(),
+                     "Сводка четырёх колёс и диагоналей недоступна")
             helper._apply.click()
 
         QTimer.singleShot(0, enter_four_wheels)
         equilibrium._mass_load_button.click()
         _require(equilibrium._load.value() == 3138.1 and equilibrium._load_source is not None
-                 and "Четыре введённых" in dict(equilibrium._report_parameters())[tr("equilibrium_ui.load_source")],
+                 and "Четыре введённых" in dict(equilibrium._report_parameters())[tr("equilibrium_ui.load_source")]
+                 and "переднее левое + заднее правое: 550.0 (50.0%)" in
+                 dict(equilibrium._report_parameters())[tr("equilibrium_ui.load_mass_inputs")],
                  "Нагрузка по четырём колёсам не перенесена или потерян источник")
         equilibrium._length.setValue(230)
         equilibrium._load.setValue(SpringEquilibrium(window.controller.project.front, 230).evaluate(12, 1).wheel_support_n)

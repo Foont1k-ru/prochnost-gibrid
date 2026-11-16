@@ -282,6 +282,10 @@ def test_four_wheel_preview_change_and_limits(qtbot, kind):
     assert dialog.estimate.selected == "front_right" and dialog.estimate.corner_total_kg == 300
     assert dialog.estimate.total_kg == 1100 and dialog.applied_load == float(f"{270 * GRAVITY_M_S2:.1f}")
     assert "59.09%" in dialog._result.text() and "проверены" in dialog._result.text()
+    assert "Левая сторона: 600.000 кг (54.55%)" in dialog._result.text()
+    assert "переднее левое + заднее правое 550.000 кг (50.00%)" in dialog._result.text()
+    assert "переднее правое + заднее левое 550.000 кг (50.00%)" in dialog._result.text()
+    assert "не оценка центра масс или пригодности" in dialog._result.text()
     dialog._fields["rear_left"].setText("")
     assert dialog.estimate is None and not dialog._apply.isEnabled()
     dialog._calculate_button.click()
@@ -329,6 +333,10 @@ def test_four_wheel_applies_correct_corner_without_editing_project(window, qtbot
     assert "Четыре предполагаемых" in metadata[tr("equilibrium_ui.load_source")]
     assert tr(f"mass_load.corner.{expected_corner}") in metadata[tr("equilibrium_ui.load_mass_inputs")]
     assert all(f"{value}.0" in metadata[tr("equilibrium_ui.load_mass_inputs")] for value in readings.values())
+    details = metadata[tr("equilibrium_ui.load_mass_inputs")]
+    assert "левая сторона: 600.0 (54.54545454545454%)" in details
+    assert "переднее левое + заднее правое: 550.0 (50.0%)" in details
+    assert "переднее правое + заднее левое: 550.0 (50.0%)" in details
     dialog._load.setValue(dialog._load.value() + 1)
     assert dialog._load_source is None
     assert window.controller.project.to_dict() == original
@@ -363,6 +371,8 @@ def test_four_wheel_snapshot_in_real_balance_csv(window, qtbot, monkeypatch):
     metadata = dict(dialog._report_parameters())
     assert "показания весов" in metadata[tr("equilibrium_ui.load_source")]
     assert "не проверены" in metadata[tr("equilibrium_ui.load_source")]
+    details = metadata[tr("equilibrium_ui.load_mass_inputs")]
+    assert "переднее левое + заднее правое" in details and "переднее правое + заднее левое" in details
     dialog._run.click()
     assert dialog._result is not None
     captured = []

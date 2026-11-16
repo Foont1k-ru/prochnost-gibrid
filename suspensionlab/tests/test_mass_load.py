@@ -93,3 +93,32 @@ def test_four_wheel_rejects_missing_invalid_and_overflow(readings, selected, uns
 
     with pytest.raises(ValueError):
         four_wheel_mass_load(*readings, selected, unsprung, source)
+
+
+@pytest.mark.parametrize("readings", [
+    (250, 250, 250, 250),
+    (350, 300, 250, 200),
+    (150, 500, 200, 400),
+    (1e-200, 1e200, 2e-200, 3e200),
+])
+def test_four_wheel_side_and_diagonal_shares(readings):
+    from suspensionlab.core.mass_load import four_wheel_mass_load
+
+    fl, fr, rl, rr = readings
+    result = four_wheel_mass_load(*readings, "front_left", 0, "assumed")
+    assert result.left_percent == pytest.approx((fl + rl) / result.total_kg * 100)
+    assert result.right_percent == pytest.approx((fr + rr) / result.total_kg * 100)
+    assert result.front_left_rear_right_kg == pytest.approx(fl + rr)
+    assert result.front_right_rear_left_kg == pytest.approx(fr + rl)
+    assert result.front_left_rear_right_percent == pytest.approx((fl + rr) / result.total_kg * 100)
+    assert result.front_right_rear_left_percent == pytest.approx((fr + rl) / result.total_kg * 100)
+    assert result.front_left_rear_right_percent + result.front_right_rear_left_percent == pytest.approx(100)
+
+
+def test_diagonals_are_labelled_by_actual_wheels_not_selected_side():
+    from suspensionlab.core.mass_load import four_wheel_mass_load
+
+    first = four_wheel_mass_load(100, 200, 300, 400, "front_left", 0, "weighed")
+    last = four_wheel_mass_load(100, 200, 300, 400, "rear_right", 0, "weighed")
+    assert first.front_left_rear_right_kg == last.front_left_rear_right_kg == 500
+    assert first.front_right_rear_left_kg == last.front_right_rear_left_kg == 500

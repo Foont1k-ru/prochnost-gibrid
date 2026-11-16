@@ -98,6 +98,30 @@ class FourWheelMassLoad:
     tire_reaction_n: float
     sprung_load_n: float
 
+    @property
+    def left_percent(self) -> float:
+        return self.left_kg / self.total_kg * 100.0
+
+    @property
+    def right_percent(self) -> float:
+        return self.right_kg / self.total_kg * 100.0
+
+    @property
+    def front_left_rear_right_kg(self) -> float:
+        return fsum((self.front_left_kg, self.rear_right_kg))
+
+    @property
+    def front_right_rear_left_kg(self) -> float:
+        return fsum((self.front_right_kg, self.rear_left_kg))
+
+    @property
+    def front_left_rear_right_percent(self) -> float:
+        return self.front_left_rear_right_kg / self.total_kg * 100.0
+
+    @property
+    def front_right_rear_left_percent(self) -> float:
+        return self.front_right_rear_left_kg / self.total_kg * 100.0
+
 
 def four_wheel_mass_load(
     front_left: float, front_right: float, rear_left: float, rear_right: float,
