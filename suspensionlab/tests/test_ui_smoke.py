@@ -4485,12 +4485,12 @@ def test_spring_candidate_balance_bridge_and_snapshot_export(window, qtbot, monk
             data = json.loads(metadata[tr("equilibrium_ui.candidate_metadata")])
             assert data["installed_mm"] == snapshot.installed_mm and data["coil_bind_mm"] == snapshot.coil_bind_mm
             assert data["linear_rate_n_mm"] == 12.5 and data["coil_reserve_mm"] == 10
-            assert "только в оценке середины" in metadata[tr("equilibrium_ui.model_metadata")]
+            assert "в сохранённых точках пути" in metadata[tr("equilibrium_ui.model_metadata")]
             balance._export_button.click()
             assert dict(captured[0].metadata)[tr("equilibrium_ui.spring_source")] == metadata[tr("equilibrium_ui.spring_source")]
             path = balance._path
             assert path is not None
-            view = EquilibriumPathDialog(path, balance)
+            view = EquilibriumPathDialog(path, balance, candidate=snapshot)
             qtbot.addWidget(view)
             path_report = balance._path_report(path, view._table)
             assert dict(path_report.metadata)[tr("equilibrium_ui.candidate_metadata")] == metadata[tr("equilibrium_ui.candidate_metadata")]

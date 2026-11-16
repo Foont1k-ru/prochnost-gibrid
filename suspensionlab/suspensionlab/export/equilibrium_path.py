@@ -2,10 +2,24 @@
 from __future__ import annotations
 
 from ..core.equilibrium import EquilibriumSample
+from ..core.spring_candidate import SpringCandidate, candidate_geometry
 from ..i18n import tr
 
 PATH_COLUMNS = ("travel", "length", "coil_clearance", "force", "ratio", "support", "residual",
                 "spring_status", "damper_length", "compression_clearance", "extension_clearance", "damper_status")
+
+
+CANDIDATE_PATH_COLUMNS = ("candidate_compression", "candidate_coil_condition",
+                          "candidate_compression_condition", "candidate_status")
+
+
+def format_candidate_path_sample(sample: EquilibriumSample, candidate: SpringCandidate) -> tuple[str, ...]:
+    """Сравнение только сохранённой точки, статусы определяются до округления."""
+    geometry = candidate_geometry(candidate, sample.spring.length_mm)
+    return (f"{geometry.compression_mm:.4f}",
+            tr("candidate_balance_reserve.ok" if geometry.coil_reserve_ok else "candidate_balance_reserve.short"),
+            tr("candidate_balance_reserve.ok" if geometry.compression_reserve_ok else "candidate_balance_reserve.short"),
+            tr(f"spring_candidate.report.status.{geometry.status}"))
 
 
 def format_path_sample(sample: EquilibriumSample) -> tuple[str, ...]:

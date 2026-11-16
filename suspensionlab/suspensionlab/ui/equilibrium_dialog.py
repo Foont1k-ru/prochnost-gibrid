@@ -30,7 +30,7 @@ from ..core.spring_characteristics import SpringCharacteristic
 from ..core.stroke import StrokeLimits
 from ..core.sweep_plot import PATH_PLOT_METRICS, PlotPoint, equilibrium_path_plot_points
 from ..export.csv_report import CSVReport
-from ..export.equilibrium_path import PATH_COLUMNS
+from ..export.equilibrium_path import CANDIDATE_PATH_COLUMNS, PATH_COLUMNS
 from ..export.plot_report import plot_report_rows
 from ..i18n import tr
 from .controller import AppController
@@ -314,7 +314,7 @@ class EquilibriumDialog(QDialog):
             return
         path = self._path
         dialog = EquilibriumPathDialog(
-            path, self, report_factory=lambda table: self._path_report(path, table),
+            path, self, candidate=self._candidate, report_factory=lambda table: self._path_report(path, table),
             graph_report_factory=lambda table, points, selected: self._path_graph_report(path, table, points, selected),
         )
         self._path_dialog = dialog
@@ -326,7 +326,8 @@ class EquilibriumDialog(QDialog):
 
     def _path_report(self, path: EquilibriumPath, table: QTableWidget) -> CSVReport:
         """Снимок таблицы и результата проверки с явным описанием отказа."""
-        if self._path is not path or table.rowCount() != len(path.samples) or table.columnCount() != len(PATH_COLUMNS):
+        expected_columns = PATH_COLUMNS + (CANDIDATE_PATH_COLUMNS if self._candidate is not None else ())
+        if self._path is not path or table.rowCount() != len(path.samples) or table.columnCount() != len(expected_columns):
             raise ValueError(tr("equilibrium_path.stale"))
         if ((path.failure is None and (self._result is None or self._result.path is not path))
                 or (path.failure is not None and self._result is not None)):
@@ -345,6 +346,9 @@ class EquilibriumDialog(QDialog):
             (tr("equilibrium_path.report_failure_reason"), failure.reason if failure else "—"),
             (tr("equilibrium_path.report_limits"), tr("equilibrium_path.report_warning")),
         ]
+        if self._candidate is not None:
+            params.append((tr("equilibrium_path.candidate_report_limits"), tr("equilibrium_path.candidate_report_warning")))
+
         def item_text(row: int, column: int) -> str:
             item = table.item(row, column)
             if item is None:
@@ -367,7 +371,10 @@ class EquilibriumDialog(QDialog):
         table_report = self._path_report(path, table)  # Проверяет актуальность и наличие всех ячеек.
         if points != equilibrium_path_plot_points(path):
             raise ValueError(tr("equilibrium_path.stale"))
-        status_columns = (PATH_COLUMNS.index("spring_status"), PATH_COLUMNS.index("damper_status"))
+        status_columns: tuple[int, ...] = (PATH_COLUMNS.index("spring_status"), PATH_COLUMNS.index("damper_status"))
+        if self._candidate is not None:
+            status_columns += tuple(len(PATH_COLUMNS) + CANDIDATE_PATH_COLUMNS.index(key)
+                                    for key in ("candidate_coil_condition", "candidate_compression_condition", "candidate_status"))
         context_labels = tuple(table_report.columns[i] for i in status_columns)
         context = tuple(tuple(row[i] for i in status_columns) for row in table_report.rows)
         columns, rows = plot_report_rows(

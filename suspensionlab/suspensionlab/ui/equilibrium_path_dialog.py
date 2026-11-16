@@ -22,9 +22,15 @@ from PySide6.QtWidgets import (
 )
 
 from ..core.equilibrium import EquilibriumPath
+from ..core.spring_candidate import SpringCandidate, candidate_geometry
 from ..core.sweep_plot import PATH_PLOT_METRICS, PlotPoint, equilibrium_path_plot_points
 from ..export.csv_report import CSVReport
-from ..export.equilibrium_path import PATH_COLUMNS, format_path_sample
+from ..export.equilibrium_path import (
+    CANDIDATE_PATH_COLUMNS,
+    PATH_COLUMNS,
+    format_candidate_path_sample,
+    format_path_sample,
+)
 from ..i18n import tr
 from .canvas.sweep_plot import SweepPlot
 from .table_export import save_table_dialog
@@ -34,6 +40,7 @@ class EquilibriumPathDialog(QDialog):
     """Только пройденные точки и отдельно первый отказ, без повторного расчёта."""
 
     def __init__(self, path: EquilibriumPath, parent: QWidget | None = None, *,
+                 candidate: SpringCandidate | None = None,
                  report_factory: Callable[[QTableWidget], CSVReport] | None = None,
                  graph_report_factory: Callable[[QTableWidget, tuple[PlotPoint, ...], str], CSVReport] | None = None) -> None:
         super().__init__(parent)
@@ -55,14 +62,27 @@ class EquilibriumPathDialog(QDialog):
                                     count=len(path.samples), requested=f"{failure.requested_travel_mm:.4f}",
                                     actual=f"{failure.failure_travel_mm:.4f}",
                                     kind=tr(f"equilibrium_path.failure.{failure.kind}"), reason=failure.reason))
-        self._table = QTableWidget(len(path.samples), len(PATH_COLUMNS), self)
-        self._table.setHorizontalHeaderLabels([tr(f"equilibrium_path.column.{key}") for key in PATH_COLUMNS])
+        columns = PATH_COLUMNS + (CANDIDATE_PATH_COLUMNS if candidate is not None else ())
+        self._candidate_summary = QLabel(self)
+        self._candidate_summary.setWordWrap(True)
+        if candidate is not None:
+            geometries = tuple(candidate_geometry(candidate, sample.spring.length_mm) for sample in path.samples)
+            self._candidate_summary.setText(tr("equilibrium_path.candidate_summary", count=len(geometries),
+                                               coil=sum(not g.coil_reserve_ok for g in geometries),
+                                               compression=sum(not g.compression_reserve_ok for g in geometries)))
+        else:
+            self._candidate_summary.hide()
+        self._table = QTableWidget(len(path.samples), len(columns), self)
+        self._table.setHorizontalHeaderLabels([tr(f"equilibrium_path.column.{key}") for key in columns])
         self._table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._table.setAlternatingRowColors(True)
         for index, sample in enumerate(path.samples):
-            for column, text in enumerate(format_path_sample(sample)):
+            row = format_path_sample(sample)
+            if candidate is not None:
+                row += format_candidate_path_sample(sample, candidate)
+            for column, text in enumerate(row):
                 self._table.setItem(index, column, QTableWidgetItem(text))
         self._plot = SweepPlot(self, metrics=PATH_PLOT_METRICS, label_prefix="equilibrium_path.column",
                                x_label="equilibrium_path.column.travel", empty_text="equilibrium_path.plot_empty",
@@ -111,6 +131,7 @@ class EquilibriumPathDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.addWidget(notice)
         layout.addWidget(self._status)
+        layout.addWidget(self._candidate_summary)
         layout.addWidget(self._views, 1)
         layout.addLayout(bottom)
 

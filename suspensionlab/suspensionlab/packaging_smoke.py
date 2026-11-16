@@ -320,6 +320,18 @@ def run_packaging_check() -> None:
                      "Только в оценке середины" in balance._output.text() and "кандидат" in
                      dict(balance._report_parameters())[tr("equilibrium_ui.spring_source")],
                      "Условный баланс кандидата или сводка запасов недоступны")
+            path = balance._path
+            _require(path is not None, "Путь кандидата недоступен")
+            assert path is not None
+            view = EquilibriumPathDialog(path, balance, candidate=c)
+            report = balance._path_report(path, view._table)
+            graph = balance._path_graph_report(path, view._table, view._plot.points, view._plot_metric.currentText())
+            column = tr("equilibrium_path.column.candidate_status")
+            _require(column in report.columns and column in graph.columns and len(report.rows) == len(path.samples)
+                     and "отказ без данных" in view._candidate_summary.text(),
+                     "Запасы кандидата по сохранённым точкам не показаны")
+            write_csv_report(report, temporary / "candidate-path.csv")
+            view.close()
             balance.reject()
 
         QTimer.singleShot(0, inspect_candidate_balance)
