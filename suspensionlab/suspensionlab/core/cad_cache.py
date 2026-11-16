@@ -22,6 +22,17 @@ class Fingerprint:
     digest: bytes
 
 
+def _stable_stats(first: os.stat_result, after: os.stat_result, path_before: os.stat_result,
+                  current: os.stat_result, *, windows: bool) -> bool:
+    def identity(item: os.stat_result) -> tuple[int, int, int, int, int]:
+        return item.st_dev, item.st_ino, item.st_size, item.st_mtime_ns, item.st_ctime_ns
+    # Windows CPython может давать разные inode/ctime у fstat дескриптора и stat
+    # пути. Сравниваем каждый источник сам с собой, а между ними лишь размер.
+    if identity(first) != identity(after) or identity(path_before) != identity(current):
+        return False
+    return first.st_size == path_before.st_size and (windows or identity(first) == identity(path_before))
+
+
 def fingerprint(source: Path, cancelled: Callable[[], bool]) -> Fingerprint | None:
     """Хеш содержимого и проверка обычной замены/правки файла во время чтения.
 
@@ -35,6 +46,7 @@ def fingerprint(source: Path, cancelled: Callable[[], bool]) -> Fingerprint | No
         with resolved.open("rb") as stream:
             descriptor = stream.fileno()
             first = os.fstat(descriptor)
+            path_before = source.stat()
             if not stat.S_ISREG(first.st_mode) or not 0 < first.st_size <= MAX_BYTES:
                 return None
             digest = hashlib.sha256()
@@ -48,9 +60,7 @@ def fingerprint(source: Path, cancelled: Callable[[], bool]) -> Fingerprint | No
                 digest.update(chunk)
             after = os.fstat(descriptor)
             current = source.stat()
-            def identity(item: os.stat_result) -> tuple[int, int, int, int, int]:
-                return item.st_dev, item.st_ino, item.st_size, item.st_mtime_ns, item.st_ctime_ns
-            if total != first.st_size or identity(first) != identity(after) or identity(first) != identity(current):
+            if total != first.st_size or not _stable_stats(first, after, path_before, current, windows=os.name == "nt"):
                 raise CadPreviewError("source_changed")
             if cancelled():
                 raise CadPreviewError("cancelled")

@@ -105,3 +105,23 @@ def test_hashes_path_distinguishes_identical_files(tmp_path):
     a, b = fingerprint(one, lambda: False), fingerprint(two, lambda: False)
     assert a and b and a.digest == b.digest and a != b
     assert isinstance(Path(a.resolved), Path)
+
+
+def test_windows_stat_and_fstat_may_have_different_inode_or_ctime(tmp_path):
+    from dataclasses import dataclass, replace
+
+    from suspensionlab.core.cad_cache import _stable_stats
+    @dataclass
+    class Stats:
+        st_dev: int = 1
+        st_ino: int = 2
+        st_size: int = 100
+        st_mtime_ns: int = 1000
+        st_ctime_ns: int = 2000
+    handle = Stats(st_ino=0, st_ctime_ns=100)
+    path = Stats()
+    assert _stable_stats(handle, handle, path, path, windows=True)
+    assert not _stable_stats(handle, handle, path, path, windows=False)
+    assert not _stable_stats(handle, replace(handle, st_size=101), path, path, windows=True)
+    assert not _stable_stats(handle, handle, path, replace(path, st_mtime_ns=999), windows=True)
+    assert not _stable_stats(handle, handle, path, replace(path, st_size=101), windows=True)
