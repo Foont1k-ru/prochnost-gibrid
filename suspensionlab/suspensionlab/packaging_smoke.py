@@ -315,9 +315,11 @@ def run_packaging_check() -> None:
                                         coil_bind_length_mm=c.coil_bind_mm, spring_characteristic=characteristic)
             balance._load.setValue(problem.evaluate(12, 1).wheel_support_n)
             balance._run.click()
-            _require(balance._result is not None and "кандидат" in
+            _require(balance._result is not None and balance._display_values is not None and
+                     "candidate_coil_condition" in balance._display_values and
+                     "Только в оценке середины" in balance._output.text() and "кандидат" in
                      dict(balance._report_parameters())[tr("equilibrium_ui.spring_source")],
-                     "Условный баланс кандидата не рассчитан")
+                     "Условный баланс кандидата или сводка запасов недоступны")
             balance.reject()
 
         QTimer.singleShot(0, inspect_candidate_balance)

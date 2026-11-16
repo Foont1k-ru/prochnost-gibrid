@@ -49,3 +49,39 @@ def test_candidate_context_cannot_silently_switch_axes(qtbot):
     dialog._side.setCurrentIndex(dialog._side.findData("right"))
     dialog._run.click()
     assert dialog._result is None and "заново" in dialog._status.text()
+
+
+def test_only_estimate_reserve_evaluated_and_exported(qtbot, monkeypatch):
+    from suspensionlab.i18n import tr
+    from suspensionlab.ui import equilibrium_dialog
+    from suspensionlab.ui.controller import AppController
+    from suspensionlab.ui.equilibrium_dialog import EquilibriumDialog
+
+    controller = AppController()
+    controller.new_project("ring")
+    before = controller.project.to_dict()
+    candidate = SpringCandidate(350, 230, 150, 1000, 1000, 12.5)
+    characteristic = SpringCharacteristic(350, 12.5, coil_bind_length_mm=150)
+    target = SpringEquilibrium(controller.project.front, 230, coil_bind_length_mm=150,
+                               spring_characteristic=characteristic).evaluate(12, 1).wheel_support_n
+    dialog = EquilibriumDialog(controller, candidate=candidate)
+    qtbot.addWidget(dialog)
+    dialog._load.setValue(target)
+    dialog._run.click()
+    assert dialog._result is not None and dialog._display_values is not None
+    values = dialog._display_values
+    assert values["candidate_coil_condition"] == "не выполнено по численному критерию"
+    assert values["candidate_compression_condition"] == "не выполнено по численному критерию"
+    assert values["candidate_status"] == tr("spring_candidate.report.status.reserve_short")
+    assert "Только в оценке середины" in dialog._output.text()
+    assert "Путь по запасам" in dialog._output.text()
+    captured = []
+    monkeypatch.setattr(equilibrium_dialog, "save_table_dialog", lambda _parent, report: captured.append(report))
+    dialog._export_button.click()
+    rows = dict(captured[0].rows)
+    for key in ("candidate_coil", "candidate_compression", "candidate_coil_condition",
+                "candidate_compression_condition", "candidate_status"):
+        assert rows[tr(f"equilibrium_ui.field.{key}")] == values[key]
+    assert controller.project.to_dict() == before
+    dialog._load.setValue(dialog._load.value() + 10)
+    assert dialog._display_values is None and not dialog._export_button.isEnabled()

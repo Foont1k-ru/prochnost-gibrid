@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
 
 from ..core.equilibrium import EquilibriumPath, EquilibriumPathError, EquilibriumResult, SpringEquilibrium
 from ..core.mass_load import CornerKey, CornerMassLoad, FourWheelMassLoad, MassLoadEstimate, SymmetricMassLoad
-from ..core.spring_candidate import SpringCandidate
+from ..core.spring_candidate import SpringCandidate, candidate_geometry
 from ..core.spring_characteristics import SpringCharacteristic
 from ..core.stroke import StrokeLimits
 from ..core.sweep_plot import PATH_PLOT_METRICS, PlotPoint, equilibrium_path_plot_points
@@ -43,6 +43,8 @@ LOG = logging.getLogger(__name__)
 # Порядок и подписи для CSV; значения берутся из того же снимка, что и текст окна.
 _RESULT_FIELDS = ("lower", "upper", "lower_residual", "upper_residual", "travel", "length", "spring_force",
                   "ratio", "support", "residual", "samples", "step", "bind", "damper")
+_CANDIDATE_RESULT_FIELDS = ("candidate_coil", "candidate_compression", "candidate_coil_condition",
+                            "candidate_compression_condition", "candidate_status")
 
 
 class EquilibriumDialog(QDialog):
@@ -293,7 +295,18 @@ class EquilibriumDialog(QDialog):
             "bind": tr("equilibrium_ui.checked" if self._effective_bind() is not None else "equilibrium_ui.unchecked"),
             "damper": tr("equilibrium_ui.checked" if self._damper.isChecked() else "equilibrium_ui.unchecked"),
         }
-        self._output.setText(tr("equilibrium_ui.result", **self._display_values))
+        output = tr("equilibrium_ui.result", **self._display_values)
+        if self._candidate is not None:
+            geometry = candidate_geometry(self._candidate, point.spring.length_mm)
+            self._display_values.update({
+                "candidate_coil": f"{geometry.coil_clearance_mm:.4f}",
+                "candidate_compression": f"{geometry.compression_mm:.4f}",
+                "candidate_coil_condition": tr("candidate_balance_reserve.ok" if geometry.coil_reserve_ok else "candidate_balance_reserve.short"),
+                "candidate_compression_condition": tr("candidate_balance_reserve.ok" if geometry.compression_reserve_ok else "candidate_balance_reserve.short"),
+                "candidate_status": tr(f"spring_candidate.report.status.{geometry.status}"),
+            })
+            output += "\n\n" + tr("candidate_balance_reserve.result", **self._display_values)
+        self._output.setText(output)
         self._export_button.setEnabled(True)
 
     def _show_path(self) -> None:
@@ -409,8 +422,8 @@ class EquilibriumDialog(QDialog):
             spring_data = json.dumps({"free_mm": self._candidate.free_mm, "installed_mm": self._candidate.installed_mm,
                                       "coil_bind_mm": self._candidate.coil_bind_mm,
                                       "linear_rate_n_mm": self._candidate.linear_rate_n_mm,
-                                      "coil_reserve_mm_not_checked": self._candidate.coil_reserve_mm,
-                                      "compression_reserve_mm_not_checked": self._candidate.compression_reserve_mm},
+                                      "coil_reserve_mm": self._candidate.coil_reserve_mm,
+                                      "compression_reserve_mm": self._candidate.compression_reserve_mm},
                                      ensure_ascii=False, sort_keys=True, allow_nan=False)
             spring_label = tr("equilibrium_ui.candidate_metadata")
             limitations = tr("equilibrium_ui.candidate_notice", free=repr(self._candidate.free_mm),
@@ -442,7 +455,8 @@ class EquilibriumDialog(QDialog):
         if self._result is None or self._display_values is None:
             return
         try:
-            rows = tuple((tr(f"equilibrium_ui.field.{key}"), self._display_values[key]) for key in _RESULT_FIELDS)
+            fields = _RESULT_FIELDS + (_CANDIDATE_RESULT_FIELDS if self._candidate is not None else ())
+            rows = tuple((tr(f"equilibrium_ui.field.{key}"), self._display_values[key]) for key in fields)
             report = make_report(self.controller, tr("equilibrium_ui.title"), self._report_parameters(),
                                  (tr("equilibrium_ui.field_name"), tr("equilibrium_ui.field_value")), rows,
                                  precision_text=tr("equilibrium_ui.export_precision"))

@@ -125,3 +125,35 @@ def test_force_extrema_selected_before_display_rounding():
     result = summarize_candidate_force(compare_spring_candidate(((0, 250), (1, 249.9999)), 200, candidate))
     assert result.maximum is not None and result.maximum.row == 1
     assert result.minimum is not None and result.minimum.row == 0
+
+
+def test_candidate_geometry_reserve_conditions_use_exact_values():
+    from suspensionlab.core.spring_candidate import candidate_geometry
+
+    candidate = SpringCandidate(300, 200, 100, 10, 10)
+    g = candidate_geometry(candidate, 110)
+    assert g.status == "clear" and g.coil_reserve_ok and g.compression_reserve_ok
+    g = candidate_geometry(candidate, nextafter(110, 0))
+    assert g.status == "reserve_short" and not g.coil_reserve_ok and g.compression_reserve_ok
+    g = candidate_geometry(candidate, 290)
+    assert g.status == "clear" and g.coil_reserve_ok and g.compression_reserve_ok
+    g = candidate_geometry(candidate, nextafter(290, inf))
+    assert g.status == "reserve_short" and g.coil_reserve_ok and not g.compression_reserve_ok
+    g = candidate_geometry(SpringCandidate(300, 200, 100, 150, 100), 200)
+    assert g.status == "reserve_short" and not g.coil_reserve_ok and g.compression_reserve_ok
+    g = candidate_geometry(SpringCandidate(300, 200, 100, 150, 150), 200)
+    assert g.status == "reserve_short" and not g.coil_reserve_ok and not g.compression_reserve_ok
+
+
+def test_candidate_geometry_zero_reserves_do_not_validate_contact_or_free_boundary():
+    from suspensionlab.core.spring_candidate import candidate_geometry
+
+    candidate = SpringCandidate(300, 200, 100, 0, 0)
+    assert candidate_geometry(candidate, 0).status == "invalid"
+    assert candidate_geometry(candidate, 100).status == "coil_bind"
+    assert not candidate_geometry(candidate, 100).coil_reserve_ok
+    assert candidate_geometry(candidate, 300).status == "uncompressed"
+    assert not candidate_geometry(candidate, 300).compression_reserve_ok
+    assert candidate_geometry(candidate, 301).compression_mm == -1
+    with pytest.raises(ValueError):
+        candidate_geometry(candidate, nan)

@@ -33,6 +33,43 @@ class SpringCandidate:
 
 
 @dataclass(frozen=True)
+class CandidateGeometry:
+    """Подписанные разности и численные условия в одной исходной точке."""
+
+    length_mm: float
+    coil_clearance_mm: float
+    compression_mm: float
+    coil_reserve_ok: bool
+    compression_reserve_ok: bool
+    status: CandidateStatus
+
+
+def candidate_geometry(candidate: SpringCandidate, length_mm: float) -> CandidateGeometry:
+    """Категории без округления; границы контакта важны и при нулевом запасе.
+
+    Это только сравнение заданных чисел, не проверка удержания, монтажа,
+    прочности, соседних положений или безопасности.
+    """
+    coil = length_mm - candidate.coil_bind_mm
+    compression = candidate.free_mm - length_mm
+    if not all(isfinite(x) for x in (length_mm, coil, compression)):
+        raise ValueError("Расчётная длина или запас не являются конечными")
+    coil_ok = length_mm > 0 and coil > 0 and coil >= candidate.coil_reserve_mm
+    compression_ok = length_mm > 0 and compression > 0 and compression >= candidate.compression_reserve_mm
+    if length_mm <= 0:
+        status: CandidateStatus = "invalid"
+    elif coil <= 0:
+        status = "coil_bind"
+    elif compression <= 0:
+        status = "uncompressed"
+    elif not coil_ok or not compression_ok:
+        status = "reserve_short"
+    else:
+        status = "clear"
+    return CandidateGeometry(length_mm, coil, compression, coil_ok, compression_ok, status)
+
+
+@dataclass(frozen=True)
 class SpringCandidatePoint:
     travel_mm: float
     length_mm: float | None
@@ -78,20 +115,8 @@ def compare_spring_candidate(
         if not isfinite(original) or original <= 0:
             raise ValueError("Исходная длина должна быть положительной и конечной")
         length = candidate.installed_mm + (original - reference_installed_mm)
-        coil = length - candidate.coil_bind_mm
-        compression = candidate.free_mm - length
-        if not all(isfinite(x) for x in (length, coil, compression)):
-            raise ValueError("Расчётная длина или запас не являются конечными")
-        if length <= 0:
-            status: CandidateStatus = "invalid"
-        elif coil <= 0:
-            status = "coil_bind"
-        elif compression <= 0:
-            status = "uncompressed"
-        elif coil < candidate.coil_reserve_mm or compression < candidate.compression_reserve_mm:
-            status = "reserve_short"
-        else:
-            status = "clear"
+        geometry = candidate_geometry(candidate, length)
+        coil, compression, status = geometry.coil_clearance_mm, geometry.compression_mm, geometry.status
         force = None
         if characteristic is None:
             force_status = "disabled"
