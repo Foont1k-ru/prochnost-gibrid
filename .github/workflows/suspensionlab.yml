@@ -14,6 +14,15 @@ on:
         description: ID прогона с отчётом для диагностики (необязательно)
         required: false
         type: string
+      diagnostic_artifact:
+        description: Отчёт для диагностики
+        required: false
+        type: choice
+        default: windows
+        options:
+          - windows
+          - python311-ubuntu-latest
+          - python311-windows-latest
 
 permissions:
   contents: read
@@ -86,6 +95,9 @@ jobs:
         run: python -m pip check
       - name: Полный набор тестов и отдельные процессы Qt
         run: python -m pytest -q --junitxml=python311-results.xml
+      - name: Показать ошибки Python 3.11 в аннотациях
+        if: failure()
+        run: python scripts/annotate_pytest.py python311-results.xml
       - name: Проверить исходный запуск и таблицу в smoke-тесте
         run: python packaging_entry.py --packaging-check python311-smoke.txt
       - name: Сохранить отчёт тестов
@@ -171,13 +183,22 @@ jobs:
       PYTHONUTF8: '1'
       GH_TOKEN: ${{ github.token }}
       RUN_ID: ${{ inputs.diagnostic_run_id }}
+      REPORT_KIND: ${{ inputs.diagnostic_artifact }}
     steps:
       - uses: actions/checkout@v4
       - name: Прочитать результаты указанного прогона
         shell: pwsh
         run: |
           if ($env:RUN_ID -notmatch '^\d+$') { throw "Invalid run ID" }
-          gh run download $env:RUN_ID --name suspensionlab-windows-test-results --dir diagnostic-report
+          if ($env:REPORT_KIND -eq 'windows' -or $env:REPORT_KIND -eq '') {
+            $artifact = 'suspensionlab-windows-test-results'
+            $report = 'diagnostic-report/test-results.xml'
+          } elseif ($env:REPORT_KIND -in @('python311-ubuntu-latest', 'python311-windows-latest')) {
+            $artifact = "suspensionlab-$env:REPORT_KIND-test-results"
+            $report = 'diagnostic-report/python311-results.xml'
+          } else { throw 'Invalid report type' }
+          gh run download $env:RUN_ID --name $artifact --dir diagnostic-report
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python scripts/annotate_pytest.py diagnostic-report/test-results.xml
+          if (-not (Test-Path $report)) { throw 'Report missing' }
+          python scripts/annotate_pytest.py $report
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
