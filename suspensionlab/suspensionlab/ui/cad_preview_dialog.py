@@ -8,6 +8,7 @@ from time import monotonic
 import numpy as np
 from PySide6.QtCore import QSettings, Qt, QThread, QTimer, Signal
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -22,7 +23,7 @@ from PySide6.QtWidgets import (
 
 from ..config import settings_path
 from ..core.cad_cache import CadMeshCache
-from ..core.cad_measurement import measurement_distance
+from ..core.cad_measurement import measurement_summary
 from ..core.cad_mesh import CadMesh
 from ..core.cad_transport import CadJob, CadPreviewError
 from ..diagnostic_events import event
@@ -153,8 +154,16 @@ class CadPreviewDialog(QDialog):
         self._clear_measure = QPushButton(tr("cad_preview.measure_clear"), self)
         self._clear_measure.setEnabled(False)
         self._clear_measure.clicked.connect(self._clear_measurement)
+        self._swap_measure = QPushButton(tr("cad_preview.measure_swap"), self)
+        self._swap_measure.setEnabled(False)
+        self._swap_measure.clicked.connect(self._swap_measurement)
+        self._copy_measure = QPushButton(tr("cad_preview.measure_copy"), self)
+        self._copy_measure.setEnabled(False)
+        self._copy_measure.clicked.connect(self._copy_measurement)
         measure_row.addWidget(self._measure)
         measure_row.addStretch(1)
+        measure_row.addWidget(self._swap_measure)
+        measure_row.addWidget(self._copy_measure)
         measure_row.addWidget(self._clear_measure)
         layout.addLayout(measure_row)
         self._view = CadPreview(self)
@@ -180,7 +189,7 @@ class CadPreviewDialog(QDialog):
         layout.addWidget(self._event_label)
         self._measurement = QLabel(tr("cad_preview.measure_warning"), self)
         self._measurement.setWordWrap(True)
-        self._measurement.setMinimumHeight(self._measurement.fontMetrics().lineSpacing() * 4)
+        self._measurement.setMinimumHeight(self._measurement.fontMetrics().lineSpacing() * 7)
         self._measurement.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         layout.addWidget(self._measurement)
         self._buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close, self)
@@ -328,15 +337,49 @@ class CadPreviewDialog(QDialog):
             coords = ", ".join(f"{value:.2f}" for value in point)
             values.append(tr("cad_preview.measure_point", label=label, coords=coords))
         if len(self._measurement_points) == 2:
-            length = measurement_distance(*self._measurement_points)
-            values.append(tr("cad_preview.measure_distance", value=f"{length:.2f}"))
-        if values:
+            summary = measurement_summary(*self._measurement_points)
+            values.append(tr("cad_preview.measure_distance", value=f"{summary.distance:.2f}"))
+            delta = ", ".join(f"{value:+.2f}" for value in summary.delta)
+            midpoint = ", ".join(f"{value:.2f}" for value in summary.midpoint)
+            lines.append("   ·   ".join(values))
+            lines.append(tr("cad_preview.measure_delta", values=delta))
+            lines.append(tr("cad_preview.measure_planes", xy=f"{summary.xy:.2f}", xz=f"{summary.xz:.2f}", yz=f"{summary.yz:.2f}"))
+            lines.append(tr("cad_preview.measure_midpoint", values=midpoint))
+        elif values:
             lines.append("   ·   ".join(values))
         if missed:
             lines.append(tr("cad_preview.measure_missed"))
         self._measurement.setText("\n".join(lines))
         self._clear_measure.setEnabled(bool(self._measurement_points))
+        self._swap_measure.setEnabled(len(self._measurement_points) == 2)
+        self._copy_measure.setEnabled(len(self._measurement_points) == 2 and self._mesh is not None)
         self._view.set_markers(tuple(self._measurement_points))
+
+    def _copy_measurement(self) -> None:
+        mesh = self._mesh
+        if mesh is None or self._loaded_deviation is None or len(self._measurement_points) != 2:
+            return
+        a, b = self._measurement_points
+        summary = measurement_summary(a, b)
+        def vector(values: tuple[float, float, float]) -> str:
+            return ", ".join(repr(float(value)) for value in values)
+        lines = [tr("cad_preview.measure_copy_warning"),
+                 tr("cad_preview.measure_copy_quality", quality=repr(float(self._loaded_deviation)),
+                    faces=mesh.face_count, skipped=mesh.skipped_faces, recovered=mesh.recovered_faces,
+                    triangles=len(mesh.triangles)),
+                 tr("cad_preview.measure_point", label="A", coords=vector(a)),
+                 tr("cad_preview.measure_point", label="B", coords=vector(b)),
+                 tr("cad_preview.measure_distance", value=repr(summary.distance)),
+                 tr("cad_preview.measure_delta", values=vector(summary.delta)),
+                 tr("cad_preview.measure_planes", xy=repr(summary.xy),
+                    xz=repr(summary.xz), yz=repr(summary.yz)),
+                 tr("cad_preview.measure_midpoint", values=vector(summary.midpoint))]
+        QApplication.clipboard().setText("\n".join(lines))
+
+    def _swap_measurement(self) -> None:
+        if len(self._measurement_points) == 2:
+            self._measurement_points.reverse()
+            self._update_measurement()
 
     def _clear_measurement(self) -> None:
         self._measurement_points.clear()

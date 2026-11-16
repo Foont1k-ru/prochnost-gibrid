@@ -4,7 +4,8 @@
 """
 from __future__ import annotations
 
-from math import dist
+from dataclasses import dataclass
+from math import dist, hypot, isfinite
 
 import numpy as np
 
@@ -44,3 +45,28 @@ def measurement_distance(a: tuple[float, float, float], b: tuple[float, float, f
     if not all(np.isfinite(v) for v in (*a, *b)):
         raise ValueError("Координаты должны быть конечными")
     return dist(a, b)
+
+
+@dataclass(frozen=True, slots=True)
+class MeasurementSummary:
+    """Сводка двух приближённых точек в одной системе координат сетки."""
+
+    delta: tuple[float, float, float]
+    midpoint: tuple[float, float, float]
+    distance: float
+    xy: float
+    xz: float
+    yz: float
+
+
+def measurement_summary(a: tuple[float, float, float], b: tuple[float, float, float]) -> MeasurementSummary:
+    """B−A и длины его ортогональных проекций, не точные CAD-размеры."""
+    if len(a) != 3 or len(b) != 3 or not all(isfinite(v) for v in (*a, *b)):
+        raise ValueError("Координаты должны быть конечными тройками")
+    dx, dy, dz = (float(y - x) for x, y in zip(a, b, strict=True))
+    midpoint = tuple(float(x / 2 + y / 2) for x, y in zip(a, b, strict=True))
+    distance = hypot(dx, dy, dz)
+    xy, xz, yz = hypot(dx, dy), hypot(dx, dz), hypot(dy, dz)
+    if not all(isfinite(v) for v in (dx, dy, dz, *midpoint, distance, xy, xz, yz)):
+        raise ValueError("Результат вне диапазона")
+    return MeasurementSummary((dx, dy, dz), (midpoint[0], midpoint[1], midpoint[2]), distance, xy, xz, yz)

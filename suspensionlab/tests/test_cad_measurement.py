@@ -38,3 +38,28 @@ def test_distance_uses_same_3d_frame_and_rejects_nonfinite_values():
     assert measurement_distance((1., 2., 3.), (1., 2., 3.)) == 0
     with pytest.raises(ValueError):
         measurement_distance((float("nan"), 0., 0.), (0., 0., 0.))
+
+
+def test_summary_direction_midpoint_and_projection_lengths():
+    from suspensionlab.core.cad_measurement import measurement_summary
+    a, b = (1., 2., 3.), (4., -2., 15.)
+    result = measurement_summary(a, b)
+    assert result.delta == pytest.approx((3., -4., 12.))
+    assert result.midpoint == pytest.approx((2.5, 0., 9.))
+    assert result.distance == pytest.approx(13.)
+    assert (result.xy, result.xz, result.yz) == pytest.approx((5., 153**.5, 160**.5))
+    reverse = measurement_summary(b, a)
+    assert reverse.delta == pytest.approx((-3., 4., -12.))
+    assert reverse.midpoint == result.midpoint
+    assert reverse.distance == result.distance
+    assert (reverse.xy, reverse.xz, reverse.yz) == (result.xy, result.xz, result.yz)
+    zero = measurement_summary(a, a)
+    assert zero.delta == (0., 0., 0.) and zero.distance == zero.xy == zero.xz == zero.yz == 0.
+
+
+def test_summary_rejects_nonfinite_wrong_dimension_and_overflow():
+    from suspensionlab.core.cad_measurement import measurement_summary
+    for a, b in [((0., 1.), (1., 2., 3.)), ((float('nan'), 0., 0.), (1., 2., 3.)),
+                 ((0., 1., 2.), (1., 2., float('inf'))), ((-1e308, 0., 0.), (1e308, 0., 0.))]:
+        with pytest.raises(ValueError):
+            measurement_summary(a, b)
