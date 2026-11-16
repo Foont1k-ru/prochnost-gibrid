@@ -33,6 +33,7 @@ from .analysis_dialog import AnalysisDialog
 from .antiroll_dialog import AntiRollDialog
 from .cad_preview_dialog import CadPreviewDialog
 from .cad_preview_settings import CadPreviewSettingsDialog
+from .cad_registration_dialog import CadRegistrationDialog
 from .canvas.axle_view import AxleCanvas
 from .controller import AppController, Selection
 from .dialogs import RestoreSnapshotDialog, SnapshotDialog, TemplateDialog
@@ -128,6 +129,9 @@ class MainWindow(QMainWindow):
     def _open_cad_preview(self) -> None:
         CadPreviewDialog(self, settings=self._settings).exec()
 
+    def _open_cad_registration(self) -> None:
+        CadRegistrationDialog(self.controller, self).exec()
+
     def _open_cad_preview_settings(self) -> None:
         dialog = CadPreviewSettingsDialog(self._settings, self)
         try:
@@ -190,6 +194,9 @@ class MainWindow(QMainWindow):
 
         self.action_cad_preview = QAction(tr("cad_preview.menu"), self)
         self.action_cad_preview.triggered.connect(self._open_cad_preview)
+
+        self.action_cad_registration = QAction(tr("cad_registration.menu"), self)
+        self.action_cad_registration.triggered.connect(self._open_cad_registration)
 
         self.action_cad_settings = QAction(tr("cad_preview.settings_menu"), self)
         self.action_cad_settings.triggered.connect(self._open_cad_preview_settings)
@@ -281,6 +288,7 @@ class MainWindow(QMainWindow):
         menu_file.addAction(self.action_open)
         menu_file.addAction(self.action_step_inventory)
         menu_file.addAction(self.action_cad_preview)
+        menu_file.addAction(self.action_cad_registration)
         menu_file.addAction(self.action_recover_autosave)
         menu_file.addAction(self.action_templates)
         menu_file.addSeparator()
