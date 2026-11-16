@@ -220,3 +220,31 @@ def test_failed_quality_reload_keeps_old_model(qtbot, tmp_path, monkeypatch):
     qtbot.waitUntil(lambda: view._reader is None, timeout=10000)
     assert view._view.mesh is mesh and view._loaded_deviation == 10.
     assert "прежняя" in view._status.text() and "512" in view._status.text()
+
+
+def test_quality_cache_and_explicit_force_reload(qtbot, tmp_path, monkeypatch):
+    path = tmp_path / 'model.step'
+    path.write_bytes(b'demo step')
+    calls = []
+    def build(self, path, deviation):
+        calls.append(deviation)
+        return CadMesh(np.array([[[0., 0, 0], [10., 0, 0], [0, 10., 0]]]), 1)
+    monkeypatch.setattr(CadJob, 'run', build)
+    view = CadPreviewDialog(settings=QSettings(str(tmp_path / 's.ini'), QSettings.Format.IniFormat))
+    qtbot.addWidget(view)
+    view.load_file(path)
+    qtbot.waitUntil(lambda: view._reader is None, timeout=10000)
+    view._selected_deviation = 2.
+    view.load_file(path)
+    qtbot.waitUntil(lambda: view._reader is None, timeout=10000)
+    view._selected_deviation = 10.
+    view.load_file(path)
+    qtbot.waitUntil(lambda: view._reader is None, timeout=10000)
+    assert calls == [10., 2.] and 'из памяти' in view._status.text()
+    view._reload.click()
+    qtbot.waitUntil(lambda: view._reader is None, timeout=10000)
+    assert calls == [10., 2., 10.] and 'из памяти' not in view._status.text()
+    path.write_bytes(b'changed')
+    view.load_file(path)
+    qtbot.waitUntil(lambda: view._reader is None, timeout=10000)
+    assert calls == [10., 2., 10., 10.]

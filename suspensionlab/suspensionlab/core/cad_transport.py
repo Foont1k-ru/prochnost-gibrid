@@ -36,6 +36,9 @@ class CadJob:
         self._lock = threading.Lock()
         self._process: subprocess.Popen | None = None
 
+    def is_cancelled(self) -> bool:
+        return self._cancelled.is_set()
+
     def cancel(self) -> None:
         self._cancelled.set()
         with self._lock:

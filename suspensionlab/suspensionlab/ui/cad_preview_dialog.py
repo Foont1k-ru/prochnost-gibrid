@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..config import settings_path
+from ..core.cad_cache import CadMeshCache
 from ..core.cad_measurement import measurement_distance
 from ..core.cad_mesh import CadMesh
 from ..core.cad_transport import CadJob, CadPreviewError
@@ -33,7 +34,7 @@ from .widgets.camera_views import CameraViews
 _OPERATIONS = count(1)
 _CAD_ERROR_CODES = frozenset({"cancelled", "start", "timeout", "crash", "file_size", "deviation",
                               "missing_cad", "units", "read", "no_shape", "mesh", "limit",
-                              "missing_face", "coordinates", "no_faces", "unexpected", "output", "memory"})
+                              "missing_face", "coordinates", "no_faces", "unexpected", "output", "memory", "source_changed"})
 
 
 class _CadReader(QThread):
@@ -41,15 +42,22 @@ class _CadReader(QThread):
     failed = Signal(str)
     progress = Signal(str, int)
 
-    def __init__(self, path: Path, deviation: float, parent: QDialog) -> None:
+    def __init__(self, path: Path, deviation: float, parent: QDialog, *,
+                 cache: CadMeshCache | None = None, force: bool = False) -> None:
         super().__init__(parent)
         self.path, self.deviation = path, deviation
+        self.cache, self.force = cache, force
+        self.cache_hit = False
         self.job = CadJob()
         self.job.progress_callback = self.progress.emit
 
     def run(self) -> None:
         try:
-            self.result_ready.emit(self.job.run(self.path, self.deviation))
+            if self.cache is None:
+                mesh = self.job.run(self.path, self.deviation)
+            else:
+                mesh, self.cache_hit = self.cache.run(self.job, self.path, self.deviation, force=self.force)
+            self.result_ready.emit(mesh)
         except CadPreviewError as error:
             self.failed.emit(error.code)
         except Exception:
@@ -65,6 +73,7 @@ class CadPreviewDialog(QDialog):
         self.setWindowFlag(Qt.WindowType.WindowMaximizeButtonHint, True)
         self.resize(960, 750)
         self._reader: _CadReader | None = None
+        self._mesh_cache = CadMeshCache()
         self._path: Path | None = None
         self._operation: int | None = None
         self._operation_started = 0.0
@@ -208,9 +217,9 @@ class CadPreviewDialog(QDialog):
 
     def _reload_file(self) -> None:
         if self._path is not None:
-            self.load_file(self._path)
+            self.load_file(self._path, force=True)
 
-    def load_file(self, path: Path) -> None:
+    def load_file(self, path: Path, *, force: bool = False) -> None:
         if self._reader is not None:
             return
         self._keep_previous = self._mesh is not None and self._path == path
@@ -236,7 +245,7 @@ class CadPreviewDialog(QDialog):
         self._progress_bar.show()
         self._refresh_progress()
         self._progress_timer.start()
-        reader = _CadReader(path, self._requested_deviation, self)
+        reader = _CadReader(path, self._requested_deviation, self, cache=self._mesh_cache, force=force)
         self._reader = reader
         reader.result_ready.connect(self._show_mesh)
         reader.failed.connect(self._show_error)
@@ -309,6 +318,8 @@ class CadPreviewDialog(QDialog):
                                     triangles=len(mesh.triangles)))
         else:
             self._status.setText(tr("cad_preview.loaded", faces=mesh.face_count, triangles=len(mesh.triangles)))
+        if self._reader is not None and self._reader.cache_hit:
+            self._status.setText(tr("cad_preview.cache_hit") + " " + self._status.text())
 
     def _update_measurement(self, missed: bool = False) -> None:
         lines = [tr("cad_preview.measure_warning")]
