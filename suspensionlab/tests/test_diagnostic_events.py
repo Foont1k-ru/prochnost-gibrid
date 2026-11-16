@@ -230,3 +230,28 @@ def test_automatic_windows_packaging_is_paused():
     assert "on: [workflow_dispatch]" in build
     assert "github.event_name == 'workflow_dispatch' && inputs.build_experimental == true" in ci
     assert "default: false" in ci
+
+
+def test_point_import_events_report_outcome_without_path_or_coordinate(events, qtbot, tmp_path):
+    import csv
+
+    from PySide6.QtCore import QTimer
+
+    from suspensionlab.ui.point_import_dialog import PointImportDialog
+
+    c = AppController()
+    dialog = PointTableDialog(c)
+    qtbot.addWidget(dialog)
+    path = tmp_path / 'secret-coordinates.csv'
+    dialog.export_csv(path)
+    with path.open(encoding='utf-8-sig', newline='') as stream:
+        rows = list(csv.reader(stream))
+    rows[1][5] = '123456.7'
+    with path.open('w', encoding='utf-8-sig', newline='') as stream:
+        csv.writer(stream).writerows(rows)
+    QTimer.singleShot(0, lambda: dialog.findChild(PointImportDialog)._apply.click())
+    dialog.import_csv(path)
+    imports = [r for r in records(events) if r['event'] == 'points.import']
+    assert [r['result'] for r in imports] == ['preview', 'ok']
+    assert imports[-1]['points'] == 1 and imports[-1]['cells'] == 1
+    assert 'secret' not in events.getvalue() and '123456.7' not in events.getvalue()

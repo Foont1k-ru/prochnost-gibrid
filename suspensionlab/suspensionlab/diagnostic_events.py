@@ -35,6 +35,7 @@ _EVENTS: dict[str, frozenset[str]] = {
     "equilibrium.result": frozenset({"axis", "side", "result", "samples", "failure_kind"}),
     "analysis.start": frozenset({"axis", "side", "spring", "damper"}),
     "analysis.result": frozenset({"axis", "side", "result", "rows", "missing", "spring_conflicts", "damper_conflicts", "frames_missing"}),
+    "points.import": frozenset({"result", "reason", "points", "cells"}),
     "points.apply": frozenset({"result", "points", "cells"}),
 }
 _configured = False

@@ -1,6 +1,7 @@
 """Ограниченная автоматическая проверка собранного приложения, не UI-валидация."""
 from __future__ import annotations
 
+import csv
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -21,6 +22,7 @@ from .ui.damper_conversion_dialog import DamperConversionDialog
 from .ui.equilibrium_dialog import EquilibriumDialog
 from .ui.equilibrium_path_dialog import EquilibriumPathDialog
 from .ui.main_window import MainWindow
+from .ui.point_import_dialog import PointImportDialog
 from .ui.point_table_dialog import PointTableDialog
 from .ui.spring_rate_dialog import SpringRateDialog
 from .ui.table_export import make_plot_report
@@ -214,8 +216,30 @@ def run_packaging_check() -> None:
         point_table.export_csv(temporary / "model-points.csv")
         _require((temporary / "model-points.csv").read_bytes().startswith(b"\xef\xbb\xbf"),
                  "CSV исходных точек не записан")
+        csv_path = temporary / "model-points.csv"
+        with csv_path.open(encoding="utf-8-sig", newline="") as stream:
+            csv_rows = list(csv.reader(stream))
+        csv_rows[1][5] = str(old_x + 2)
+        with csv_path.open("w", encoding="utf-8-sig", newline="") as stream:
+            csv.writer(stream).writerows(csv_rows)
+        preview_seen: list[bool] = []
+
+        def confirm_point_import() -> None:
+            preview = point_table.findChild(PointImportDialog)
+            if preview is not None:
+                preview_seen.append(preview._table.rowCount() == 1 and preview._apply.isEnabled())
+                if preview._apply.isEnabled():
+                    preview._apply.click()
+                else:
+                    preview.reject()
+
+        QTimer.singleShot(0, confirm_point_import)
+        point_table.import_csv(csv_path)
+        _require(preview_seen == [True] and first_point.x == old_x + 2, "Предпросмотр импорта CSV недоступен")
         point_table.close()
         point_table.deleteLater()
+        window.controller.undo_last()
+        _require(first_point.x == old_x + 1, "Отмена импорта точек недоступна")
         window.controller.undo_last()
         _require(first_point.x == old_x, "Отмена правки точки недоступна")
         app.processEvents()

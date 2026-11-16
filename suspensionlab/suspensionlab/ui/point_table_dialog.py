@@ -1,7 +1,6 @@
 """Таблица исходных точек схемы с атомарной пакетной правкой."""
 from __future__ import annotations
 
-import csv
 import math
 from pathlib import Path
 
@@ -24,10 +23,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..config import autosave_path
 from ..diagnostic_events import event
 from ..i18n import tr
+from ..model.point_csv import PointCSVError, capture_points, read_points_csv, write_points_csv
 from ..model.units import LENGTH_UNITS, UnitConversionError, UnitKind
 from .controller import AppController
+from .point_import_dialog import PointImportDialog
 
 
 class PointTableDialog(QDialog):
@@ -65,6 +67,12 @@ class PointTableDialog(QDialog):
         self._export = QPushButton(tr("point_table.export"))
         self._export.clicked.connect(self._save_csv)
         actions.addWidget(self._export)
+        self._import = QPushButton(tr("point_import.button"))
+        self._import.clicked.connect(self._import_csv)
+        actions.addWidget(self._import)
+        self._reset = QPushButton(tr("point_import.reset"))
+        self._reset.clicked.connect(self._reset_draft)
+        actions.addWidget(self._reset)
         actions.addStretch()
         self._apply = QPushButton(tr("point_table.apply"))
         self._apply.clicked.connect(self._apply_changes)
@@ -136,6 +144,8 @@ class PointTableDialog(QDialog):
         self._stale = True
         self._apply.setEnabled(False)
         self._export.setEnabled(False)
+        self._import.setEnabled(False)
+        self._reset.setEnabled(False)
         self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self._message.setText(tr("point_table.stale"))
 
@@ -181,26 +191,74 @@ class PointTableDialog(QDialog):
             return
         try:
             self.export_csv(Path(path))
-        except OSError as error:
+        except (OSError, UnicodeError, ValueError, RuntimeError) as error:
             QMessageBox.warning(self, tr("point_table.export"), str(error))
 
     def export_csv(self, path: Path) -> None:
         """Экспортирует модель, не незафиксированные правки и не отражённые копии."""
         if self._stale:
             raise ValueError("stale point table")
-        with path.open("w", encoding="utf-8-sig", newline="") as stream:
-            writer = csv.writer(stream)
-            writer.writerow(["axle", "type", "code", "name", "representation", "x_mm", "y_mm", "z_mm",
-                             "point_locked", "x_locked", "y_locked", "z_locked"])
-            for role, code in self._rows:
-                axle = self._controller.project.axle(role)
-                point = axle.hardpoints[code]
-                spec = axle.spec.point(code)
-                representation = ("mirrored" if spec and spec.mirrored else
-                                  "explicit_side" if spec and spec.side != "center" else "single")
-                writer.writerow([role, axle.type_code, code, tr(spec.name_key) if spec else code, representation,
-                                 *point.as_tuple(), point.locked, *[self._controller.is_locked(
-                                     f"{role}.point.{code}.{axis}") for axis in "xyz"]])
+        project_path = self._controller.project.path
+        protected = [autosave_path()]
+        if project_path:
+            protected.append(Path(project_path))
+        if any(path.resolve() == target.resolve() for target in protected):
+            raise ValueError(tr("point_import.export_project"))
+        write_points_csv(path, capture_points(self._controller.project), tr)
+
+    def _reset_draft(self) -> None:
+        self._finish_editor()
+        if self._stale or not self._changed:
+            return
+        if (QMessageBox.question(self, tr("point_table.title"), tr("point_table.discard")) == QMessageBox.StandardButton.Yes
+                and not self._stale):
+            self._populate()
+
+    def _import_csv(self) -> None:
+        self._finish_editor()
+        if self._stale:
+            return
+        if self._changed:
+            self._message.setText(tr("point_import.draft_blocked"))
+            return
+        path, _ = QFileDialog.getOpenFileName(self, tr("point_import.button"), "", "CSV (*.csv)")
+        if path and not self._stale:
+            self.import_csv(Path(path))
+
+    def import_csv(self, path: Path) -> None:
+        """Читает весь файл, показывает сравнение и применяет только после подтверждения."""
+        self._finish_editor()
+        if self._stale or self._changed:
+            return
+        snapshot = capture_points(self._controller.project)
+        try:
+            changes = read_points_csv(path, snapshot)
+        except PointCSVError as error:
+            event("points.import", warning=True, result="failed", reason=error.code)
+            QMessageBox.warning(self, tr("point_import.preview_title"),
+                                tr(f"point_import.error_{error.code}", row=error.row, axis=error.axis))
+            return
+        event("points.import", result="preview", points=len(changes), cells=sum(len(c.axes) for c in changes))
+        preview = PointImportDialog(self._controller, changes, self)
+        try:
+            accepted = preview.exec() == QDialog.DialogCode.Accepted
+        finally:
+            preview.deleteLater()
+        if not accepted:
+            event("points.import", result="cancelled")
+            return
+        if self._stale or self._changed or snapshot != capture_points(self._controller.project):
+            self._invalidate()
+            event("points.import", warning=True, result="stale")
+            return
+        self._applying = True
+        try:
+            self._controller.move_points({(c.point.role, c.point.code): c.new for c in changes})
+            event("points.import", result="ok", points=len(changes), cells=sum(len(c.axes) for c in changes))
+            self._populate()
+            self._message.setText(tr("point_import.applied"))
+        finally:
+            self._applying = False
 
     def reject(self) -> None:
         self._finish_editor()
