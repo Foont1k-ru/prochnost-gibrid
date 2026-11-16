@@ -56,19 +56,24 @@ def pick_triangle(triangles: np.ndarray, center: np.ndarray, radius: float,
     draw = ImageDraw.Draw(image)
 
     def draw_candidates(indices: np.ndarray) -> None:
-        for index in indices:
-            identifier = int(index) + 1
+        for identifier, index in enumerate(indices, 1):
             points = coords[index].reshape(6).tolist()
             draw.polygon(points, fill=((identifier >> 16) & 255, (identifier >> 8) & 255, identifier & 255))
 
+    if len(candidates) >= 0xFFFFFF:
+        raise ValueError("Слишком много перекрывающихся треугольников для выбора")
     draw_candidates(candidates)
     if through and highlight is not None:
-        draw_candidates(candidates[highlight[candidates]])
+        # Идентификатор относится к исходному списку кандидатов.
+        for identifier, index in enumerate(candidates, 1):
+            if highlight[index]:
+                points = coords[index].reshape(6).tolist()
+                draw.polygon(points, fill=((identifier >> 16) & 255, (identifier >> 8) & 255, identifier & 255))
     pixel = image.getpixel((x, y))
     assert isinstance(pixel, tuple) and len(pixel) == 3
     r, g, b = pixel
     value = (r << 16) | (g << 8) | b
-    return value - 1 if value else None
+    return int(candidates[value - 1]) if 0 < value <= len(candidates) else None
 
 
 def rasterize(triangles: np.ndarray, shades: np.ndarray, center: np.ndarray, radius: float,
@@ -80,20 +85,28 @@ def rasterize(triangles: np.ndarray, shades: np.ndarray, center: np.ndarray, rad
     if highlight is not None and (highlight.shape != (len(triangles),) or highlight.dtype.kind != "b"):
         raise ValueError("Некорректная маска подсветки")
     projected, order = screen_projection(triangles, center, radius, yaw, elevation, zoom, width, height, margin, offset)
-    coordinates = projected[order].reshape(-1, 6).tolist()
-    colors = shades[order].tolist()
     image = Image.new("RGB", (width, height), background)
     draw = ImageDraw.Draw(image)
-    if highlight is None:
-        for points, shade in zip(coordinates, colors, strict=True):
-            draw.polygon(points, fill=COLORS[shade])
-    else:
-        selected = highlight[order].tolist()
-        for points, shade, chosen in zip(coordinates, colors, selected, strict=True):
-            draw.polygon(points, fill=(HIGHLIGHT_COLORS if chosen else COLORS)[shade])
-        if through:
-            # Нарочито поверх всех деталей — это проекция, не физическое перекрытие.
-            for points, shade, chosen in zip(coordinates, colors, selected, strict=True):
-                if chosen:
-                    draw.polygon(points, fill=HIGHLIGHT_COLORS[shade])
+
+    def draw_order(indices: np.ndarray, selected_only: bool = False) -> None:
+        # Не превращаем целую многомиллионную сетку в Python-списки: это
+        # многократно увеличивает пик памяти. Порядок отрисовки не меняется.
+        for start in range(0, len(indices), 4096):
+            batch = indices[start:start + 4096]
+            if selected_only and highlight is not None:
+                batch = batch[highlight[batch]]
+            coordinates = projected[batch].reshape(-1, 6).tolist()
+            colors = shades[batch].tolist()
+            if highlight is None:
+                for points, shade in zip(coordinates, colors, strict=True):
+                    draw.polygon(points, fill=COLORS[shade])
+            else:
+                selected = highlight[batch].tolist()
+                for points, shade, chosen in zip(coordinates, colors, selected, strict=True):
+                    draw.polygon(points, fill=(HIGHLIGHT_COLORS if chosen else COLORS)[shade])
+
+    draw_order(order)
+    if through and highlight is not None:
+        # Нарочито поверх всех деталей — это проекция, не физическое перекрытие.
+        draw_order(order, selected_only=True)
     return image

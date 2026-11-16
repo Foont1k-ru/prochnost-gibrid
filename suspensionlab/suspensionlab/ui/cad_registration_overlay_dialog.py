@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+from time import monotonic
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -13,6 +14,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QListWidget,
     QListWidgetItem,
+    QProgressBar,
     QPushButton,
     QSplitter,
     QVBoxLayout,
@@ -40,6 +42,12 @@ class CadRegistrationOverlayDialog(QDialog):
         self._stale = False
         self._closing = False
         self._discard_result = False
+        self._progress_stage = "read"
+        self._progress_faces = 0
+        self._progress_started = 0.0
+        self._progress_timer = QTimer(self)
+        self._progress_timer.setInterval(1000)
+        self._progress_timer.timeout.connect(self._refresh_progress)
         self.setWindowTitle(tr("cad_registration_overlay.title"))
         self.resize(1100, 760)
         self.setWindowFlag(Qt.WindowType.WindowMaximizeButtonHint, True)
@@ -85,6 +93,14 @@ class CadRegistrationOverlayDialog(QDialog):
         self._detail.setWordWrap(True)
         self._detail.setTextFormat(Qt.TextFormat.PlainText)
         layout.addWidget(self._detail)
+        self._progress_label = QLabel(self)
+        self._progress_bar = QProgressBar(self)
+        self._progress_bar.setRange(0, 0)
+        self._progress_bar.setTextVisible(False)
+        self._progress_label.hide()
+        self._progress_bar.hide()
+        layout.addWidget(self._progress_label)
+        layout.addWidget(self._progress_bar)
         self._status = QLabel(tr("cad_registration_overlay.empty"), self)
         self._status.setWordWrap(True)
         layout.addWidget(self._status)
@@ -119,12 +135,30 @@ class CadRegistrationOverlayDialog(QDialog):
         self._status.setText(tr("cad_preview.loading"))
         self._choose.setEnabled(False)
         self._cancel.setEnabled(True)
+        self._progress_stage, self._progress_faces = "read", 0
+        self._progress_started = monotonic()
+        self._progress_label.show()
+        self._progress_bar.show()
+        self._refresh_progress()
+        self._progress_timer.start()
         reader = _CadReader(path, self._deviation, self)
         self._reader = reader
         reader.result_ready.connect(self._show_mesh)
         reader.failed.connect(self._show_error)
+        reader.progress.connect(self._update_progress)
         reader.finished.connect(self._finished)
         reader.start()
+
+    def _update_progress(self, stage: str, faces: int) -> None:
+        self._progress_stage, self._progress_faces = stage, faces
+        self._refresh_progress()
+
+    def _refresh_progress(self) -> None:
+        elapsed = max(0, int(monotonic() - self._progress_started))
+        stage = tr(f"cad_preview.progress_{self._progress_stage}")
+        if self._progress_stage in ("faces", "save"):
+            stage += tr("cad_preview.progress_faces_count", count=self._progress_faces)
+        self._progress_label.setText(tr("cad_preview.progress_label", stage=stage, seconds=elapsed))
 
     def _show_mesh(self, mesh: CadMesh) -> None:
         if self._stale or self._closing or self._discard_result or not self._confirm.isChecked():
@@ -146,7 +180,7 @@ class CadRegistrationOverlayDialog(QDialog):
         if self._stale or self._closing or self._discard_result or not self._confirm.isChecked():
             return
         known = {"cancelled", "start", "timeout", "crash", "file_size", "deviation", "missing_cad", "units",
-                 "read", "no_shape", "mesh", "limit", "missing_face", "coordinates", "no_faces", "unexpected", "output"}
+                 "read", "no_shape", "mesh", "limit", "memory", "missing_face", "coordinates", "no_faces", "unexpected", "output"}
         self._status.setText(tr(f"cad_preview.error.{code if code in known else 'unexpected'}"))
 
     def _cancel_read(self) -> None:
@@ -157,6 +191,9 @@ class CadRegistrationOverlayDialog(QDialog):
             self._status.setText(tr("cad_preview.cancelling"))
 
     def _finished(self) -> None:
+        self._progress_timer.stop()
+        self._progress_label.hide()
+        self._progress_bar.hide()
         reader, self._reader = self._reader, None
         if reader is not None:
             reader.deleteLater()

@@ -4,7 +4,7 @@ from threading import Event
 import numpy as np
 import pytest
 
-from suspensionlab.core.cad_mesh import MAX_COORDINATE, MAX_TRIANGLES, CadMesh, project_triangles
+from suspensionlab.core.cad_mesh import MAX_COORDINATE, CadMesh, project_triangles
 from suspensionlab.core.cad_transport import CadJob, CadPreviewError
 
 
@@ -31,7 +31,6 @@ def test_mesh_copies_bounds_and_projection():
     (np.full((1, 3, 3), float("nan")), 1),
     (np.full((1, 3, 3), MAX_COORDINATE + 1), 1),
     (np.zeros((1, 3, 3)), 0),
-    (np.zeros((MAX_TRIANGLES + 1, 3, 3)), 1),
 ])
 def test_bad_or_oversized_mesh_rejected(triangles, faces):
     with pytest.raises(ValueError):
@@ -395,3 +394,102 @@ def test_orbit_projection_is_continuous_at_poles_and_periodic():
         ref, _ = project_points(triangles, center, yaw, 0.4)
         full, _ = project_points(triangles, center, yaw + 2 * pi, 0.4 + 2 * pi)
         assert full == pytest.approx(ref, abs=1e-12)
+
+
+def test_mesh_above_old_limit_is_accepted():
+    triangles = np.zeros((125_000, 3, 3))
+    mesh = CadMesh(triangles, 125_000)
+    assert len(mesh.triangles) == 125_000 and mesh.face_count == 125_000
+
+
+def test_uncompressed_large_transport_above_old_32_mib_limit(monkeypatch, tmp_path):
+    import json
+    from pathlib import Path
+
+    from suspensionlab.core import cad_transport
+    class Process:
+        def wait(self, timeout=None):
+            return 0
+    def spawn(command, **kwargs):
+        output, report = Path(command[-3]), Path(command[-2])
+        triangles = np.zeros((500_000, 3, 3))
+        np.savez(output, triangles=triangles, faces=np.array([1]), skipped=np.array([0]),
+                 recovered=np.array([0]), names=np.array(["part"]), groups=np.zeros(500_000, dtype=np.int32),
+                 instance_groups=np.array([0]), instances=np.zeros(500_000, dtype=np.int32))
+        assert output.stat().st_size > 32 * 1024 * 1024
+        report.write_text(json.dumps({"status": "ok"}), encoding="utf-8")
+        return Process()
+    monkeypatch.setattr(cad_transport.subprocess, "Popen", spawn)
+    mesh = CadJob().run(tmp_path / "large.step", 2)
+    assert len(mesh.triangles) == 500_000
+
+
+def test_progress_reports_only_known_stages(monkeypatch, tmp_path):
+    import json
+    import subprocess
+    from pathlib import Path
+
+    from suspensionlab.core import cad_transport
+    class Process:
+        def __init__(self, command, env):
+            self.output, self.report = Path(command[-3]), Path(command[-2])
+            self.progress = Path(env["SUSPENSIONLAB_CAD_PROGRESS_PATH"])
+            self.calls = 0
+        def wait(self, timeout=None):
+            self.calls += 1
+            if self.calls == 1:
+                self.progress.write_text(json.dumps({"stage": "faces", "faces": 200}))
+                raise subprocess.TimeoutExpired("worker", timeout)
+            np.savez(self.output, triangles=np.zeros((1, 3, 3)), faces=np.array([1]), skipped=np.array([0]),
+                     recovered=np.array([0]), names=np.array(["part"]), groups=np.array([0]),
+                     instance_groups=np.array([0]), instances=np.array([0]))
+            self.report.write_text(json.dumps({"status": "ok"}))
+            return 0
+    monkeypatch.setattr(cad_transport.subprocess, "Popen", lambda command, **kw: Process(command, kw["env"]))
+    job = CadJob()
+    progress = []
+    job.progress_callback = lambda stage, faces: progress.append((stage, faces))
+    job.run(tmp_path / "model.step", 2)
+    assert progress == [("faces", 200)]
+
+
+def test_mesh_memory_budget_is_checked_before_copy(monkeypatch):
+    from suspensionlab.core import cad_mesh
+    monkeypatch.setattr(cad_mesh, "MAX_MESH_BYTES", 72)
+    CadMesh(np.zeros((1, 3, 3)), 1)
+    with pytest.raises(ValueError, match="сетка|Сетка"):
+        CadMesh(np.zeros((2, 3, 3)), 1)
+
+
+def test_chunked_raster_matches_simple_reference():
+    from PIL import Image, ImageDraw
+
+    from suspensionlab.core.cad_raster import COLORS, HIGHLIGHT_COLORS, rasterize, screen_projection
+    rng = np.random.default_rng(123)
+    triangles = rng.uniform(-1, 1, (5000, 3, 3))
+    shades = rng.integers(105, 206, 5000, dtype=np.uint8)
+    highlight = rng.random(5000) < .1
+    args = (triangles, shades, np.zeros(3), 2., 0.3, -0.1, 1., 90, 100, (20, 30, 40))
+    for through in (False, True):
+        projected, order = screen_projection(triangles, np.zeros(3), 2., .3, -.1, 1., 90, 100)
+        image = Image.new("RGB", (90, 100), (20, 30, 40))
+        draw = ImageDraw.Draw(image)
+        for index in order:
+            color = (HIGHLIGHT_COLORS if highlight[index] else COLORS)[shades[index]]
+            draw.polygon(projected[index].reshape(6).tolist(), fill=color)
+        if through:
+            for index in order[highlight[order]]:
+                draw.polygon(projected[index].reshape(6).tolist(), fill=HIGHLIGHT_COLORS[shades[index]])
+        assert np.array_equal(np.asarray(rasterize(*args, highlight=highlight, through=through)), np.asarray(image))
+
+
+def test_large_interaction_is_bounded_and_preserves_highlight():
+    from suspensionlab.core.cad_interaction import interaction_geometry
+    rng = np.random.default_rng(22)
+    triangles = rng.uniform(-1, 1, (201_000, 3, 3))
+    mesh = CadMesh(triangles, 1)
+    mask = np.zeros(len(triangles), dtype=bool)
+    mask[-1000:] = True
+    fast, selected = interaction_geometry(mesh, mask)
+    assert len(fast) < len(triangles) and selected is not None
+    assert selected.any() and (~selected).any()

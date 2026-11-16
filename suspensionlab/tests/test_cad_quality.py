@@ -56,7 +56,7 @@ def test_settings_menu_presets_cancel_and_persistence(qtbot, tmp_path):
     assert window.controller.project.to_dict() == original
 
 
-def test_preview_settings_apply_only_after_explicit_rebuild(qtbot, tmp_path, monkeypatch):
+def test_preview_settings_apply_automatically_after_change(qtbot, tmp_path, monkeypatch):
     settings = QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
     mesh = CadMesh(np.array([[[0, 0, 0], [10, 0, 0], [0, 10, 0]]]), 1)
     calls = []
@@ -90,11 +90,7 @@ def test_preview_settings_apply_only_after_explicit_rebuild(qtbot, tmp_path, mon
 
     QTimer.singleShot(0, change_settings)
     dialog._quality_settings.click()
-    assert changed == [True] and dialog._selected_deviation == 0.2 and len(calls) == 1
-    assert dialog._view.mesh is mesh and dialog._measurement_points == [(1, 2, 3)]
-    assert "10.0 мм" in dialog._quality_status.text() and "0.2 мм" in dialog._quality_status.text()
-    assert "Перестроить" in dialog._quality_status.text()
-    dialog._reload.click()
+    assert changed == [True] and dialog._selected_deviation == 0.2
     qtbot.waitUntil(lambda: dialog._reader is None, timeout=10000)
     assert calls[-1] == (path, 0.2) and dialog._view.mesh is mesh
     assert not dialog._measurement_points and "0.2 мм" in dialog._quality_status.text()
@@ -125,7 +121,7 @@ def test_quality_disabled_during_job_and_failed_reload_does_not_claim_applied(qt
     assert dialog._quality_settings.isEnabled()
     assert dialog._view.mesh is None and dialog._loaded_deviation is None
     assert "для чтения" in dialog._quality_status.text()
-    assert "100 000" in dialog._status.text()
+    assert "ограничения" in dialog._status.text()
 
 
 @pytest.mark.parametrize("raw", ["nan", "inf", "bad", -1, 0.1, 20.1, 1.23, True, [], None])
@@ -170,3 +166,57 @@ def test_preview_cancel_settings_retains_applied_and_saved_value(qtbot, tmp_path
     view._quality_settings.click()
     assert seen == [True] and view._selected_deviation == 10 and read_cad_deviation(settings) == 10
     assert view._loaded_deviation == 10 and "Перестроить" not in view._quality_status.text()
+
+
+def test_quality_keeps_old_mesh_during_reload_and_on_cancel(qtbot, tmp_path, monkeypatch):
+    started, release = Event(), Event()
+    old = CadMesh(np.array([[[0, 0, 0], [10, 0, 0], [0, 10, 0]]]), 1)
+    new = CadMesh(np.array([[[0, 0, 0], [20, 0, 0], [0, 20, 0]]]), 1)
+    def load(_self, path, deviation):
+        if deviation == 10.:
+            return old
+        started.set()
+        assert release.wait(10)
+        return new
+    monkeypatch.setattr(CadJob, "run", load)
+    settings = QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
+    view = CadPreviewDialog(settings=settings)
+    qtbot.addWidget(view)
+    view.show()
+    path = tmp_path / "model.step"
+    view.load_file(path)
+    qtbot.waitUntil(lambda: view._reader is None, timeout=10000)
+    view._add_measurement_point((1, 2, 3))
+    view._selected_deviation = 0.2
+    view.load_file(path)
+    assert started.wait(5)
+    try:
+        assert view._view.mesh is old and view._measurement_points
+        assert view._progress_bar.isVisible()
+        view._update_progress("faces", 234)
+        assert "234" in view._progress_label.text()
+        view._cancel_read()
+    finally:
+        release.set()
+    qtbot.waitUntil(lambda: view._reader is None, timeout=10000)
+    assert view._view.mesh is old and view._loaded_deviation == 10.
+    assert view._measurement_points and "отменено" in view._status.text().lower()
+    assert not view._progress_bar.isVisible()
+
+
+def test_failed_quality_reload_keeps_old_model(qtbot, tmp_path, monkeypatch):
+    mesh = CadMesh(np.array([[[0, 0, 0], [10, 0, 0], [0, 10, 0]]]), 1)
+    def load(_self, path, deviation):
+        if deviation == 2.:
+            raise CadPreviewError("memory")
+        return mesh
+    monkeypatch.setattr(CadJob, "run", load)
+    view = CadPreviewDialog(settings=QSettings(str(tmp_path / "s.ini"), QSettings.Format.IniFormat))
+    qtbot.addWidget(view)
+    view.load_file(tmp_path / "one.step")
+    qtbot.waitUntil(lambda: view._reader is None, timeout=10000)
+    view._selected_deviation = 2.
+    view.load_file(tmp_path / "one.step")
+    qtbot.waitUntil(lambda: view._reader is None, timeout=10000)
+    assert view._view.mesh is mesh and view._loaded_deviation == 10.
+    assert "прежняя" in view._status.text() and "512" in view._status.text()

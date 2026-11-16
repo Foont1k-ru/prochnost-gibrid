@@ -9,7 +9,7 @@ import numpy as np
 from .cad_instances import MAX_INSTANCES
 from .cad_parts import MAX_PART_GROUPS, MAX_PART_NAME
 
-MAX_TRIANGLES = 100_000
+MAX_MESH_BYTES = 512 * 1024 * 1024  # общий защитный бюджет массива, не лимит граней
 MAX_COORDINATE = 10_000_000.0  # мм; защитный предел просмотра, не проверка модели
 
 
@@ -28,12 +28,15 @@ class CadMesh:
 
     def __post_init__(self) -> None:
         try:
+            raw = np.asarray(self.triangles)
+            if raw.size > MAX_MESH_BYTES // 8:
+                raise ValueError("Сетка превышает бюджет памяти")
             mesh = np.array(self.triangles, dtype=np.float64, copy=True)
         except (ValueError, TypeError, OverflowError) as error:
             raise ValueError("Некорректная треугольная сетка") from error
-        if (mesh.ndim != 3 or mesh.shape[1:] != (3, 3) or not 0 < len(mesh) <= MAX_TRIANGLES or
+        if (mesh.ndim != 3 or mesh.shape[1:] != (3, 3) or len(mesh) == 0 or
                 not np.all(np.isfinite(mesh)) or np.any(np.abs(mesh) > MAX_COORDINATE) or
-                not 0 < self.face_count <= MAX_TRIANGLES or
+                self.face_count <= 0 or
                 not 0 <= self.skipped_faces < self.face_count or
                 not 0 <= self.recovered_faces <= self.face_count - self.skipped_faces):
             raise ValueError("Сетка пуста, слишком велика или содержит некорректные координаты")

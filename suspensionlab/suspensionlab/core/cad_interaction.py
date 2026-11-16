@@ -10,6 +10,8 @@ import numpy as np
 from .cad_mesh import CadMesh
 
 INTERACTION_THRESHOLD = 12_000
+LARGE_MESH_THRESHOLD = 200_000
+LARGE_MESH_TARGET = 60_000
 
 
 def interaction_triangles(mesh: CadMesh) -> np.ndarray:
@@ -42,6 +44,12 @@ def interaction_geometry(mesh: CadMesh, highlight: np.ndarray | None = None) -> 
     chunks = []
     masks = []
     for indices in groups:
+        # На крупных сборках избегаем полной сортировки вершин миллионов
+        # треугольников. Это только временная выборка для движения камеры.
+        if len(triangles) > LARGE_MESH_THRESHOLD:
+            quota = max(250, int(len(indices) * LARGE_MESH_TARGET / len(triangles)))
+            if len(indices) > quota:
+                indices = indices[np.linspace(0, len(indices) - 1, quota, dtype=np.int64)]
         group = triangles[indices]
         selected = bool(highlight[indices[0]]) if highlight is not None else False
         if len(group) < 250:

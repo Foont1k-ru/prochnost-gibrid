@@ -6,7 +6,7 @@ from pathlib import Path
 from time import monotonic
 
 import numpy as np
-from PySide6.QtCore import QSettings, Qt, QThread, Signal
+from PySide6.QtCore import QSettings, Qt, QThread, QTimer, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
     QLabel,
+    QProgressBar,
     QPushButton,
     QVBoxLayout,
 )
@@ -32,17 +33,19 @@ from .widgets.camera_views import CameraViews
 _OPERATIONS = count(1)
 _CAD_ERROR_CODES = frozenset({"cancelled", "start", "timeout", "crash", "file_size", "deviation",
                               "missing_cad", "units", "read", "no_shape", "mesh", "limit",
-                              "missing_face", "coordinates", "no_faces", "unexpected", "output"})
+                              "missing_face", "coordinates", "no_faces", "unexpected", "output", "memory"})
 
 
 class _CadReader(QThread):
     result_ready = Signal(object)
     failed = Signal(str)
+    progress = Signal(str, int)
 
     def __init__(self, path: Path, deviation: float, parent: QDialog) -> None:
         super().__init__(parent)
         self.path, self.deviation = path, deviation
         self.job = CadJob()
+        self.job.progress_callback = self.progress.emit
 
     def run(self) -> None:
         try:
@@ -70,6 +73,15 @@ class CadPreviewDialog(QDialog):
         self._requested_deviation: float | None = None
         self._instance_counts: np.ndarray | None = None
         self._measurement_points: list[tuple[float, float, float]] = []
+        self._keep_previous = False
+        self._cancel_requested = False
+        self._error_received = False
+        self._progress_stage = "read"
+        self._progress_faces = 0
+        self._progress_timer = QTimer(self)
+        self._progress_timer.setInterval(1000)
+        self._progress_timer.timeout.connect(self._refresh_progress)
+
         layout = QVBoxLayout(self)
         notice = QLabel(tr("cad_preview.notice"), self)
         notice.setWordWrap(True)
@@ -144,6 +156,14 @@ class CadPreviewDialog(QDialog):
         self._reset.clicked.connect(self._view.reset_camera)
         self._camera_views.viewSelected.connect(self._view.set_standard_view)
         layout.addWidget(self._view, 1)
+        self._progress_label = QLabel(self)
+        self._progress_bar = QProgressBar(self)
+        self._progress_bar.setRange(0, 0)
+        self._progress_bar.setTextVisible(False)
+        self._progress_label.hide()
+        self._progress_bar.hide()
+        layout.addWidget(self._progress_label)
+        layout.addWidget(self._progress_bar)
         self._status = QLabel(tr("cad_preview.empty"), self)
         self._status.setWordWrap(True)
         layout.addWidget(self._status)
@@ -166,6 +186,8 @@ class CadPreviewDialog(QDialog):
             if dialog.exec() == QDialog.DialogCode.Accepted:
                 self._selected_deviation = read_cad_deviation(self._settings)
                 self._update_quality_status()
+                if self._mesh is not None and self._path is not None and self._selected_deviation != self._loaded_deviation:
+                    self.load_file(self._path)
         finally:
             dialog.deleteLater()
 
@@ -191,18 +213,43 @@ class CadPreviewDialog(QDialog):
     def load_file(self, path: Path) -> None:
         if self._reader is not None:
             return
+        self._keep_previous = self._mesh is not None and self._path == path
+        self._cancel_requested = False
+        self._error_received = False
         self._path = path
-        self._measure.setChecked(False)
-        self._measure.setEnabled(False)
-        self._clear_measurement()
-        self._mesh = None
-        self._loaded_deviation = None
+        if not self._keep_previous:
+            self._reset_loaded_view()
         self._requested_deviation = self._selected_deviation
         self._operation = next(_OPERATIONS)
         self._operation_started = monotonic()
         self._event_label.setText(tr("diagnostic_events.cad_attempt", number=self._operation))
         event("cad.start", operation=self._operation, deviation_um=round(self._requested_deviation * 1000))
         self._update_quality_status()
+        self._status.setText(tr("cad_preview.loading"))
+        self._choose.setEnabled(False)
+        self._reload.setEnabled(False)
+        self._quality_settings.setEnabled(False)
+        self._buttons.setEnabled(False)
+        self._cancel.setEnabled(True)
+        self._progress_stage, self._progress_faces = "read", 0
+        self._progress_label.show()
+        self._progress_bar.show()
+        self._refresh_progress()
+        self._progress_timer.start()
+        reader = _CadReader(path, self._requested_deviation, self)
+        self._reader = reader
+        reader.result_ready.connect(self._show_mesh)
+        reader.failed.connect(self._show_error)
+        reader.progress.connect(self._update_progress)
+        reader.finished.connect(self._finished)
+        reader.start()
+
+    def _reset_loaded_view(self) -> None:
+        self._measure.setChecked(False)
+        self._measure.setEnabled(False)
+        self._clear_measurement()
+        self._mesh = None
+        self._loaded_deviation = None
         self._instance_counts = None
         self._parts.blockSignals(True)
         self._parts.clear()
@@ -213,20 +260,23 @@ class CadPreviewDialog(QDialog):
         self._context.setEnabled(False)
         self._through.setEnabled(False)
         self._view.set_mesh(None)
-        self._status.setText(tr("cad_preview.loading"))
-        self._choose.setEnabled(False)
-        self._reload.setEnabled(False)
-        self._quality_settings.setEnabled(False)
-        self._buttons.setEnabled(False)
-        self._cancel.setEnabled(True)
-        reader = _CadReader(path, self._requested_deviation, self)
-        self._reader = reader
-        reader.result_ready.connect(self._show_mesh)
-        reader.failed.connect(self._show_error)
-        reader.finished.connect(self._finished)
-        reader.start()
+
+    def _update_progress(self, stage: str, faces: int) -> None:
+        self._progress_stage, self._progress_faces = stage, faces
+        self._refresh_progress()
+
+    def _refresh_progress(self) -> None:
+        elapsed = max(0, int(monotonic() - self._operation_started))
+        stage = tr(f"cad_preview.progress_{self._progress_stage}")
+        if self._progress_stage in ("faces", "save"):
+            stage += tr("cad_preview.progress_faces_count", count=self._progress_faces)
+        self._progress_label.setText(tr("cad_preview.progress_label", stage=stage, seconds=elapsed))
 
     def _show_mesh(self, mesh: CadMesh) -> None:
+        if self._cancel_requested:
+            return
+        if self._keep_previous:
+            self._reset_loaded_view()
         if self._operation is not None:
             event("cad.result", warning=bool(mesh.skipped_faces or mesh.recovered_faces),
                   operation=self._operation, result="ok", duration_ms=round((monotonic() - self._operation_started) * 1000),
@@ -361,32 +411,37 @@ class CadPreviewDialog(QDialog):
             self._view.set_mesh(self._mesh.isolated(group))
 
     def _show_error(self, code: str) -> None:
+        self._error_received = True
+        if code not in _CAD_ERROR_CODES:
+            code = "unexpected"
+        if self._cancel_requested:
+            code = "cancelled"
         if self._operation is not None:
             result = code if code in _CAD_ERROR_CODES else "unexpected"
             event("cad.result", warning=result != "cancelled", operation=self._operation, result=result,
                   duration_ms=round((monotonic() - self._operation_started) * 1000))
-        self._measure.setChecked(False)
-        self._measure.setEnabled(False)
-        self._clear_measurement()
-        self._mesh = None
-        self._loaded_deviation = None
-        self._update_quality_status()
-        self._instance_counts = None
-        self._parts.setEnabled(False)
-        self._clear_instances()
-        self._context.setEnabled(False)
-        self._through.setEnabled(False)
-        self._view.set_mesh(None)
-        self._status.setText(tr(f"cad_preview.error.{code}"))
+        if self._keep_previous:
+            self._status.setText(tr("cad_preview.reload_failed", reason=tr(f"cad_preview.error.{code}")))
+            self._update_quality_status()
+        else:
+            self._reset_loaded_view()
+            self._update_quality_status()
+            self._status.setText(tr(f"cad_preview.error.{code}"))
 
     def _cancel_read(self) -> None:
         if self._reader is not None:
+            self._cancel_requested = True
             self._cancel.setEnabled(False)
             self._status.setText(tr("cad_preview.cancelling"))
             self._reader.job.cancel()
 
     def _finished(self) -> None:
         reader = self._reader
+        if self._cancel_requested and not self._error_received:
+            self._show_error("cancelled")
+        self._progress_timer.stop()
+        self._progress_label.hide()
+        self._progress_bar.hide()
         self._reader = None
         self._requested_deviation = None
         self._operation = None

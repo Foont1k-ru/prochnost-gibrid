@@ -6,13 +6,14 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
 import numpy as np
 
 from .cad_instances import collect_instances
-from .cad_mesh import MAX_COORDINATE, MAX_TRIANGLES
+from .cad_mesh import MAX_COORDINATE, MAX_MESH_BYTES
 from .cad_parts import collect_part_groups, face_group
 from .cad_recovery import recover_revolution_face
 from .step_inventory import MAX_BYTES
@@ -22,6 +23,20 @@ class CadWorkerError(Exception):
     def __init__(self, code: str) -> None:
         super().__init__(code)
         self.code = code
+
+
+def _progress(stage: str, faces: int = 0) -> None:
+    """Только этап и счётчик; файловые пути и геометрия наружу не передаются."""
+    name = os.environ.get("SUSPENSIONLAB_CAD_PROGRESS_PATH")
+    if not name:
+        return
+    path = Path(name)
+    try:
+        temporary = path.with_suffix(".tmp")
+        temporary.write_text(json.dumps({"stage": stage, "faces": faces}), encoding="utf-8")
+        os.replace(temporary, path)
+    except OSError:
+        pass
 
 
 def _face_triangulation(face, location):
@@ -58,12 +73,14 @@ def create_mesh(path: Path, deviation: float) -> tuple[np.ndarray, int, int, int
         from OCP.XCAFDoc import XCAFDoc_DocumentTool
     except (ImportError, OSError) as error:
         raise CadWorkerError("missing_cad") from error
+    _progress("read")
     reader = STEPCAFControl_Reader()
     reader.SetNameMode(True)
     if not Interface_Static.SetCVal_s("xstep.cascade.unit", "MM"):
         raise CadWorkerError("units")
     if reader.ReadFile(str(path)) != IFSelect_ReturnStatus.IFSelect_RetDone:
         raise CadWorkerError("read")
+    _progress("transfer")
     document = TDocStd_Document(TCollection_ExtendedString("MDTV-XCAF"))
     if not reader.Transfer(document):
         raise CadWorkerError("no_shape")
@@ -71,9 +88,11 @@ def create_mesh(path: Path, deviation: float) -> tuple[np.ndarray, int, int, int
     shape = tool.GetOneShape()
     if shape.IsNull():
         raise CadWorkerError("no_shape")
+    _progress("groups")
     names, face_groups = collect_part_groups(tool, shape)
     instance_groups, instance_faces = collect_instances(tool, face_groups)
-    mesher = BRepMesh_IncrementalMesh(shape, deviation, False, 0.7, False)
+    _progress("mesh")
+    mesher = BRepMesh_IncrementalMesh(shape, deviation, False, 0.7, True)
     if not mesher.IsDone():
         raise CadWorkerError("mesh")
     explorer = TopExp_Explorer(shape, TopAbs_ShapeEnum.TopAbs_FACE)
@@ -81,10 +100,11 @@ def create_mesh(path: Path, deviation: float) -> tuple[np.ndarray, int, int, int
     group_chunks: list[np.ndarray] = []
     instance_chunks: list[np.ndarray] = []
     faces = total = skipped = recovered = 0
+    _progress("faces")
     while explorer.More():
         faces += 1
-        if faces > MAX_TRIANGLES:
-            raise CadWorkerError("limit")
+        if faces % 200 == 0:
+            _progress("faces", faces)
         face = TopoDS.Face(explorer.Current())
         location = TopLoc_Location()
         poly = _face_triangulation(face, location)
@@ -104,8 +124,9 @@ def create_mesh(path: Path, deviation: float) -> tuple[np.ndarray, int, int, int
         if poly.NbNodes() <= 0:
             raise CadWorkerError("mesh")
         number_triangles = poly.NbTriangles()
-        if total + number_triangles > MAX_TRIANGLES or poly.NbNodes() > MAX_TRIANGLES * 3:
-            raise CadWorkerError("limit")
+        # Ограничение объёма, а не старый лимит в 100 тысяч элементов.
+        if (total + number_triangles) * 72 > MAX_MESH_BYTES or poly.NbNodes() * 24 > MAX_MESH_BYTES:
+            raise CadWorkerError("memory")
         transformation = location.Transformation()
         nodes = np.empty((poly.NbNodes(), 3), dtype=np.float64)
         for index in range(1, poly.NbNodes() + 1):
@@ -141,7 +162,8 @@ def main(argv: list[str] | None = None) -> int:
     source, output, report = map(Path, args[:3])
     try:
         triangles, faces, skipped, recovered, names, groups, instance_groups, instances = create_mesh(source, float(args[3]))
-        np.savez_compressed(output, triangles=triangles, faces=np.array([faces], dtype=np.int64),
+        _progress("save", faces)
+        np.savez(output, triangles=triangles, faces=np.array([faces], dtype=np.int64),
                             skipped=np.array([skipped], dtype=np.int64),
                             recovered=np.array([recovered], dtype=np.int64),
                             names=np.asarray(names, dtype="U128"), groups=groups,
