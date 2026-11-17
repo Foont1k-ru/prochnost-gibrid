@@ -512,8 +512,9 @@ class MainWindow(QMainWindow):
         recovery = f" — {tr('autosave.paused_title')}" if self.controller.recovery_pending or self.controller.autosave_waiting else ""
         self.setWindowTitle(f"{APP_NAME} — {name}{marker}{recovery}")
         self._status_autosave.setText(tr("autosave.paused_title") if recovery else "")
-        self._status_autosave.setToolTip(tr("autosave.paused") if self.controller.recovery_pending
-                                         else tr("autosave.existing_paused"))
+        self._status_autosave.setToolTip(tr("autosave.paused") if self.controller.recovery_pending else
+                                         tr("autosave.busy") if self.controller.autosave_busy else
+                                         tr("autosave.existing_paused"))
         self._status_project.setText(tr("status.project", name=name))
         self._status_project.setToolTip(project.path or "")
 

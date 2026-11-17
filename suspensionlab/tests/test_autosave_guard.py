@@ -131,3 +131,68 @@ def test_reading_may_update_access_time_without_becoming_an_external_change(tmp_
     stamp = inspect_autosave(path)
     assert stamp is not None and path.read_bytes() == b'previous-project'
     assert inspect_autosave(path) == stamp
+
+
+def test_autosave_lock_blocks_other_process_and_releases(tmp_path):
+    import subprocess
+    import sys
+
+    from suspensionlab.model.autosave_guard import autosave_write_lock
+
+    path = tmp_path / 'settings' / 'autosave.susp.json'
+    script = '''
+import sys
+from pathlib import Path
+from suspensionlab.model.autosave_guard import autosave_write_lock, AutosaveBusyError
+try:
+    with autosave_write_lock(Path(sys.argv[1])):
+        print("acquired")
+except AutosaveBusyError:
+    print("busy")
+'''
+    with autosave_write_lock(path):
+        result = subprocess.run([sys.executable, '-c', script, str(path)], capture_output=True,
+                                text=True, timeout=15, check=True)
+        assert result.stdout.strip() == 'busy'
+    result = subprocess.run([sys.executable, '-c', script, str(path)], capture_output=True,
+                            text=True, timeout=15, check=True)
+    assert result.stdout.strip() == 'acquired'
+    # The stable sidecar remains in place and never contains project data.
+    sidecar = path.with_name(path.name + '.lock')
+    assert sidecar.is_file() and sidecar.read_bytes() == b''
+
+
+def test_autosave_lock_is_released_when_process_dies(tmp_path):
+    import subprocess
+    import sys
+
+    from suspensionlab.model.autosave_guard import autosave_write_lock
+
+    path = tmp_path / 'autosave.susp.json'
+    script = '''
+import os, sys
+from pathlib import Path
+from suspensionlab.model.autosave_guard import autosave_write_lock
+with autosave_write_lock(Path(sys.argv[1])):
+    os._exit(17)
+'''
+    result = subprocess.run([sys.executable, '-c', script, str(path)], timeout=15)
+    assert result.returncode == 17
+    with autosave_write_lock(path):
+        assert path.with_name(path.name + '.lock').is_file()
+
+
+def test_autosave_lock_rejects_sidecar_symlink_without_touching_target(tmp_path):
+    from suspensionlab.model.autosave_guard import autosave_write_lock
+
+    path = tmp_path / 'autosave.susp.json'
+    external = tmp_path / 'user-data'
+    external.write_bytes(b'unchanged')
+    lockfile = path.with_name(path.name + '.lock')
+    try:
+        lockfile.symlink_to(external)
+    except OSError:
+        pytest.skip('Creating symlinks is unavailable')
+    with pytest.raises(OSError), autosave_write_lock(path):
+        pytest.fail('symlink must not be accepted')
+    assert external.read_bytes() == b'unchanged'

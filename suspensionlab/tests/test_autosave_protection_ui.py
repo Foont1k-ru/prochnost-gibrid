@@ -173,3 +173,45 @@ def test_save_as_ui_refuses_autosave_and_accepts_separate_file(qtbot, tmp_path, 
     assert window._save_project_as()
     assert load_project(new).vehicle.mass_kg == 1910. and not c.dirty
     assert backup.read_bytes() == before
+
+
+def test_busy_autosave_preserves_data_and_retries_after_lock_release(qtbot, tmp_path, monkeypatch):
+    from suspensionlab.model.autosave_guard import autosave_write_lock
+    from suspensionlab.ui import controller as module
+
+    backup = tmp_path / 'autosave.susp.json'
+    monkeypatch.setattr(module, 'autosave_path', lambda: backup)
+    c = AppController()
+    c.set_value(c.project.vehicle, 'mass_kg', 1850.)
+    window = MainWindow(c, QSettings(str(tmp_path / 'settings.ini'), QSettings.Format.IniFormat))
+    qtbot.addWidget(window)
+    window._confirm_discard_changes = lambda: True
+    messages = []
+    c.statusMessage.connect(messages.append)
+    with autosave_write_lock(backup):
+        assert not c.autosave() and c.autosave_waiting and c.autosave_busy
+        assert not backup.exists() and c.dirty and c.project.path is None
+        assert messages[-1] == 'autosave.busy'
+        assert 'другой экземпляр' in window._status_autosave.toolTip()
+    assert c.autosave() and not c.autosave_busy and not c.autosave_waiting
+    assert c.dirty and load_project(backup).vehicle.mass_kg == 1850.
+
+
+def test_two_approved_instances_cannot_silently_replace_changed_copy(qtbot, tmp_path, monkeypatch):
+    from suspensionlab.ui import controller as module
+
+    backup = tmp_path / 'autosave.susp.json'
+    monkeypatch.setattr(module, 'autosave_path', lambda: backup)
+    source = AppController()
+    assert source.autosave()
+    a, b = AppController(), AppController()
+    for c in (a, b):
+        stamp = c.prepare_autosave_overwrite()
+        assert stamp is not None
+        c.allow_autosave_overwrite(stamp)
+    a.set_value(a.project.vehicle, 'mass_kg', 1730.)
+    b.set_value(b.project.vehicle, 'mass_kg', 1830.)
+    assert a.autosave()
+    first = backup.read_bytes()
+    assert not b.autosave() and b.autosave_waiting and not b.autosave_busy
+    assert backup.read_bytes() == first and load_project(backup).vehicle.mass_kg == 1730.

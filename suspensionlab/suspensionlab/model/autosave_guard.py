@@ -1,13 +1,17 @@
 """Защита общей копии между запусками, не замена резервного копирования.
 
 Отпечаток в памяти — разрешение перезаписать только увиденное содержимое.
-Параллельные процессы и гонки между проверкой и заменой полностью не исключены.
+Совместимые процессы координируют запись отдельной блокировкой; внешние
+программы, старые версии и некоторые файловые системы могут её игнорировать.
 """
 from __future__ import annotations
 
+import errno
 import hashlib
 import os
 import stat
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -74,6 +78,61 @@ def same_project_file(first: Path, second: Path) -> bool:
     except FileNotFoundError:
         return False
     return os.path.samestat(first_stat, second_stat)
+
+
+class AutosaveBusyError(OSError):
+    """Другой совместимый процесс в данный момент записывает общую копию."""
+
+
+@contextmanager
+def autosave_write_lock(path: Path) -> Iterator[None]:
+    """Неблокирующая межпроцессная блокировка всего цикла проверки и записи.
+
+    Стабильный sidecar не удаляется: удаление открытого файла разрушает
+    координацию на POSIX. Блокировка освобождается ОС при завершении процесса.
+    Это добровольная блокировка, внешние программы могут её игнорировать.
+    """
+    target = path.resolve()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    lockfile = target.with_name(target.name + ".lock")
+    if lockfile.is_symlink():
+        raise OSError("autosave lock is a symlink")
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(lockfile, flags, 0o600)
+    locked = False
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode) or lockfile.is_symlink():
+            raise OSError("invalid autosave lock")
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                os.lseek(fd, 0, os.SEEK_SET)
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)  # type: ignore[attr-defined]
+            else:
+                import fcntl
+
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            locked = True
+        except OSError as error:
+            if error.errno in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
+                raise AutosaveBusyError("autosave lock is held") from error
+            raise
+        yield
+    finally:
+        try:
+            if locked:
+                if os.name == "nt":
+                    import msvcrt
+
+                    os.lseek(fd, 0, os.SEEK_SET)
+                    msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)  # type: ignore[attr-defined]
+                else:
+                    import fcntl
+
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
 
 
 class AutosaveGuard:

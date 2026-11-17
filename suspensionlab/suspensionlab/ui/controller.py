@@ -19,7 +19,14 @@ from PySide6.QtCore import QObject, Signal
 
 from ..config import autosave_path
 from ..diagnostic_events import event
-from ..model.autosave_guard import AutosaveGuard, AutosaveStamp, inspect_autosave, same_project_file
+from ..model.autosave_guard import (
+    AutosaveBusyError,
+    AutosaveGuard,
+    AutosaveStamp,
+    autosave_write_lock,
+    inspect_autosave,
+    same_project_file,
+)
 from ..model.commands import (
     ChangeLinkLengthCommand,
     DictFlagCommand,
@@ -71,6 +78,7 @@ class AppController(QObject):
         self._recovery_guard: Path | None = None
         self._autosave_guard = AutosaveGuard()
         self._autosave_waiting = False
+        self._autosave_busy = False
         self.auto_extend_slider = True
         self._issues: list[Issue] = []
         self.undo.add_listener(self._on_undo_changed)
@@ -190,9 +198,14 @@ class AppController(QObject):
         """Общая копия не может быть автоматически перезаписана без решения."""
         return self._autosave_waiting
 
-    def _set_autosave_waiting(self, value: bool) -> None:
-        if value != self._autosave_waiting:
+    @property
+    def autosave_busy(self) -> bool:
+        return self._autosave_busy
+
+    def _set_autosave_waiting(self, value: bool, *, busy: bool = False) -> None:
+        if value != self._autosave_waiting or busy != self._autosave_busy:
             self._autosave_waiting = value
+            self._autosave_busy = busy
             self.autosaveProtectionChanged.emit()
 
     def check_autosave_protection(self) -> bool:
@@ -224,19 +237,25 @@ class AppController(QObject):
         original_path = self.project.path
         try:
             path = autosave_path()
-            current = inspect_autosave(path)
-            if not self._autosave_guard.may_write(current):
-                self._set_autosave_waiting(True)
-                event("project.autosave", warning=True, result="protected")
-                self.statusMessage.emit("autosave.existing_paused")
-                return False
-            expected_digest = hashlib.sha256(project_to_json(self.project).encode("utf-8")).digest()
-            save_project(self.project, path)
-            written = inspect_autosave(path)
-            if written is None or written.digest != expected_digest:
-                raise OSError("autosave changed after writing")
-            self._autosave_guard.written(written)
-            self._set_autosave_waiting(False)
+            with autosave_write_lock(path):
+                current = inspect_autosave(path)
+                if not self._autosave_guard.may_write(current):
+                    self._set_autosave_waiting(True)
+                    event("project.autosave", warning=True, result="protected")
+                    self.statusMessage.emit("autosave.existing_paused")
+                    return False
+                expected_digest = hashlib.sha256(project_to_json(self.project).encode("utf-8")).digest()
+                save_project(self.project, path)
+                written = inspect_autosave(path)
+                if written is None or written.digest != expected_digest:
+                    raise OSError("autosave changed after writing")
+                self._autosave_guard.written(written)
+                self._set_autosave_waiting(False)
+        except AutosaveBusyError:
+            self._set_autosave_waiting(True, busy=True)
+            event("project.autosave", warning=True, result="busy")
+            self.statusMessage.emit("autosave.busy")
+            return False
         except (OSError, UnicodeError, TypeError, ValueError, OverflowError, RuntimeError, ProjectIOError):
             self._set_autosave_waiting(True)
             event("project.autosave", warning=True, result="failed")
