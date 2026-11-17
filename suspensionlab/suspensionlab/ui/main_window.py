@@ -31,6 +31,7 @@ from ..model.suspension_types import types_for_role
 from ..model.units import LENGTH_UNITS, RATE_UNITS, UnitKind, UnitSettings
 from .analysis_dialog import AnalysisDialog
 from .antiroll_dialog import AntiRollDialog
+from .arm_concept_dialog import ArmConceptDialog
 from .cad_preview_dialog import CadPreviewDialog
 from .cad_preview_settings import CadPreviewSettingsDialog
 from .cad_registration_dialog import CadRegistrationDialog
@@ -61,6 +62,7 @@ class MainWindow(QMainWindow):
         self.controller = controller or AppController(self)
         self._settings = settings or QSettings(str(settings_path()), QSettings.Format.IniFormat)
         self._syncing_view = False
+        self._arm_concept_dialog: ArmConceptDialog | None = None
         self._theme = str(self._settings.value("view/theme", self.controller.project.view.theme))
 
         self.setWindowTitle(tr("app.title"))
@@ -133,6 +135,21 @@ class MainWindow(QMainWindow):
     def _open_cad_registration(self) -> None:
         CadRegistrationDialog(self.controller, self).exec()
 
+    def _open_arm_concept(self) -> None:
+        if self._arm_concept_dialog is None:
+            dialog = ArmConceptDialog(self.controller, self)
+            self._arm_concept_dialog = dialog
+            dialog.finished.connect(self._close_arm_concept)
+        self._arm_concept_dialog.show()
+        self._arm_concept_dialog.raise_()
+        self._arm_concept_dialog.activateWindow()
+
+    def _close_arm_concept(self, _result: int) -> None:
+        dialog = self._arm_concept_dialog
+        self._arm_concept_dialog = None
+        if dialog is not None:
+            dialog.deleteLater()
+
     def _open_cad_preview_settings(self) -> None:
         dialog = CadPreviewSettingsDialog(self._settings, self)
         try:
@@ -200,6 +217,9 @@ class MainWindow(QMainWindow):
 
         self.action_cad_registration = QAction(tr("cad_registration.menu"), self)
         self.action_cad_registration.triggered.connect(self._open_cad_registration)
+
+        self.action_arm_concept = QAction(tr("arm_concept.menu"), self)
+        self.action_arm_concept.triggered.connect(self._open_arm_concept)
 
         self.action_cad_settings = QAction(tr("cad_preview.settings_menu"), self)
         self.action_cad_settings.triggered.connect(self._open_cad_preview_settings)
@@ -292,6 +312,7 @@ class MainWindow(QMainWindow):
         menu_file.addAction(self.action_step_inventory)
         menu_file.addAction(self.action_cad_preview)
         menu_file.addAction(self.action_cad_registration)
+        menu_file.addAction(self.action_arm_concept)
         menu_file.addAction(self.action_recover_autosave)
         menu_file.addAction(self.action_allow_autosave)
         menu_file.addAction(self.action_templates)
