@@ -196,3 +196,37 @@ def test_autosave_lock_rejects_sidecar_symlink_without_touching_target(tmp_path)
     with pytest.raises(OSError), autosave_write_lock(path):
         pytest.fail('symlink must not be accepted')
     assert external.read_bytes() == b'unchanged'
+
+
+def test_fifo_swapped_during_inspection_rejected_without_hanging(tmp_path):
+    import os
+    import subprocess
+    import sys
+
+    if not hasattr(os, 'mkfifo'):
+        pytest.skip('FIFO is unavailable')
+    backup = tmp_path / 'autosave.susp.json'
+    backup.write_bytes(b'important copy')
+    script = '''
+import os, sys
+from pathlib import Path
+from suspensionlab.model import autosave_guard
+backup = Path(sys.argv[1])
+original_open = autosave_guard.os.open
+def swap(path, flags, *args, **kwargs):
+    if Path(path) == backup:
+        backup.rename(backup.with_suffix('.original'))
+        os.mkfifo(backup)
+    return original_open(path, flags, *args, **kwargs)
+autosave_guard.os.open = swap
+try:
+    autosave_guard.inspect_autosave(backup)
+except OSError:
+    pass
+else:
+    raise AssertionError('swapped FIFO was accepted')
+assert backup.is_fifo()
+'''
+    subprocess.run([sys.executable, '-c', script, str(backup)], capture_output=True,
+                   text=True, timeout=15, check=True)
+    assert backup.with_suffix('.original').read_bytes() == b'important copy'

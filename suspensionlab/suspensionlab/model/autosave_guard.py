@@ -45,17 +45,25 @@ def inspect_autosave(path: Path) -> AutosaveStamp | None:
     if not stat.S_ISREG(before.st_mode) or before.st_size > MAX_AUTOSAVE_BYTES:
         raise OSError("autosave is not a suitable regular file")
     digest = hashlib.sha256()
-    with target.open("rb") as stream:
-        opened_before = os.fstat(stream.fileno())
-        if not stat.S_ISREG(opened_before.st_mode) or opened_before.st_size > MAX_AUTOSAVE_BYTES:
-            raise OSError("autosave is not a suitable regular file")
-        size = 0
-        while chunk := stream.read(1024 * 1024):
-            size += len(chunk)
-            if size > MAX_AUTOSAVE_BYTES:
-                raise OSError("autosave too large")
-            digest.update(chunk)
-        opened_after = os.fstat(stream.fileno())
+    # A FIFO substituted after stat must not block the UI while opening.
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NONBLOCK", 0)
+    fd = os.open(target, flags)
+    try:
+        with os.fdopen(fd, "rb") as stream:
+            fd = -1
+            opened_before = os.fstat(stream.fileno())
+            if not stat.S_ISREG(opened_before.st_mode) or opened_before.st_size > MAX_AUTOSAVE_BYTES:
+                raise OSError("autosave is not a suitable regular file")
+            size = 0
+            while chunk := stream.read(1024 * 1024):
+                size += len(chunk)
+                if size > MAX_AUTOSAVE_BYTES:
+                    raise OSError("autosave too large")
+                digest.update(chunk)
+            opened_after = os.fstat(stream.fileno())
+    finally:
+        if fd != -1:
+            os.close(fd)
     after = target.stat()
     if (_stable_metadata(opened_before) != _stable_metadata(opened_after) or
             _stable_metadata(before) != _stable_metadata(after) or

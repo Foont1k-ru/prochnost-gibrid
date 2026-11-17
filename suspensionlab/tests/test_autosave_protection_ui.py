@@ -215,3 +215,31 @@ def test_two_approved_instances_cannot_silently_replace_changed_copy(qtbot, tmp_
     first = backup.read_bytes()
     assert not b.autosave() and b.autosave_waiting and not b.autosave_busy
     assert backup.read_bytes() == first and load_project(backup).vehicle.mass_kg == 1730.
+
+
+def test_fifo_substituted_during_autosave_keeps_previous_copy_and_pauses(qtbot, tmp_path, monkeypatch):
+    import os
+
+    import pytest
+
+    from suspensionlab.model import autosave_guard
+    from suspensionlab.ui import controller as module
+
+    if not hasattr(os, 'mkfifo'):
+        pytest.skip('FIFO is unavailable')
+    backup = tmp_path / 'autosave.susp.json'
+    monkeypatch.setattr(module, 'autosave_path', lambda: backup)
+    c = AppController()
+    assert c.autosave()
+    previous = backup.read_bytes()
+    c.set_value(c.project.vehicle, 'mass_kg', 1777.)
+    real_open = autosave_guard.os.open
+    def swap(path, flags, *args, **kwargs):
+        if str(path) == str(backup):
+            backup.rename(backup.with_suffix('.original'))
+            os.mkfifo(backup)
+        return real_open(path, flags, *args, **kwargs)
+    monkeypatch.setattr(autosave_guard.os, 'open', swap)
+    assert not c.autosave() and c.autosave_waiting and c.dirty
+    assert backup.is_fifo()
+    assert backup.with_suffix('.original').read_bytes() == previous
