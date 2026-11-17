@@ -122,7 +122,7 @@ jobs:
           exit "$result"
       - name: Полный набор тестов и отдельные процессы Qt (Windows)
         if: runner.os == 'Windows'
-        run: python -m pytest -q --junitxml=python311-results.xml
+        run: python scripts/run_pytest_with_diagnostics.py -q --junitxml=python311-results.xml
       - name: Показать ошибки Python 3.11 в аннотациях
         if: failure()
         run: python scripts/annotate_pytest.py python311-results.xml
