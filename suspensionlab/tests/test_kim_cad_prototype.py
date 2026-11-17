@@ -150,3 +150,42 @@ def test_weldment_preview_contains_only_two_separate_tubes_and_rejects_stale_sou
     updated = rebuild_welded_arm(saved, project)
     assert volume(build_weldment_tubes_preview(updated)) == pytest.approx(section * (200 + math.sqrt(50000)), rel=1e-7)
     assert read_document(path, 'assembly') == doc
+
+
+def test_isolated_tube_mesh_rebuild_follows_scheme_and_rejects_stale(tmp_path):
+    import numpy as np
+
+    from suspensionlab.core.cad_transport import CadPreviewError
+    from suspensionlab.core.cad_weldment_job import WeldmentCadJob
+    from suspensionlab.core.cad_weldment_worker import MAX_TRIANGLES, create_mesh
+    from suspensionlab.model.entities import Project
+    from suspensionlab.model.welded_arm import make_welded_arm, rebuild_welded_arm
+
+    project = Project.create_default()
+    for code, position in {
+        'lca_f_in': (0., 0., 0.), 'lca_r_in': (100., 0., 0.), 'lbj': (0., 100., 0.),
+    }.items():
+        point = project.front.hardpoints[code]
+        point.x, point.y, point.z = position
+    doc = make_welded_arm(project, 10, 2, 'required')
+    path = tmp_path / 'source.kima'
+    write_document(path, 'assembly', doc)
+    old = path.read_bytes()
+    triangles, faces = create_mesh(path, 2.)
+    assert 0 < len(triangles) <= MAX_TRIANGLES and faces >= 6
+    mesh = WeldmentCadJob().run(doc)
+    assert mesh.face_count == faces and len(mesh.triangles) == len(triangles)
+    assert mesh.skipped_faces == mesh.recovered_faces == 0
+    assert np.allclose(mesh.triangles, triangles)
+    project.front.hardpoints['lbj'].y = 200.
+    updated = rebuild_welded_arm(doc, project)
+    changed = WeldmentCadJob().run(updated)
+    assert changed.triangles[:, :, 1].max() > mesh.triangles[:, :, 1].max() + 90
+    assert path.read_bytes() == old
+    doc['scheme']['front_axle']['hardpoints']['lbj']['y'] += 1
+    with pytest.raises(CadPreviewError):
+        WeldmentCadJob().run(doc)
+    cancelled = WeldmentCadJob()
+    cancelled.cancel()
+    with pytest.raises(CadPreviewError, match='cancelled'):
+        cancelled.run(updated)

@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMessageBox,
     QPushButton,
+    QTabWidget,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -25,6 +26,7 @@ from ..model.kim_format import KimFormatError, read_document, write_document
 from ..model.welded_arm import preview_rebuild_welded_arm, validate_welded_arm, weldment_source_matches
 from .arm_concept_dialog import ArmConceptCanvas
 from .controller import AppController
+from .weldment_3d import Weldment3D
 
 
 class WeldmentDialog(QDialog):
@@ -64,8 +66,12 @@ class WeldmentDialog(QDialog):
         self._status = QLabel(tr("weldment.inactive"), self)
         self._status.setWordWrap(True)
         layout.addWidget(self._status)
-        self._canvas = ArmConceptCanvas(self)
-        layout.addWidget(self._canvas, 1)
+        tabs = QTabWidget(self)
+        self._canvas = ArmConceptCanvas(tabs)
+        tabs.addTab(self._canvas, tr("weldment_3d.tab_2d"))
+        self._three_d = Weldment3D(tabs, is_current=self._candidate_is_current)
+        tabs.addTab(self._three_d, tr("weldment_3d.tab_3d"))
+        layout.addWidget(tabs, 1)
         self._save = QPushButton(tr("weldment.save"), self)
         self._save.setEnabled(False)
         self._save.clicked.connect(self._save_copy)
@@ -77,12 +83,14 @@ class WeldmentDialog(QDialog):
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close, self)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+        self._three_d.availabilityChanged.connect(self._update_save)
         controller.modelChanged.connect(self._refresh)
         controller.projectReplaced.connect(self._project_replaced)
 
     def _clear_preview(self) -> None:
         self._candidate = None
         self._canvas.set_concept(None)
+        self._three_d.set_document(None)
         self._save.setEnabled(False)
 
     def _open_file(self) -> None:
@@ -159,13 +167,40 @@ class WeldmentDialog(QDialog):
             return
         self._candidate = candidate
         self._canvas.set_concept(concept)
-        self._save.setEnabled(True)
+        self._three_d.set_document(candidate)
+        self._update_save()
         self._status.setText(tr("weldment.match" if matches else "weldment.different"))
 
+    def _candidate_is_current(self, candidate: dict[str, Any]) -> bool:
+        if not self._active or self._source is None or candidate != self._candidate:
+            return False
+        try:
+            fresh, _ = preview_rebuild_welded_arm(self._source, self.controller.project)
+            return fresh == candidate
+        except (KimFormatError, ValueError, TypeError, OverflowError):
+            return False
+
+    def _update_save(self, *_args: object) -> None:
+        self._save.setEnabled(self._candidate is not None and self._active and self._three_d.can_save())
+
+    def shutdown(self) -> bool:
+        return self._three_d.shutdown()
+
+    def reject(self) -> None:
+        if self.shutdown():
+            super().reject()
+
+    def closeEvent(self, event) -> None:  # noqa: N802
+        if self.shutdown():
+            super().closeEvent(event)
+        else:
+            event.ignore()
+
     def _save_copy(self) -> None:
-        if self._candidate is None or self._source is None or not self._active:
+        if self._candidate is None or self._source is None or not self._active or not self._three_d.can_save():
             return
         revision = self._revision
+        generation = self._three_d.generation
         candidate = self._candidate
         selected, _ = QFileDialog.getSaveFileName(self, tr("weldment.save"), "", tr("arm_concept.assembly_filter"))
         if not selected:
@@ -173,7 +208,8 @@ class WeldmentDialog(QDialog):
         path = Path(selected)
         if path.suffix.lower() != ".kima":
             path = path.with_name(path.name + ".kima")
-        if revision != self._revision or not self._active:
+        if (revision != self._revision or generation != self._three_d.generation or
+                not self._active or not self._three_d.can_save()):
             QMessageBox.warning(self, tr("weldment.title"), tr("weldment.changed"))
             return
         try:

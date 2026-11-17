@@ -917,5 +917,8 @@ class MainWindow(QMainWindow):
         if not self._confirm_discard_changes():
             event.ignore()
             return
+        if self._weldment_dialog is not None and not self._weldment_dialog.shutdown():
+            event.ignore()
+            return
         self._save_settings()
         super().closeEvent(event)

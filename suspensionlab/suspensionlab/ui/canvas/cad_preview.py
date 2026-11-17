@@ -21,8 +21,9 @@ class CadPreview(QWidget):
     point_picked = Signal(object)
     point_missed = Signal()
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, parent: QWidget | None = None, *, empty_text_key: str = "cad_preview.empty") -> None:
         super().__init__(parent)
+        self._empty_text_key = empty_text_key
         self.setMinimumSize(320, 280)
         self.mesh: CadMesh | None = None
         self._triangles = np.empty((0, 3, 3))
@@ -133,7 +134,7 @@ class CadPreview(QWidget):
         if self.mesh is None:
             painter.setPen(self.palette().text().color())
             painter.drawText(self.rect(), int(Qt.AlignmentFlag.AlignCenter) | int(Qt.TextFlag.TextWordWrap),
-                             tr("cad_preview.empty"))
+                             tr(self._empty_text_key))
             return
         # Сохраняем готовый кадр: перекрытие окна и лишние paint-события не
         # требуют повторной проекции и обхода десятков тысяч треугольников.

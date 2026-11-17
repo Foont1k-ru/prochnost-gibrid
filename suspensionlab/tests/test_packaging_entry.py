@@ -77,3 +77,12 @@ def test_normal_start_delegates_to_app(monkeypatch) -> None:
     monkeypatch.setitem(sys.modules, "suspensionlab.app", app)
     monkeypatch.setattr(sys, "argv", ["app"])
     assert packaging_entry.main() == 17
+
+
+def test_weldment_worker_is_dispatched_before_gui(monkeypatch) -> None:
+    worker = ModuleType("suspensionlab.core.cad_weldment_worker")
+    called: list[list[str]] = []
+    worker.main = lambda args: called.append(args) or 11  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "suspensionlab.core.cad_weldment_worker", worker)
+    monkeypatch.setattr(sys, "argv", ["app", "--weldment-preview-worker", "source", "output", "report", "2.0"])
+    assert packaging_entry.main() == 11 and called == [["source", "output", "report", "2.0"]]

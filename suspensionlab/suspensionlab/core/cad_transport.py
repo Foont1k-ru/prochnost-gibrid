@@ -12,6 +12,7 @@ from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
 from time import monotonic
+from typing import Literal
 
 import numpy as np
 
@@ -46,17 +47,22 @@ class CadJob:
                 with suppress(OSError):
                     self._process.kill()
 
-    def run(self, source: Path, deviation: float, *, timeout: float = 600) -> CadMesh:
+    def run(self, source: Path, deviation: float, *, timeout: float = 600,
+            mode: Literal["step", "weldment"] = "step") -> CadMesh:
+        if mode not in ("step", "weldment"):
+            raise CadPreviewError("start")
         if self._cancelled.is_set():
             raise CadPreviewError("cancelled")
         with tempfile.TemporaryDirectory(prefix="suspension-cad-") as directory:
             output, report = Path(directory) / "mesh.npz", Path(directory) / "result.json"
             progress_path = Path(directory) / "progress.json"
             args = [str(source), str(output), str(report), str(deviation)]
+            flag = "--cad-preview-worker" if mode == "step" else "--weldment-preview-worker"
+            module = "suspensionlab.core.cad_worker" if mode == "step" else "suspensionlab.core.cad_weldment_worker"
             if getattr(sys, "frozen", False):
-                command = [sys.executable, "--cad-preview-worker", *args]
+                command = [sys.executable, flag, *args]
             else:
-                command = [sys.executable, "-m", "suspensionlab.core.cad_worker", *args]
+                command = [sys.executable, "-m", module, *args]
             try:
                 creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
                 process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
