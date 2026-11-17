@@ -125,6 +125,8 @@ def rebuild_welded_arm(document: dict[str, Any], project: Project) -> dict[str, 
         raise KimFormatError("suspension type changed")
     result = make_welded_arm(project, geometry["radius_mm"], geometry["wall_mm"], document["damper_mount"])
     result["name"] = document["name"]
+    for old_part, new_part in zip(document["parts"], result["parts"], strict=True):
+        new_part["name"] = old_part["name"]
     validate_welded_arm(result)
     return result
 
@@ -136,3 +138,15 @@ def convert_legacy_tubes(part: dict[str, Any], project: Project, damper: str) ->
     if geometry["kind"] != "prototype_lower_arm_tubes" or not compare_lower_arm_source(part, project):
         raise KimFormatError("legacy tube source does not match current scheme")
     return make_welded_arm(project, geometry["radius_mm"], geometry["wall_mm"], damper)
+
+
+def preview_rebuild_welded_arm(document: dict[str, Any], project: Project) -> tuple[dict[str, Any], bool]:
+    """Кандидат без записи; совпадение не доказывает происхождение проекта.
+
+    Внутренне устаревший исходник блокируется: перед автоматическим
+    построением его несоответствие нужно разрешить отдельным инструментом.
+    """
+    if not weldment_source_matches(document):
+        raise KimFormatError("assembly source differs from saved scheme")
+    matches = all(compare_lower_arm_source(part, project) for part in document["parts"])
+    return rebuild_welded_arm(document, project), matches

@@ -46,6 +46,7 @@ from .point_table_dialog import PointTableDialog
 from .snapshot_compare_dialog import SnapshotCompareDialog
 from .step_inventory_dialog import StepInventoryDialog
 from .theme import THEMES, apply_theme
+from .weldment_dialog import WeldmentDialog
 from .widgets.empty_state import EmptyState
 
 LOG = logging.getLogger(__name__)
@@ -63,6 +64,7 @@ class MainWindow(QMainWindow):
         self._settings = settings or QSettings(str(settings_path()), QSettings.Format.IniFormat)
         self._syncing_view = False
         self._arm_concept_dialog: ArmConceptDialog | None = None
+        self._weldment_dialog: WeldmentDialog | None = None
         self._theme = str(self._settings.value("view/theme", self.controller.project.view.theme))
 
         self.setWindowTitle(tr("app.title"))
@@ -150,6 +152,21 @@ class MainWindow(QMainWindow):
         if dialog is not None:
             dialog.deleteLater()
 
+    def _open_weldment(self) -> None:
+        if self._weldment_dialog is None:
+            dialog = WeldmentDialog(self.controller, self)
+            self._weldment_dialog = dialog
+            dialog.finished.connect(self._close_weldment)
+        self._weldment_dialog.show()
+        self._weldment_dialog.raise_()
+        self._weldment_dialog.activateWindow()
+
+    def _close_weldment(self, _result: int) -> None:
+        dialog = self._weldment_dialog
+        self._weldment_dialog = None
+        if dialog is not None:
+            dialog.deleteLater()
+
     def _open_cad_preview_settings(self) -> None:
         dialog = CadPreviewSettingsDialog(self._settings, self)
         try:
@@ -220,6 +237,9 @@ class MainWindow(QMainWindow):
 
         self.action_arm_concept = QAction(tr("arm_concept.menu"), self)
         self.action_arm_concept.triggered.connect(self._open_arm_concept)
+
+        self.action_weldment = QAction(tr("weldment.menu"), self)
+        self.action_weldment.triggered.connect(self._open_weldment)
 
         self.action_cad_settings = QAction(tr("cad_preview.settings_menu"), self)
         self.action_cad_settings.triggered.connect(self._open_cad_preview_settings)
@@ -313,6 +333,7 @@ class MainWindow(QMainWindow):
         menu_file.addAction(self.action_cad_preview)
         menu_file.addAction(self.action_cad_registration)
         menu_file.addAction(self.action_arm_concept)
+        menu_file.addAction(self.action_weldment)
         menu_file.addAction(self.action_recover_autosave)
         menu_file.addAction(self.action_allow_autosave)
         menu_file.addAction(self.action_templates)

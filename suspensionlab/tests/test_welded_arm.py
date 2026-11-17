@@ -129,3 +129,58 @@ def test_inconsistent_graph_is_rejected_without_overwriting_existing_file(tmp_pa
     with pytest.raises(KimFormatError):
         write_document(path, 'assembly', doc)
     assert path.read_bytes() == old and list(tmp_path.iterdir()) == [path]
+
+
+def test_preview_requires_consistent_source_and_preserves_names_and_inputs():
+    from suspensionlab.model.welded_arm import preview_rebuild_welded_arm
+
+    project, doc = make('required')
+    doc['name'] = 'Мой рычаг'
+    doc['parts'][0]['name'] = 'Моя передняя труба'
+    before = deepcopy(doc)
+    candidate, matches = preview_rebuild_welded_arm(doc, project)
+    assert matches and candidate['name'] == 'Мой рычаг'
+    assert candidate['parts'][0]['name'] == 'Моя передняя труба'
+    project.front.hardpoints['lbj'].z += 30
+    candidate, matches = preview_rebuild_welded_arm(doc, project)
+    assert not matches and weldment_source_matches(candidate)
+    assert candidate['parts'][0]['name'] == 'Моя передняя труба'
+    assert doc == before
+    stale = deepcopy(doc)
+    stale['scheme']['front_axle']['hardpoints']['lbj']['y'] += 1
+    with pytest.raises(KimFormatError):
+        preview_rebuild_welded_arm(stale, project)
+    project.front.type_code = 'macpherson_front'
+    project.front.ensure_points()
+    with pytest.raises(KimFormatError):
+        preview_rebuild_welded_arm(doc, project)
+    assert doc == before
+
+
+def test_write_new_copy_does_not_replace_existing_and_survives_race(tmp_path, monkeypatch):
+    from suspensionlab.model import kim_format
+
+    _, doc = make()
+    path = tmp_path / 'copy.kima'
+    path.write_bytes(b'keep')
+    with pytest.raises(KimFormatError):
+        write_document(path, 'assembly', doc, overwrite=False)
+    assert path.read_bytes() == b'keep'
+    path.unlink()
+    real_link = kim_format.os.link
+    def collide(source, target):
+        path.write_bytes(b'concurrent')
+        real_link(source, target)
+    monkeypatch.setattr(kim_format.os, 'link', collide)
+    with pytest.raises(KimFormatError):
+        write_document(path, 'assembly', doc, overwrite=False)
+    assert path.read_bytes() == b'concurrent'
+    assert list(tmp_path.iterdir()) == [path]
+
+
+def test_write_new_copy_roundtrips(tmp_path):
+    _, doc = make()
+    path = tmp_path / 'new.kima'
+    write_document(path, 'assembly', doc, overwrite=False)
+    assert read_document(path, 'assembly') == doc
+    assert list(tmp_path.iterdir()) == [path]

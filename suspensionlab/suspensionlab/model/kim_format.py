@@ -316,7 +316,7 @@ def read_document(path: str | Path, kind: str) -> dict[str, Any]:
         raise KimFormatError("cannot read KIM document") from error
 
 
-def write_document(path: str | Path, kind: str, data: dict[str, Any]) -> Path:
+def write_document(path: str | Path, kind: str, data: dict[str, Any], *, overwrite: bool = True) -> Path:
     """Проверка перед атомарной заменой; пользователь обязан иметь резервную копию."""
     target = Path(path)
     _suffix(target, kind)
@@ -344,8 +344,15 @@ def write_document(path: str | Path, kind: str, data: dict[str, Any]) -> Path:
             os.fsync(handle.fileno())
         if existing is not None and os.name != "nt":
             os.chmod(temporary, stat.S_IMODE(existing.st_mode))
-        os.replace(temporary, destination)
-        temporary = None
+        if overwrite:
+            os.replace(temporary, destination)
+            temporary = None
+        else:
+            # Atomic create-if-absent on the same filesystem, never replacing
+            # an existing file or a file created while the dialog was open.
+            os.link(temporary, destination)
+            os.unlink(temporary)
+            temporary = None
         return target
     except (OSError, UnicodeError, TypeError, ValueError, OverflowError, RuntimeError, RecursionError) as error:
         raise KimFormatError("cannot write KIM document") from error
