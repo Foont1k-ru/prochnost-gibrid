@@ -168,3 +168,36 @@ def test_reopened_bend_edits_rebuild_real_cad_and_clear_invalid(qtbot, tmp_path,
     assert source.read_bytes() == original
     monkeypatch.setattr(QMessageBox, 'question', lambda *args: QMessageBox.StandardButton.Yes)
     d.close()
+
+
+def test_rear_tube_editor_builds_and_rebuilds_real_cad(qtbot, tmp_path, monkeypatch):
+    from suspensionlab.model.kim_format import read_document
+    from suspensionlab.ui.rear_tube_dialog import RearTubeDialog
+
+    c = AppController()
+    c.set_axle_type('rear', 'live_axle_coil')
+    for code, xyz in {'ll_in_l': (0., 0., 0.), 'll_out_l': (100., 100., 0.)}.items():
+        point = c.project.rear.hardpoints[code]
+        point.x, point.y, point.z = xyz
+    d = RearTubeDialog(c)
+    qtbot.addWidget(d)
+    d.show()
+    d._arm.setCurrentIndex(d._arm.findData('rear_lower_left'))
+    d._three_d._enable.setChecked(True)
+    qtbot.waitUntil(lambda: d._three_d._view.mesh is not None, timeout=45000)
+    assert d._save.isEnabled()
+    d._bend.setChecked(True)
+    assert d._three_d._view.mesh is None and not d._save.isEnabled()
+    for field, value in zip(d._fields, ('100', '0', '0', '20'), strict=True):
+        field.setText(value)
+    qtbot.waitUntil(lambda: d._three_d._view.mesh is not None, timeout=45000)
+    assert d._save.isEnabled()
+    d._fields[3].setText('1000')
+    assert d._three_d._view.mesh is None and not d._save.isEnabled()
+    d._fields[3].setText('20')
+    qtbot.waitUntil(lambda: d._three_d._view.mesh is not None, timeout=45000)
+    target = tmp_path / 'rear.kima'
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(target), ''))
+    d._save_copy()
+    assert read_document(target, 'assembly')['bend']['radius_mm'] == 20
+    d.close()

@@ -44,6 +44,7 @@ from .docks.project_tree import ProjectTree
 from .equilibrium_dialog import EquilibriumDialog
 from .niva_arms_dialog import NivaArmsDialog
 from .point_table_dialog import PointTableDialog
+from .rear_tube_dialog import RearTubeDialog
 from .snapshot_compare_dialog import SnapshotCompareDialog
 from .step_inventory_dialog import StepInventoryDialog
 from .theme import THEMES, apply_theme
@@ -64,6 +65,7 @@ class MainWindow(QMainWindow):
         self.controller = controller or AppController(self)
         self._settings = settings or QSettings(str(settings_path()), QSettings.Format.IniFormat)
         self._syncing_view = False
+        self._rear_tube_dialog: RearTubeDialog | None = None
         self._niva_arms_dialog: NivaArmsDialog | None = None
         self._arm_concept_dialog: ArmConceptDialog | None = None
         self._weldment_dialog: WeldmentDialog | None = None
@@ -138,6 +140,21 @@ class MainWindow(QMainWindow):
 
     def _open_cad_registration(self) -> None:
         CadRegistrationDialog(self.controller, self).exec()
+
+    def _open_rear_tube(self) -> None:
+        if self._rear_tube_dialog is None:
+            dialog = RearTubeDialog(self.controller, self)
+            self._rear_tube_dialog = dialog
+            dialog.finished.connect(self._close_rear_tube)
+        self._rear_tube_dialog.show()
+        self._rear_tube_dialog.raise_()
+        self._rear_tube_dialog.activateWindow()
+
+    def _close_rear_tube(self, _result: int) -> None:
+        dialog = self._rear_tube_dialog
+        self._rear_tube_dialog = None
+        if dialog is not None:
+            dialog.deleteLater()
 
     def _open_niva_arms(self) -> None:
         if self._niva_arms_dialog is None:
@@ -252,6 +269,9 @@ class MainWindow(QMainWindow):
         self.action_cad_registration = QAction(tr("cad_registration.menu"), self)
         self.action_cad_registration.triggered.connect(self._open_cad_registration)
 
+        self.action_rear_tube = QAction(tr("rear_tube.menu"), self)
+        self.action_rear_tube.triggered.connect(self._open_rear_tube)
+
         self.action_niva_arms = QAction(tr("niva_arms.menu"), self)
         self.action_niva_arms.triggered.connect(self._open_niva_arms)
 
@@ -353,6 +373,7 @@ class MainWindow(QMainWindow):
         menu_file.addAction(self.action_cad_preview)
         menu_file.addAction(self.action_cad_registration)
         menu_file.addAction(self.action_niva_arms)
+        menu_file.addAction(self.action_rear_tube)
         menu_file.addAction(self.action_arm_concept)
         menu_file.addAction(self.action_weldment)
         menu_file.addAction(self.action_recover_autosave)
@@ -941,9 +962,13 @@ class MainWindow(QMainWindow):
         if self._weldment_dialog is not None and not self._weldment_dialog.confirm_close():
             event.ignore()
             return
+        if self._rear_tube_dialog is not None and not self._rear_tube_dialog.confirm_close():
+            event.ignore()
+            return
         arm_stopped = self._arm_concept_dialog is None or self._arm_concept_dialog.shutdown()
         weldment_stopped = self._weldment_dialog is None or self._weldment_dialog.shutdown()
-        if not arm_stopped or not weldment_stopped:
+        rear_stopped = self._rear_tube_dialog is None or self._rear_tube_dialog.shutdown()
+        if not arm_stopped or not weldment_stopped or not rear_stopped:
             event.ignore()
             return
         self._save_settings()

@@ -4,7 +4,7 @@ from __future__ import annotations
 import math
 
 from PySide6.QtCore import QPointF, Qt
-from PySide6.QtGui import QColor, QPainter, QPaintEvent, QPen
+from PySide6.QtGui import QColor, QPainter, QPaintEvent, QPen, QPolygonF
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -29,10 +29,12 @@ class ArmPlan(QWidget):
         super().__init__(parent)
         self.axes = axes
         self.view: ArmView | None = None
+        self.path: tuple[tuple[float, float, float], ...] | None = None
         self.setMinimumSize(360, 300)
 
-    def set_view(self, view: ArmView | None) -> None:
+    def set_view(self, view: ArmView | None, path: tuple[tuple[float, float, float], ...] | None = None) -> None:
         self.view = view
+        self.path = path if view is not None else None
         self.update()
 
     def paintEvent(self, event: QPaintEvent) -> None:  # noqa: N802
@@ -45,7 +47,8 @@ class ArmPlan(QWidget):
             return
         a, b = self.axes
         points = self.view.points
-        first, second = [p[a] for p in points], [p[b] for p in points]
+        extent = (*points, *(self.path or ()))
+        first, second = [p[a] for p in extent], [p[b] for p in extent]
         scale = min(max(self.width()-140, 1)/max(max(first)-min(first), 1.),
                     max(self.height()-100, 1)/max(max(second)-min(second), 1.))
         center_a, center_b = (max(first)+min(first))/2, (max(second)+min(second))/2
@@ -53,8 +56,11 @@ class ArmPlan(QWidget):
             return QPointF(self.width()/2 + (p[a]-center_a)*scale,
                            self.height()/2 - (p[b]-center_b)*scale)
         painter.setPen(QPen(QColor('#387fa3'), 4))
-        for start, end in self.view.segments:
-            painter.drawLine(map_point(start), map_point(end))
+        if self.path is not None:
+            painter.drawPolyline(QPolygonF([map_point(point) for point in self.path]))
+        else:
+            for start, end in self.view.segments:
+                painter.drawLine(map_point(start), map_point(end))
         painter.setPen(QPen(self.palette().text().color(), 1.5))
         for point, code, kind in zip(points, self.view.point_codes, self.view.joint_kinds, strict=True):
             pos = map_point(point)

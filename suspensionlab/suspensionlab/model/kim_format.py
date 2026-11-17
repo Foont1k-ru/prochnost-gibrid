@@ -147,6 +147,11 @@ def _scheme(data: Any) -> None:
 
 
 def _assembly(data: Any) -> None:
+    if isinstance(data, dict) and data.get("version") == "0.4":
+        from .rear_tube import validate_rear_tube
+
+        validate_rear_tube(data)
+        return
     if isinstance(data, dict) and data.get("version") in ("0.2", "0.3"):
         from .welded_arm import validate_welded_arm
 

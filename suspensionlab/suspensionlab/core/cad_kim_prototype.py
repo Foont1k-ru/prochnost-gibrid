@@ -6,7 +6,7 @@ from typing import Any
 from ..model.kim_format import _assembly, _part
 
 
-def _build_bent_tube(geometry: dict[str, Any]) -> Any:
+def _build_bent_tube(geometry: dict[str, Any], *, endpoints: tuple[Any, Any] | None = None) -> Any:
     """Круглое полое сечение вдоль двух прямых и касательной дуги."""
     from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakeWire
     from OCP.BRepCheck import BRepCheck_Analyzer
@@ -17,9 +17,11 @@ def _build_bent_tube(geometry: dict[str, Any]) -> Any:
 
     from ..model.bent_tube import make_bend_path
 
-    points = geometry["source"]["coordinates_mm"]
-    path = make_bend_path(points[0 if geometry["leg"] == "front" else 1], geometry["bend_vertex_mm"],
-                          points[2], geometry["bend_radius_mm"], geometry["radius_mm"])
+    if endpoints is None:
+        points = geometry["source"]["coordinates_mm"]
+        endpoints = (points[0 if geometry["leg"] == "front" else 1], points[2])
+    path = make_bend_path(endpoints[0], geometry["bend_vertex_mm"], endpoints[1],
+                          geometry["bend_radius_mm"], geometry["radius_mm"])
     start, t1, middle, t2, end = (gp_Pnt(*p) for p in
                                    (path.start, path.tangent_start, path.midpoint, path.tangent_end, path.end))
     arc = GC_MakeArcOfCircle(t1, middle, t2)
@@ -90,7 +92,7 @@ def build_part(document: dict[str, Any]) -> Any:
 def build_assembly(document: dict[str, Any]) -> Any:
     """Создаёт соединение перенесённых экземпляров, не связывая их со схемой."""
     _assembly(document)
-    if document["version"] in ("0.2", "0.3"):
+    if document["version"] in ("0.2", "0.3", "0.4"):
         raise ValueError("incomplete weldment: use the explicitly partial tube preview")
     from OCP.BRep import BRep_Builder
     from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
@@ -124,3 +126,31 @@ def build_weldment_tubes_preview(document: dict[str, Any]) -> Any:
     for part in document["parts"]:
         builder.Add(compound, build_part(part))
     return compound
+
+
+def build_rear_tube_preview(document: dict[str, Any]) -> Any:
+    """Одна полая труба, без втулок, креплений и сварки."""
+    import math
+
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+    from OCP.BRepCheck import BRepCheck_Analyzer
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder
+    from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt
+
+    from ..model.rear_tube import rear_tube_points
+
+    start, end = rear_tube_points(document)
+    radius, wall = float(document['radius_mm']), float(document['wall_mm'])
+    if document['bend'] is not None:
+        bend = document['bend']
+        return _build_bent_tube({'radius_mm': radius, 'wall_mm': wall,
+                                 'bend_vertex_mm': bend['vertex_mm'], 'bend_radius_mm': bend['radius_mm']},
+                                endpoints=(start, end))
+    axis = gp_Ax2(gp_Pnt(*start), gp_Dir(*(end[i] - start[i] for i in range(3))))
+    length = math.dist(start, end)
+    outer = BRepPrimAPI_MakeCylinder(axis, radius, length).Shape()
+    bore = BRepPrimAPI_MakeCylinder(axis, radius - wall, length).Shape()
+    cut = BRepAlgoAPI_Cut(outer, bore)
+    if not cut.IsDone() or cut.Shape().IsNull() or not BRepCheck_Analyzer(cut.Shape()).IsValid():
+        raise RuntimeError('could not build rear tube')
+    return cut.Shape()

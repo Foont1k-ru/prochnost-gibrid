@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 
 from ..model.kim_format import read_document
-from .cad_kim_prototype import build_weldment_tubes_preview
+from .cad_kim_prototype import build_rear_tube_preview, build_weldment_tubes_preview
 from .cad_mesh import MAX_COORDINATE
 from .cad_worker import CadWorkerError
 
@@ -31,7 +31,7 @@ def create_mesh(path: Path, deviation: float) -> tuple[np.ndarray, int]:
     except (ImportError, OSError) as error:
         raise CadWorkerError("missing_cad") from error
     doc = read_document(path, "assembly")
-    shape = build_weldment_tubes_preview(doc)
+    shape = build_rear_tube_preview(doc) if doc["version"] == "0.4" else build_weldment_tubes_preview(doc)
     if shape.IsNull() or not BRepCheck_Analyzer(shape).IsValid():
         raise CadWorkerError("no_shape")
     mesher = BRepMesh_IncrementalMesh(shape, deviation, False, 0.7, False)
