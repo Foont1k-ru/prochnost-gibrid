@@ -591,3 +591,50 @@ def test_pending_dimension_undo_and_save_are_safe(qtbot, monkeypatch):
     dialog._redo()
     assert len(canvas.draft.entities) == 1
     dialog._saved = dialog._document()
+
+
+def test_click_dimension_label_edits_geometry_and_undo(qtbot, monkeypatch):
+    from PySide6.QtWidgets import QInputDialog
+
+    dialog = SketchDraftDialog()
+    qtbot.addWidget(dialog)
+    dialog.show()
+    canvas = dialog.canvas
+    canvas.add_point((0, 0))
+    canvas.add_point((50, 0))
+    canvas.draft.add_dimension(0, (25, 20), "auto")
+    monkeypatch.setattr(QInputDialog, "getDouble", lambda *args, **kwargs: (80, True))
+    position = canvas._dimension_label_rect(canvas.draft.dimensions[0]).center().toPoint()
+    qtbot.mouseClick(canvas, Qt.MouseButton.LeftButton, pos=position)
+    assert canvas.draft.entities[0].size == 80
+    assert canvas.pending is None
+    dialog._undo()
+    assert canvas.draft.entities[0].size == 50
+    dialog._redo()
+    assert canvas.draft.entities[0].size == 80
+    dialog._saved = dialog._document()
+
+
+def test_extrusion_opens_preview_and_preserves_sketch(qtbot, monkeypatch):
+    from PySide6.QtWidgets import QInputDialog
+
+    from suspensionlab.ui.sketch_draft_dialog import SketchExtrusionPreview
+
+    dialog = SketchDraftDialog()
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog.tool.setCurrentIndex(3)
+    dialog.canvas.add_point((0, 0))
+    dialog.canvas.add_point((50, 25))
+    original = dialog._document()
+    monkeypatch.setattr(QInputDialog, "getDouble", lambda *args, **kwargs: (10, True))
+    captured = []
+    def fake_exec(preview):
+        captured.append(preview.view.mesh)
+        assert not preview.view.grab().isNull()
+        return 0
+    monkeypatch.setattr(SketchExtrusionPreview, "exec", fake_exec)
+    dialog._extrude_preview()
+    assert captured[0] is not None and len(captured[0].triangles) == 12
+    assert dialog._document() == original
+    dialog._saved = original

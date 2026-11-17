@@ -6,6 +6,7 @@ from math import atan2, degrees, floor, hypot
 from pathlib import Path
 from typing import Literal
 
+import numpy as np
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QCloseEvent, QColor, QKeyEvent, QMouseEvent, QPainter, QPen, QWheelEvent
 from PySide6.QtWidgets import (
@@ -17,6 +18,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFormLayout,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QMessageBox,
     QPushButton,
@@ -35,11 +37,13 @@ from ..model.sketch_draft import (
     SketchDraft,
     arc_end,
     dimension_text,
+    dimension_value,
     drawing_bounds,
     make_entity,
     rectangle_entities,
 )
 from ..model.sketch_dxf import SketchDxfError, write_new_dxf
+from ..model.sketch_extrusion import extrusion_mesh
 from ..model.sketch_io import SUFFIX, SketchDocument, SketchIOError, read_sketch, write_new_sketch
 
 Tool = Literal["line", "circle", "rectangle", "chain", "measure", "arc", "trim", "tangent2", "tangent3",
@@ -75,6 +79,7 @@ class SketchCanvas(QWidget):
     trimRequested = Signal(int, object)
     tangentRequested = Signal(object)
     filletRequested = Signal(object)
+    dimensionEditRequested = Signal(int)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -206,6 +211,12 @@ class SketchCanvas(QWidget):
         if event.button() == Qt.MouseButton.RightButton:
             self._pan = event.position()
         elif event.button() == Qt.MouseButton.LeftButton:
+            if (self.kind != "erase_dim" and self.pending is None and not self.construction_indices and
+                    self.dimension_target is None):
+                for i in range(len(self.draft.dimensions) - 1, -1, -1):
+                    if self._dimension_label_rect(self.draft.dimensions[i]).adjusted(-3, -3, 3, 3).contains(event.position()):
+                        self.dimensionEditRequested.emit(i)
+                        return
             if self.kind is None:
                 point = self.to_world(event.position(), snap=False)
                 candidates = [(_distance_to_entity(point, e), i) for i, e in enumerate(self.draft.entities)]
@@ -233,7 +244,7 @@ class SketchCanvas(QWidget):
                     self.message.emit(str(exc))
                     return
                 self.dimension_target = None
-                self.message.emit("Справочный размер добавлен; выберите следующий элемент")
+                self.message.emit("Размер добавлен; щёлкните число для изменения элемента")
                 self.changed.emit()
                 self.update()
             elif self.kind in ("trim", "tangent2", "tangent3", "dimension", "fillet"):
@@ -371,11 +382,17 @@ class SketchCanvas(QWidget):
             p.drawEllipse(self.to_screen(self.hover), 4, 4)
         p.end()
 
+    def _dimension_label_rect(self, dimension: Dimension) -> QRectF:
+        label = dimension_text(dimension, self.draft.entities[dimension.entity_index])
+        baseline = self.to_screen(dimension.position) + QPointF(6, -6)
+        bounds = self.fontMetrics().boundingRect(label)
+        return QRectF(baseline.x() + bounds.x(), baseline.y() + bounds.y(), bounds.width(), bounds.height())
+
     def _draw_dimension(self, painter: QPainter, dimension: Dimension, preview: bool) -> None:
         entity = self.draft.entities[dimension.entity_index]
         position = self.to_screen(dimension.position)
         painter.setPen(QPen(QColor("#a6f4bb"), 1, Qt.PenStyle.DashLine if preview else Qt.PenStyle.SolidLine))
-        if entity.kind == "line":
+        if entity.kind == "line" and dimension.mode != "inclination":
             dx, dy = entity.end[0] - entity.start[0], entity.end[1] - entity.start[1]
             nx, ny = -dy / entity.size, dx / entity.size
             offset = ((dimension.position[0] - entity.start[0]) * nx +
@@ -538,6 +555,33 @@ class EntityEditor(QDialog):
         self.accept()
 
 
+class SketchExtrusionPreview(QDialog):
+    """Одноразовый полигональный снимок, не создаёт и не сохраняет CAD-тело."""
+    def __init__(self, triangles: np.ndarray, parent: QWidget | None = None) -> None:
+        from ..core.cad_mesh import CadMesh
+        from .canvas.cad_preview import CadPreview
+        from .widgets.camera_views import CameraViews
+
+        super().__init__(parent)
+        self.setWindowTitle("3D-предпросмотр выдавливания")
+        self.resize(900, 700)
+        layout = QVBoxLayout(self)
+        info = QLabel("Полигональный снимок для просмотра: дуги и окружности приближены отрезками. "
+                      "Это не CAD-тело; отверстия, сохранение 3D и экспорт STEP пока не поддерживаются. "
+                      "Правой кнопкой — перемещение, левой — вращение, колесом — масштаб.")
+        info.setWordWrap(True)
+        layout.addWidget(info)
+        self.view = CadPreview(self)
+        self.view.set_mesh(CadMesh(triangles, len(triangles)))
+        cameras = CameraViews(cad=True)
+        cameras.viewSelected.connect(self.view.set_standard_view)
+        layout.addWidget(cameras)
+        layout.addWidget(self.view, 1)
+        close = QPushButton("Закрыть")
+        close.clicked.connect(self.accept)
+        layout.addWidget(close)
+
+
 class SketchDraftDialog(QDialog):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -553,7 +597,8 @@ class SketchDraftDialog(QDialog):
         files = QHBoxLayout()
         new, open_button, save = QPushButton("Новый"), QPushButton("Открыть…"), QPushButton("Сохранить как новый…")
         export = QPushButton("Экспорт DXF…")
-        for button in (new, open_button, save, export):
+        preview_3d = QPushButton("Выдавить: 3D-просмотр…")
+        for button in (new, open_button, save, export, preview_3d):
             files.addWidget(button)
         self.file_label = QLabel("Новый эскиз")
         self.file_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
@@ -636,10 +681,10 @@ class SketchDraftDialog(QDialog):
         self.dimension_style = QComboBox()
         for label, key in (("Авто: длина / радиус", "auto"), ("Горизонтальный", "horizontal"),
                            ("Вертикальный", "vertical"), ("Радиус", "radius"),
-                           ("Диаметр", "diameter"), ("Угол дуги", "angle")):
+                           ("Диаметр", "diameter"), ("Угол дуги", "angle"), ("Наклон отрезка", "inclination")):
             self.dimension_style.addItem(label, key)
         diagnostics.addWidget(self.dimension_style)
-        diagnostics.addWidget(QLabel("Размеры справочные, округлены до 0,001"), 1)
+        diagnostics.addWidget(QLabel("Щёлкните число для изменения; точность показа 0,001"), 1)
         layout.addLayout(diagnostics)
         self.canvas = SketchCanvas(self)
         layout.addWidget(self.canvas, 1)
@@ -666,6 +711,7 @@ class SketchDraftDialog(QDialog):
         open_button.clicked.connect(self._open)
         save.clicked.connect(self._save)
         export.clicked.connect(self._export_dxf)
+        preview_3d.clicked.connect(self._extrude_preview)
         self.plane.currentIndexChanged.connect(self._reference_changed)
         self.plane_offset.valueChanged.connect(self._reference_changed)
         self.tool.currentIndexChanged.connect(self._set_tool)
@@ -687,6 +733,7 @@ class SketchDraftDialog(QDialog):
         self.canvas.trimRequested.connect(self._trim)
         self.canvas.tangentRequested.connect(self._tangent)
         self.canvas.filletRequested.connect(self._fillet)
+        self.canvas.dimensionEditRequested.connect(self._edit_dimension)
         self.arc_angle.valueChanged.connect(self._arc_angle_changed)
         self.dimension_style.currentIndexChanged.connect(self._dimension_style_changed)
         self.canvas.position.connect(self._position)
@@ -751,7 +798,7 @@ class SketchDraftDialog(QDialog):
         elif kinds[index] == "fillet":
             self._message("Укажите два отрезка с общим концом; радиус задаётся сверху")
         elif kinds[index] == "dimension":
-            self._message("Выберите элемент, затем место надписи; размер справочный, не управляет геометрией")
+            self._message("Выберите элемент, затем место надписи; щелчок по числу меняет только этот элемент")
         elif kinds[index] == "erase_dim":
             self._message("Нажмите на кружок у надписи размера для удаления")
 
@@ -798,6 +845,43 @@ class SketchDraftDialog(QDialog):
             self._message(str(exc))
             return
         self._message("Окружность добавлена; касание не связано с последующим изменением отрезков")
+        self.canvas.update()
+
+    def _extrude_preview(self) -> None:
+        if self.canvas.pending is not None or self.canvas.construction_indices or self.canvas.dimension_target is not None:
+            QMessageBox.warning(self, "3D-предпросмотр", "Завершите действие или нажмите Esc перед просмотром.")
+            return
+        depth, ok = QInputDialog.getDouble(self, "Выдавливание: 3D-предпросмотр",
+            "Глубина в мм вдоль положительной оси, перпендикулярной эскизу. "
+            "Нужен один замкнутый контур без отверстий; результат только для просмотра.",
+            10, 0.001, 1_000_000, 3)
+        if not ok:
+            return
+        try:
+            triangles = extrusion_mesh(self._document(), depth)
+        except ValueError as exc:
+            QMessageBox.warning(self, "3D-предпросмотр не создан", str(exc))
+            return
+        preview = SketchExtrusionPreview(triangles, self)
+        preview.exec()
+        preview.deleteLater()
+
+    def _edit_dimension(self, index: int) -> None:
+        dimension = self.canvas.draft.dimensions[index]
+        entity = self.canvas.draft.entities[dimension.entity_index]
+        value, ok = QInputDialog.getDouble(
+            self, "Изменить размер",
+            "Меняется только этот элемент: соседние элементы и касания не сохраняют связь. "
+            "Для отрезка закреплена первая точка, для окружности и дуги — центр.\nНовое значение:",
+            dimension_value(dimension, entity), -4_000_000, 4_000_000, 6)
+        if not ok:
+            return
+        try:
+            self.canvas.draft.set_dimension_value(index, value)
+        except ValueError as exc:
+            QMessageBox.warning(self, "Размер не изменён", str(exc))
+            return
+        self._message("Элемент изменён; другие элементы не связаны с ним")
         self.canvas.update()
 
     def _fillet(self, indices: tuple[int, ...]) -> None:

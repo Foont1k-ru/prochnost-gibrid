@@ -327,7 +327,7 @@ def run_packaging_check() -> None:
     import numpy as np
     from PySide6.QtCore import QEvent, QPointF, Qt
     from PySide6.QtGui import QMouseEvent
-    from PySide6.QtWidgets import QComboBox, QFileDialog, QLineEdit, QMessageBox
+    from PySide6.QtWidgets import QComboBox, QFileDialog, QInputDialog, QLineEdit, QMessageBox
 
     from .core.cad_measurement import measurement_distance, point_on_projected_triangle
     from .core.cad_mesh import CadMesh
@@ -336,7 +336,7 @@ def run_packaging_check() -> None:
     from .ui.cad_preview_dialog import CadPreviewDialog
     from .ui.cad_preview_settings import CadPreviewSettingsDialog
     from .ui.canvas.cad_preview import CadPreview
-    from .ui.sketch_draft_dialog import SketchDraftDialog
+    from .ui.sketch_draft_dialog import SketchDraftDialog, SketchExtrusionPreview
     from .ui.widgets.camera_views import CameraViews
 
     with TemporaryDirectory(prefix="suspensionlab-sketch-check-") as sketch_dir:
@@ -356,6 +356,18 @@ def run_packaging_check() -> None:
         _require(sketch.canvas.draft.entities[-1].kind == "arc" and
                  dimension_text(sketch.canvas.draft.dimensions[0], sketch.canvas.draft.entities[0]) == "90.000 мм",
                  "Сопряжение и связанный справочный размер недоступны")
+        # Один щелчок по числу открывает изменение геометрии; отмена восстанавливает её.
+        label = sketch.canvas._dimension_label_rect(sketch.canvas.draft.dimensions[0]).center()
+        with patch.object(QInputDialog, "getDouble", return_value=(80., True)):
+            app.sendEvent(sketch.canvas, QMouseEvent(QEvent.Type.MouseButtonPress, label,
+                          Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier))
+        _require(abs(sketch.canvas.draft.entities[0].size - 80.) < 1e-6, "Изменение размера по щелчку недоступно")
+        sketch._undo()
+        from .model.sketch_extrusion import extrusion_mesh
+
+        sketch_preview = SketchExtrusionPreview(extrusion_mesh(sketch._document(), 10.))
+        _require(sketch_preview.view.mesh is not None and not sketch_preview.view.grab().isNull(), "3D-предпросмотр эскиза недоступен")
+        sketch_preview.close()
         saved = Path(sketch_dir) / "размер.slsketch"
         write_new_sketch(saved, sketch._document())
         _require(read_sketch(saved) == sketch._document(), "Размер не сохранился в отдельном эскизе")

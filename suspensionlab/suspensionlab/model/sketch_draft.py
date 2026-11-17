@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import atan2, cos, hypot, isfinite, radians, sin
+from math import atan2, copysign, cos, degrees, hypot, isfinite, radians, sin
 from typing import Literal
 
 Point = tuple[float, float]
@@ -88,22 +88,30 @@ class Dimension:
     mode: str = "auto"
 
 
-def dimension_text(dimension: Dimension, entity: Entity) -> str:
+def dimension_value(dimension: Dimension, entity: Entity) -> float:
     mode = dimension.mode
     if mode == "auto":
         mode = "length" if entity.kind == "line" else "radius"
-    if mode == "length":
-        return f"{entity.size:.3f} мм"
+    if mode in ("length", "radius"):
+        return entity.size
     if mode == "horizontal":
-        return f"{abs(entity.end[0] - entity.start[0]):.3f} мм"
+        return abs(entity.end[0] - entity.start[0])
     if mode == "vertical":
-        return f"{abs(entity.end[1] - entity.start[1]):.3f} мм"
-    if mode == "radius":
-        return f"R {entity.size:.3f} мм"
+        return abs(entity.end[1] - entity.start[1])
+    if mode == "inclination":
+        return degrees(atan2(entity.end[1] - entity.start[1], entity.end[0] - entity.start[0]))
     if mode == "diameter":
-        return f"⌀ {2 * entity.size:.3f} мм"
+        return 2 * entity.size
     assert mode == "angle" and entity.sweep_deg is not None
-    return f"∠ {abs(entity.sweep_deg):.3f}°"
+    return abs(entity.sweep_deg)
+
+
+def dimension_text(dimension: Dimension, entity: Entity) -> str:
+    mode = dimension.mode
+    value = dimension_value(dimension, entity)
+    prefix = "R " if mode == "radius" or (mode == "auto" and entity.kind != "line") else "⌀ " if mode == "diameter" else "∠ " if mode in ("angle", "inclination") else ""
+    suffix = "°" if mode in ("angle", "inclination") else " мм"
+    return f"{prefix}{value:.3f}{suffix}"
 
 
 def validate_dimension(dimension: Dimension, entities: tuple[Entity, ...]) -> Dimension:
@@ -112,7 +120,7 @@ def validate_dimension(dimension: Dimension, entities: tuple[Entity, ...]) -> Di
         raise ValueError("Размер ссылается на отсутствующий элемент")
     if len(dimension.position) != 2 or not all(isfinite(x) and abs(x) <= LIMIT_MM for x in dimension.position):
         raise ValueError("Позиция размера вне допустимых границ")
-    allowed = {"auto", "length", "horizontal", "vertical"} if entities[index].kind == "line" else {"auto", "radius", "diameter"}
+    allowed = {"auto", "length", "horizontal", "vertical", "inclination"} if entities[index].kind == "line" else {"auto", "radius", "diameter"}
     if entities[index].kind == "arc":
         allowed.add("angle")
     if not isinstance(dimension.mode, str) or dimension.mode not in allowed:
@@ -206,6 +214,39 @@ class SketchDraft:
         dim = validate_dimension(Dimension(index, position, mode), tuple(self.entities))
         self._checkpoint()
         self.dimensions.append(dim)
+
+    def set_dimension_value(self, index: int, value: float) -> None:
+        """Одноразово изменить только указанный элемент; постоянной связи нет."""
+        if not 0 <= index < len(self.dimensions):
+            raise IndexError("Размер не найден")
+        if not isfinite(value):
+            raise ValueError("Введите конечное число")
+        dim = self.dimensions[index]
+        entity = self.entities[dim.entity_index]
+        mode = dim.mode if dim.mode != "auto" else ("length" if entity.kind == "line" else "radius")
+        dx, dy = entity.end[0] - entity.start[0], entity.end[1] - entity.start[1]
+        if mode == "inclination":
+            if not -180 <= value <= 180:
+                raise ValueError("Угол наклона должен быть от −180 до 180 градусов")
+            x, y = entity.size * cos(radians(value)), entity.size * sin(radians(value))
+        elif mode == "angle":
+            if not 1e-6 <= value < 360:
+                raise ValueError("Угол дуги должен быть больше нуля и меньше 360 градусов")
+            assert entity.sweep_deg is not None
+            self.replace(dim.entity_index, "arc", entity.start, entity.end, copysign(value, entity.sweep_deg))
+            return
+        else:
+            if value < 0 or (value < MIN_SIZE_MM and mode not in ("horizontal", "vertical")):
+                raise ValueError("Значение должно быть положительным")
+            if mode == "horizontal":
+                x, y = copysign(value, dx), dy
+            elif mode == "vertical":
+                x, y = dx, copysign(value, dy)
+            else:
+                radius = value / 2 if mode == "diameter" else value
+                x, y = dx * radius / entity.size, dy * radius / entity.size
+        self.replace(dim.entity_index, entity.kind, entity.start,
+                     (entity.start[0] + x, entity.start[1] + y), entity.sweep_deg)
 
     def delete_dimension(self, index: int) -> None:
         if index < 0 or index >= len(self.dimensions):

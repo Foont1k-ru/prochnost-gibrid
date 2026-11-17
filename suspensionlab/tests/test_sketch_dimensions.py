@@ -139,3 +139,62 @@ def test_invalid_dimension_mode_rejected_in_file(tmp_path, mode):
     path.write_text(json.dumps(data), encoding="utf-8")
     with pytest.raises(SketchIOError):
         read_sketch(path)
+
+
+@pytest.mark.parametrize("mode,value,expected", [("auto", 10, "10.000 мм"), ("horizontal", 6, "6.000 мм"),
+                                                  ("vertical", 8, "8.000 мм"), ("inclination", 90, "∠ 90.000°")])
+def test_edit_line_dimension_is_atomic_and_undoable(mode, value, expected):
+    from suspensionlab.model.sketch_draft import dimension_text
+
+    initial = line((0, 0), (3, 4))
+    draft = SketchDraft((initial,))
+    draft.add_dimension(0, (5, 10), mode)
+    draft.set_dimension_value(0, value)
+    assert dimension_text(draft.dimensions[0], draft.entities[0]) == expected
+    draft.undo()
+    assert draft.entities[0] == initial
+    draft.redo()
+    assert dimension_text(draft.dimensions[0], draft.entities[0]) == expected
+
+
+@pytest.mark.parametrize("mode,value", [("auto", 9), ("radius", 9), ("diameter", 18)])
+def test_edit_circular_dimension(mode, value):
+    draft = SketchDraft((make_entity("circle", (2, 3), (5, 7)),))
+    draft.add_dimension(0, (5, 10), mode)
+    draft.set_dimension_value(0, value)
+    assert draft.entities[0].size == pytest.approx(9)
+    assert draft.entities[0].start == (2, 3)
+
+
+def test_edit_arc_angle_preserves_direction_and_rejects_bad_values():
+    draft = SketchDraft((make_entity("arc", (0, 0), (4, 0), -60),))
+    draft.add_dimension(0, (5, 10), "angle")
+    draft.set_dimension_value(0, 120)
+    assert draft.entities[0].sweep_deg == -120
+    for invalid in (0, 360, float("nan"), -5):
+        with pytest.raises(ValueError):
+            draft.set_dimension_value(0, invalid)
+    assert draft.entities[0].sweep_deg == -120
+
+
+def test_inclination_format_v4_roundtrip_and_old_version_rejected(tmp_path):
+    doc = SketchDocument("XY", 0, (line((0, 0), (2, 3)),), (Dimension(0, (5, 6), "inclination"),))
+    path = tmp_path / "inclination.slsketch"
+    write_new_sketch(path, doc)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["version"] == "4" and read_sketch(path) == doc
+    data["version"] = "3"
+    path.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(SketchIOError):
+        read_sketch(path)
+
+
+def test_edit_zero_projection_and_failed_edit_do_not_destroy_entity():
+    draft = SketchDraft((line((0, 0), (3, 4)),))
+    draft.add_dimension(0, (5, 6), "horizontal")
+    draft.set_dimension_value(0, 0)
+    assert draft.entities[0].end == (0, 4)
+    draft.add_dimension(0, (5, 7), "vertical")
+    with pytest.raises(ValueError):
+        draft.set_dimension_value(1, 0)
+    assert draft.entities[0].end == (0, 4)

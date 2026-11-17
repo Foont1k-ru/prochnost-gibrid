@@ -67,11 +67,11 @@ def _parse(value: Any) -> SketchDocument:
         raise SketchIOError("Некорректная структура эскиза")
     version = value.get("version")
     expected = {"format", "version", "units", "plane", "offset_mm", "entities"}
-    if version == "3":
+    if version in ("3", "4"):
         expected.add("dimensions")
     if set(value) != expected:
         raise SketchIOError("Некорректная структура эскиза")
-    if value["format"] != "suspensionlab-sketch" or version not in ("1", "2", "3") or value["units"] != "mm":
+    if value["format"] != "suspensionlab-sketch" or version not in ("1", "2", "3", "4") or value["units"] != "mm":
         raise SketchIOError("Неподдерживаемая версия или единицы")
     plane = value["plane"]
     if plane not in ("XY", "XZ", "YZ"):
@@ -90,7 +90,7 @@ def _parse(value: Any) -> SketchDocument:
         if kind not in ("line", "circle", "arc"):
             raise SketchIOError("Неизвестный элемент")
         if kind == "arc":
-            if version not in ("2", "3") or set(item) != {"kind", "start", "end", "sweep_deg"}:
+            if version not in ("2", "3", "4") or set(item) != {"kind", "start", "end", "sweep_deg"}:
                 raise SketchIOError("Неподдерживаемая дуга")
             sweep = _number(item["sweep_deg"])
         else:
@@ -99,13 +99,15 @@ def _parse(value: Any) -> SketchDocument:
             sweep = None
         entities.append(make_entity(cast(Kind, kind), _point(item["start"]), _point(item["end"]), sweep))
     dimensions: list[Dimension] = []
-    if version == "3":
+    if version in ("3", "4"):
         items = value["dimensions"]
         if not isinstance(items, list) or len(items) > MAX_DIMENSIONS:
             raise SketchIOError("Некорректное количество размеров")
         for item in items:
             if not isinstance(item, dict) or set(item) != {"entity_index", "position", "mode"}:
                 raise SketchIOError("Некорректный размер")
+            if item["mode"] == "inclination" and version != "4":
+                raise SketchIOError("Наклон отрезка требует версию 4")
             dimensions.append(validate_dimension(Dimension(item["entity_index"], _point(item["position"]), item["mode"]), tuple(entities)))
     return SketchDocument(plane, offset, tuple(entities), tuple(dimensions))
 
@@ -118,7 +120,8 @@ def _as_data(document: SketchDocument) -> dict[str, Any]:
             item["sweep_deg"] = entity.sweep_deg
         items.append(item)
     data: dict[str, Any] = {"format": "suspensionlab-sketch",
-                            "version": "3" if document.dimensions else ("2" if any(e.kind == "arc" for e in document.entities) else "1"),
+                            "version": ("4" if any(d.mode == "inclination" for d in document.dimensions) else
+                                        "3" if document.dimensions else "2" if any(e.kind == "arc" for e in document.entities) else "1"),
                             "units": "mm", "plane": document.plane, "offset_mm": document.offset_mm,
                             "entities": items}
     if document.dimensions:
