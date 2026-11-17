@@ -194,6 +194,51 @@ def run_cad_check() -> None:
         _require(len(result.triangles) > 0 and result.skipped_faces == result.recovered_faces == 0,
                  "В собранном приложении не построена труба задней тяги")
 
+    # Проверяем и пользовательский путь повторного открытия в упакованном Qt.
+    from unittest.mock import patch
+
+    from PySide6.QtWidgets import QFileDialog, QMessageBox
+
+    from .model.kim_format import read_document, write_document
+    from .ui.rear_tube_dialog import RearTubeDialog
+
+    controller = AppController()
+    controller.set_axle_type("rear", "live_axle_coil")
+    for code, xyz in {"ll_in_l": (0., 0., 0.), "ll_out_l": (100., 100., 0.)}.items():
+        point = controller.project.rear.hardpoints[code]
+        point.x, point.y, point.z = xyz
+    with TemporaryDirectory(prefix="suspensionlab-rear-reopen-") as directory:
+        source, target = Path(directory) / "source.kima", Path(directory) / "copy.kima"
+        document = make_rear_tube(controller.project, "rear_lower_left", 10., 2.,
+                                  {"vertex_mm": [100., 0., 0.], "radius_mm": 20.})
+        write_document(source, "assembly", document, overwrite=False)
+        original = source.read_bytes()
+        rear_dialog = RearTubeDialog(controller)
+        rear_dialog.show()
+        panel = rear_dialog._three_d
+        try:
+            with patch.object(QFileDialog, "getOpenFileName", return_value=(str(source), "")), \
+                    patch.object(QMessageBox, "warning", return_value=QMessageBox.StandardButton.No):
+                rear_dialog._open_file()
+            _require(rear_dialog._source == document and not rear_dialog._active,
+                     "Сохранённая задняя тяга не открылась")
+            rear_dialog._start_preview()
+            panel._enable.setChecked(True)
+            wait_for_mesh()
+            rear_dialog._fields[3].setText("25")
+            _require(panel._view.mesh is None and not rear_dialog._save.isEnabled(),
+                     "Старая сетка задней тяги не очищена")
+            wait_for_mesh()
+            with patch.object(QFileDialog, "getSaveFileName", return_value=(str(target), "")), \
+                    patch.object(QMessageBox, "warning", return_value=QMessageBox.StandardButton.No):
+                rear_dialog._save_copy()
+            _require(target.exists() and read_document(target, "assembly")["bend"]["radius_mm"] == 25 and
+                     source.read_bytes() == original, "Копия задней тяги не сохранена или исходник изменён")
+        finally:
+            with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes):
+                rear_dialog.close()
+                app.processEvents()
+
 
 def run_packaging_check() -> None:
     """Проверяет ресурсы, окно, один расчёт и проект во временном каталоге.
