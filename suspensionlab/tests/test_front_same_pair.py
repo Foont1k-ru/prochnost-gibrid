@@ -58,3 +58,21 @@ def test_strict_new_format(tmp_path):
         change(wrong)
         with pytest.raises(KimFormatError):
             write_document(tmp_path / 'wrong.kima', 'assembly', wrong, overwrite=False)
+
+
+def test_skewed_supports_preserve_chirality_not_reflection():
+    p = project()
+    for code, xyz in {'uca_f_in': (10, 30, 40), 'uca_r_in': (10, -70, 60),
+                      'ubj': (110, 110, 70)}.items():
+        point = p.front.hardpoints[code]
+        point.x, point.y, point.z = xyz
+    source = make_front_tube_arm(p, 'front_upper_left', 10, 2,
+                                 {'front': {'vertex_mm': [110, 30, 50], 'radius_mm': 20}})
+    same, mirror = same_front_tube_arm(source), mirror_front_tube_arm(source)
+    def chirality(doc):
+        points = np.array(front_tube_arm_points(doc))
+        offset = np.array(doc['bends']['front']['vertex_mm']) - points[0]
+        return float(np.dot(np.cross(points[1] - points[0], points[2] - points[0]), offset))
+    assert abs(chirality(source)) > 1
+    assert chirality(same) == pytest.approx(chirality(source), abs=1e-7)
+    assert chirality(mirror) == pytest.approx(-chirality(source), abs=1e-7)
