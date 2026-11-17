@@ -50,3 +50,40 @@ def test_cylinder_and_two_translated_instances_rebuild_after_reopening(tmp_path)
     read['parts'][0]['geometry']['radius_mm'] = 20.
     assert volume(build_part(read['parts'][0])) == pytest.approx(math.pi * 20**2 * 50)
     assert volume(build_assembly(read)) == pytest.approx(2 * math.pi * 20**2 * 50)
+
+
+def test_lower_arm_rods_rebuild_with_expected_volume_and_position(tmp_path):
+    from suspensionlab.model.entities import Project
+    from suspensionlab.model.kim_format import compare_lower_arm_source, make_lower_arm_prototype
+
+    project = Project.create_default()
+    for code, position in {
+        'lca_f_in': (0., 0., 0.),
+        'lca_r_in': (100., 0., 0.),
+        'lbj': (0., 100., 0.),
+    }.items():
+        point = project.front.hardpoints[code]
+        point.x, point.y, point.z = position
+    part = make_lower_arm_prototype('arm', 'Черновик рычага', project, 2.)
+    assembly = make_assembly('Черновик', [part], [
+        {'id': 'instance', 'part_id': 'arm', 'translation_mm': [0, 0, 0]},
+    ], project)
+    path = tmp_path / 'подвеска.kima'
+    write_document(path, 'assembly', assembly)
+    saved = read_document(path, 'assembly')
+    shape = build_part(saved['parts'][0])
+    assert BRepCheck_Analyzer(shape).IsValid()
+    expected = math.pi * 2**2 * (100. + math.sqrt(2) * 100.)
+    assert volume(shape) == pytest.approx(expected)
+    assert volume(build_assembly(saved)) == pytest.approx(expected)
+    props = GProp_GProps()
+    BRepGProp.VolumeProperties_s(shape, props)
+    center = props.CentreOfMass()
+    assert center.X() == pytest.approx((50 * math.sqrt(2)) / (1 + math.sqrt(2)))
+    assert center.Y() == pytest.approx(50.)
+    assert center.Z() == pytest.approx(0., abs=1e-6)
+    assert compare_lower_arm_source(saved['parts'][0], project)
+    project.front.hardpoints['lbj'].y = 200.
+    assert not compare_lower_arm_source(saved['parts'][0], project)
+    updated = make_lower_arm_prototype('arm', 'Черновик рычага', project, 2.)
+    assert volume(build_part(updated)) == pytest.approx(math.pi * 2**2 * (200 + math.sqrt(50000)))

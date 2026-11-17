@@ -1,6 +1,6 @@
 """Исследовательские файлы KIM: точный контракт прототипа, не готовый CAD.
 
-Версия 0.1 умеет лишь тестовый цилиндр и экземпляры с переносом. Сборка
+Версия 0.1 поддерживает тестовый цилиндр, условный рычаг и переносы. Сборка
 содержит детали внутри JSON, не открывает ссылки и не исполняет код.
 Интерфейс и совместимость последующих версий ещё не обещаны.
 """
@@ -25,6 +25,9 @@ MAX_PARTS = 256
 MAX_INSTANCES = 1024
 MAX_MM = 1_000_000.0  # защитная граница прототипа, не инженерный допуск
 _ID = re.compile(r"[a-zA-Z0-9_-]{1,64}\Z")
+LOWER_ARM_POINTS = ("lca_f_in", "lca_r_in", "lbj")
+LOWER_ARM_TYPES = ("double_wishbone", "macpherson_front")
+MIN_PROTOTYPE_LENGTH_MM = 0.01  # устойчивость построения, не допуск детали
 
 
 class KimFormatError(ValueError):
@@ -67,11 +70,37 @@ def _part(data: Any) -> None:
         raise KimFormatError("unsupported part format, version or units")
     _id(doc["id"])
     _name(doc["name"])
-    shape = _keys(doc["geometry"], {"kind", "radius_mm", "length_mm"})
-    if shape["kind"] != "prototype_cylinder":
+    shape = doc["geometry"]
+    if not isinstance(shape, dict):
+        raise KimFormatError("invalid geometry")
+    if shape.get("kind") == "prototype_cylinder":
+        _keys(shape, {"kind", "radius_mm", "length_mm"})
+        _number(shape["radius_mm"], positive=True)
+        _number(shape["length_mm"], positive=True)
+    elif shape.get("kind") == "prototype_lower_arm_rods":
+        _keys(shape, {"kind", "radius_mm", "source"})
+        radius = _number(shape["radius_mm"], positive=True)
+        if radius < MIN_PROTOTYPE_LENGTH_MM:
+            raise KimFormatError("radius too small for prototype")
+        source = _keys(shape["source"], {"axle", "side", "suspension_type", "point_codes", "coordinates_mm"})
+        if (source["axle"] != "front" or source["side"] != "left" or
+                source["suspension_type"] not in LOWER_ARM_TYPES or
+                source["point_codes"] != list(LOWER_ARM_POINTS)):
+            raise KimFormatError("unsupported arm source")
+        coords = source["coordinates_mm"]
+        if not isinstance(coords, list) or len(coords) != 3:
+            raise KimFormatError("invalid arm points")
+        points: list[tuple[float, float, float]] = []
+        for point in coords:
+            if not isinstance(point, list) or len(point) != 3:
+                raise KimFormatError("invalid arm point")
+            points.append((_number(point[0]), _number(point[1]), _number(point[2])))
+        # All three distinct; prevent degenerate axes in the CAD kernel.
+        if any(math.dist(points[i], points[j]) < MIN_PROTOTYPE_LENGTH_MM
+               for i, j in ((0, 1), (0, 2), (1, 2))):
+            raise KimFormatError("coincident arm points")
+    else:
         raise KimFormatError("unsupported geometry")
-    _number(shape["radius_mm"], positive=True)
-    _number(shape["length_mm"], positive=True)
 
 
 def _scheme(data: Any) -> None:
@@ -133,6 +162,44 @@ def make_test_cylinder(identifier: str, name: str, radius_mm: float, length_mm: 
     return result
 
 
+def _lower_arm_source(project: Project) -> dict[str, Any]:
+    """Данные только из того же округлённого снимка, который хранится в проекте."""
+    try:
+        data = json.loads(project_to_json(project), object_pairs_hook=_unique_object)
+        axle = data["front_axle"]
+        suspension_type = axle["type"]
+        if suspension_type not in LOWER_ARM_TYPES:
+            raise KimFormatError("unsupported front suspension")
+        points = axle["hardpoints"]
+        coordinates = [[points[code][axis] for axis in ("x", "y", "z")] for code in LOWER_ARM_POINTS]
+        return {"axle": "front", "side": "left", "suspension_type": suspension_type,
+                "point_codes": list(LOWER_ARM_POINTS), "coordinates_mm": coordinates}
+    except (TypeError, ValueError, KeyError, OverflowError, RecursionError) as error:
+        raise KimFormatError("cannot capture suspension points") from error
+
+
+def make_lower_arm_prototype(identifier: str, name: str, project: Project, radius_mm: float) -> dict[str, Any]:
+    """Два условных стержня по трём сохранённым точкам, только передняя левая сторона."""
+    part = {"format": "kim-part", "version": VERSION, "id": identifier, "name": name, "units": "mm",
+            "geometry": {"kind": "prototype_lower_arm_rods", "radius_mm": radius_mm,
+                         "source": _lower_arm_source(project)}}
+    _part(part)
+    return part
+
+
+def compare_lower_arm_source(part: dict[str, Any], project: Project) -> bool:
+    """Сравнить тип и три точки, не другие параметры, и ничего не обновлять."""
+    _part(part)
+    geometry = part["geometry"]
+    if geometry["kind"] != "prototype_lower_arm_rods":
+        raise KimFormatError("not a lower arm prototype")
+    try:
+        current = _lower_arm_source(project)
+    except KimFormatError:
+        return False
+    return geometry["source"] == current
+
+
 def make_assembly(name: str, parts: list[dict[str, Any]], instances: list[dict[str, Any]],
                   scheme: Project | None = None) -> dict[str, Any]:
     """Схема и детали копируются; сборка не привязана к системе автомобиля."""
@@ -146,6 +213,27 @@ def make_assembly(name: str, parts: list[dict[str, Any]], instances: list[dict[s
         return data
     except (TypeError, ValueError, OverflowError, RecursionError) as error:
         raise KimFormatError("cannot create assembly") from error
+
+
+def inspect_assembly_arm_sources(document: dict[str, Any]) -> dict[str, str]:
+    """Сравнить сохранённые рычаги со схемой В ЭТОМ снимке; не с живым проектом.
+
+    'match' — совпадают три округлённые точки и тип; 'different' — различие;
+    'no_scheme' — схемы в сборке нет. Никакого перестроения не происходит.
+    """
+    _assembly(document)
+    scheme = Project.from_dict(document["scheme"]) if document["scheme"] is not None else None
+    result: dict[str, str] = {}
+    for part in document["parts"]:
+        if part["geometry"]["kind"] != "prototype_lower_arm_rods":
+            continue
+        if scheme is None:
+            result[part["id"]] = "no_scheme"
+        elif compare_lower_arm_source(part, scheme):
+            result[part["id"]] = "match"
+        else:
+            result[part["id"]] = "different"
+    return result
 
 
 def _validate(data: Any, kind: str) -> None:
