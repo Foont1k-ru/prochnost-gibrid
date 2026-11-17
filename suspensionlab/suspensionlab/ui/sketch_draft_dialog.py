@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..model.sketch_contours import ContourIssue, check_contours
 from ..model.sketch_draft import (
     LIMIT_MM,
     Entity,
@@ -34,6 +35,7 @@ from ..model.sketch_draft import (
     make_entity,
     rectangle_entities,
 )
+from ..model.sketch_dxf import SketchDxfError, write_new_dxf
 from ..model.sketch_io import SUFFIX, SketchDocument, SketchIOError, read_sketch, write_new_sketch
 
 Tool = Literal["line", "circle", "rectangle", "chain", "measure"]
@@ -74,6 +76,9 @@ class SketchCanvas(QWidget):
         self._pan: QPointF | None = None
         self.plane_locked = False
         self.selected: int | None = None
+        self.diagnostic_indices: set[int] = set()
+        self.diagnostic_points: tuple[Point, ...] = ()
+        self.diagnostic_snapshot: tuple[Entity, ...] | None = None
 
     def to_screen(self, point: Point) -> QPointF:
         return QPointF(self.width() / 2 + self.offset.x() + point[0] * self.scale,
@@ -241,8 +246,12 @@ class SketchCanvas(QWidget):
         p.drawLine(QPointF(origin.x(), 0), QPointF(origin.x(), self.height()))
         p.drawLine(QPointF(0, origin.y()), QPointF(self.width(), origin.y()))
         for i, entity in enumerate(self.draft.entities):
-            p.setPen(QPen(QColor("#f7ca72" if i == self.selected else "#6ed5f7"), 3 if i == self.selected else 2))
+            color = "#f7ca72" if i == self.selected else ("#ff6e6e" if i in self.diagnostic_indices else "#6ed5f7")
+            p.setPen(QPen(QColor(color), 3 if i == self.selected or i in self.diagnostic_indices else 2))
             self._draw_entity(p, entity.kind, entity.start, entity.end)
+        p.setPen(QPen(QColor("#ff6e6e"), 2))
+        for point in self.diagnostic_points:
+            p.drawEllipse(self.to_screen(point), 5, 5)
         if self.kind == "measure" and self.measure_start is not None and self.hover is not None:
             p.setPen(QPen(QColor("#f7ca72"), 1, Qt.PenStyle.DashLine))
             p.drawLine(self.to_screen(self.measure_start), self.to_screen(self.hover))
@@ -339,7 +348,8 @@ class SketchDraftDialog(QDialog):
         layout.addWidget(notice)
         files = QHBoxLayout()
         new, open_button, save = QPushButton("Новый"), QPushButton("Открыть…"), QPushButton("Сохранить как новый…")
-        for button in (new, open_button, save):
+        export = QPushButton("Экспорт DXF…")
+        for button in (new, open_button, save, export):
             files.addWidget(button)
         self.file_label = QLabel("Новый эскиз")
         self.file_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
@@ -381,6 +391,19 @@ class SketchDraftDialog(QDialog):
         for button in (undo, redo, cancel, self.edit_button, self.delete_button, fit):
             tools.addWidget(button)
         layout.addLayout(tools)
+        diagnostics = QHBoxLayout()
+        check = QPushButton("Проверить контуры")
+        diagnostics.addWidget(check)
+        diagnostics.addWidget(QLabel("Допуск близости:"))
+        self.contour_tolerance = QDoubleSpinBox()
+        self.contour_tolerance.setDecimals(3)
+        self.contour_tolerance.setRange(0.001, 1.0)
+        self.contour_tolerance.setValue(0.01)
+        self.contour_tolerance.setSuffix(" мм")
+        self.contour_tolerance.setToolTip("Близкие концы отмечаются, но не соединяются автоматически")
+        diagnostics.addWidget(self.contour_tolerance)
+        diagnostics.addWidget(QLabel("Предварительная проверка; геометрия не изменяется"), 1)
+        layout.addLayout(diagnostics)
         self.canvas = SketchCanvas(self)
         layout.addWidget(self.canvas, 1)
         bottom = QHBoxLayout()
@@ -405,6 +428,7 @@ class SketchDraftDialog(QDialog):
         new.clicked.connect(self._new)
         open_button.clicked.connect(self._open)
         save.clicked.connect(self._save)
+        export.clicked.connect(self._export_dxf)
         self.plane.currentIndexChanged.connect(self._reference_changed)
         self.plane_offset.valueChanged.connect(self._reference_changed)
         self.tool.currentIndexChanged.connect(self._set_tool)
@@ -416,6 +440,8 @@ class SketchDraftDialog(QDialog):
         undo.clicked.connect(self._undo)
         redo.clicked.connect(self._redo)
         fit.clicked.connect(self.canvas.fit_view)
+        check.clicked.connect(self._check_contours)
+        self.contour_tolerance.valueChanged.connect(self._clear_diagnostics)
         self.edit_button.clicked.connect(self._edit)
         self.delete_button.clicked.connect(self._delete)
         self.canvas.message.connect(self._message)
@@ -431,6 +457,9 @@ class SketchDraftDialog(QDialog):
         return self._document() != self._saved or self.canvas.pending is not None
 
     def _refresh(self, *_args: object) -> None:
+        if (self.canvas.diagnostic_snapshot is not None and
+                self.canvas.diagnostic_snapshot != tuple(self.canvas.draft.entities)):
+            self._clear_diagnostics()
         self.plane.setEnabled(not self.canvas.plane_locked)
         self.plane_offset.setEnabled(not self.canvas.plane_locked)
         selected = self.canvas.selected is not None
@@ -460,9 +489,9 @@ class SketchDraftDialog(QDialog):
         if index is not None:
             entity = self.canvas.draft.entities[index]
             if entity.kind == "line":
-                self._message(f"Отрезок: длина {entity.size:.3f} мм")
+                self._message(f"Элемент {index + 1} — отрезок: длина {entity.size:.3f} мм")
             else:
-                self._message(f"Окружность: радиус {entity.size:.3f} мм; диаметр {2 * entity.size:.3f} мм")
+                self._message(f"Элемент {index + 1} — окружность: радиус {entity.size:.3f} мм; диаметр {2 * entity.size:.3f} мм")
         else:
             self._refresh()
 
@@ -481,6 +510,44 @@ class SketchDraftDialog(QDialog):
     def _set_grid(self, value: float) -> None:
         self.canvas.grid = value
         self.canvas.update()
+
+    def _clear_diagnostics(self, *_args: object) -> None:
+        self.canvas.diagnostic_snapshot = None
+        self.canvas.diagnostic_indices.clear()
+        self.canvas.diagnostic_points = ()
+        self.canvas.update()
+
+    @staticmethod
+    def _describe_issue(issue: ContourIssue) -> str:
+        elements = ", ".join(str(index + 1) for index in issue.indices)
+        points = "; ".join(f"({x:.6f}, {y:.6f})" for x, y in issue.points)
+        return f"• {issue.message}" + (f" — элементы {elements}" if elements else "") + (f"; точки {points}" if points else "")
+
+    def _check_contours(self) -> None:
+        if self.canvas.pending is not None:
+            QMessageBox.warning(self, "Проверка контуров", "Завершите построение или нажмите Esc перед проверкой.")
+            return
+        try:
+            report = check_contours(tuple(self.canvas.draft.entities), self.contour_tolerance.value())
+        except ValueError as exc:
+            self._clear_diagnostics()
+            QMessageBox.warning(self, "Проверка контуров", str(exc))
+            return
+        self.canvas.diagnostic_snapshot = tuple(self.canvas.draft.entities)
+        self.canvas.diagnostic_indices = {index for issue in report.issues for index in issue.indices}
+        self.canvas.diagnostic_points = tuple(point for issue in report.issues for point in issue.points)
+        self.canvas.update()
+        notice = ("Это предварительная проверка отрезков и окружностей, не гарантия пригодности для 3D или производства. "
+                  "Проверка не исправляет разрывы и не меняет эскиз.")
+        if report.total_issues:
+            details = "\n".join(self._describe_issue(issue) for issue in report.issues[:12])
+            remainder = "\nПоказаны первые 12; подсветка ограничена первыми 100 замечаниями." if report.total_issues > 12 else ""
+            text = f"Найдено замечаний: {report.total_issues}. Проблемные элементы выделены красным.\n\n{details}{remainder}\n\n{notice}"
+            self._message(f"Проверка: замечаний {report.total_issues}")
+        else:
+            text = f"Замечаний не найдено. Замкнутых контуров по этой проверке: {report.closed_loops}.\n\n{notice}"
+            self._message(f"Проверка: замечаний нет, контуров {report.closed_loops}")
+        QMessageBox.information(self, "Проверка контуров", text)
 
     def _undo(self) -> None:
         if self.canvas.pending is not None:
@@ -543,6 +610,38 @@ class SketchDraftDialog(QDialog):
         self._message("Эскиз сохранён в новый файл")
         return True
 
+    def _export_dxf(self) -> bool:
+        if self.canvas.pending is not None:
+            QMessageBox.warning(self, "Экспорт DXF", "Завершите действие или нажмите Esc перед экспортом.")
+            return False
+        if not self.canvas.draft.entities:
+            QMessageBox.warning(self, "Экспорт DXF", "Эскиз пуст.")
+            return False
+        answer = QMessageBox.question(
+            self, "Экспорт DXF",
+            f"Экспортировать плоскую копию в XY листа, мм?\n\n"
+            f"Плоскость {self.plane.currentText()} и её смещение {self.plane_offset.value():.3f} мм "
+            "в DXF не сохраняются. Файл не связан с проектом и не является 3D-деталью.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return False
+        suggested = str(self._path.with_suffix(".dxf")) if self._path else "эскиз.dxf"
+        path, _ = QFileDialog.getSaveFileName(self, "Экспортировать новый DXF", suggested,
+                                              "DXF (*.dxf)", options=QFileDialog.Option.DontConfirmOverwrite)
+        if not path:
+            return False
+        target = Path(path)
+        if not target.suffix:
+            target = target.with_suffix(".dxf")
+        try:
+            write_new_dxf(target, self._document())
+        except (SketchDxfError, OSError) as exc:
+            QMessageBox.warning(self, "Экспорт не выполнен", f"{exc}\nВыберите новое имя файла.")
+            return False
+        self._message(f"DXF экспортирован: {target}; эскиз не сохранён автоматически")
+        return True
+
     def _confirm_discard(self) -> bool:
         if self._allow_close or not self._dirty():
             return True
@@ -554,6 +653,7 @@ class SketchDraftDialog(QDialog):
         return answer == QMessageBox.StandardButton.No
 
     def _load_document(self, doc: SketchDocument, path: Path | None) -> None:
+        self._clear_diagnostics()
         self.canvas.draft = SketchDraft(doc.entities)
         self.canvas.pending = None
         self.canvas.measure_start = None

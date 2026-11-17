@@ -224,3 +224,78 @@ def test_measurement_on_empty_document_does_not_lock_plane(qtbot):
     assert not dialog.canvas.draft.entities
     # Restore the intentionally changed plane so fixture cleanup is quiet.
     dialog.plane.setCurrentText("XY")
+
+
+def test_contour_check_highlight_is_invalidated_on_edit(qtbot, monkeypatch):
+    messages = []
+    monkeypatch.setattr(QMessageBox, "information", lambda *args: messages.append(args[2]))
+    dialog = SketchDraftDialog()
+    qtbot.addWidget(dialog)
+    dialog.show()
+    canvas = dialog.canvas
+    canvas.add_point((0, 0))
+    canvas.add_point((40, 0))
+    before = dialog._document()
+    dialog._check_contours()
+    assert "Открытый конец" in messages[-1]
+    assert canvas.diagnostic_indices == {0}
+    assert len(canvas.diagnostic_points) == 2
+    assert dialog._document() == before
+    canvas.repaint()
+    canvas.add_point((40, 0))
+    canvas.add_point((40, 40))
+    assert not canvas.diagnostic_indices
+    assert canvas.diagnostic_snapshot is None
+    dialog._saved = dialog._document()
+
+
+def test_contour_check_blocks_pending_and_clears_on_tolerance_change(qtbot, monkeypatch):
+    warnings, reports = [], []
+    monkeypatch.setattr(QMessageBox, "warning", lambda *args: warnings.append(args[2]))
+    monkeypatch.setattr(QMessageBox, "information", lambda *args: reports.append(args[2]))
+    dialog = SketchDraftDialog()
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog.tool.setCurrentIndex(3)
+    dialog.canvas.add_point((0, 0))
+    dialog._check_contours()
+    assert warnings and not reports
+    dialog.canvas.add_point((10, 10))
+    dialog._check_contours()
+    assert "Замечаний не найдено" in reports[-1]
+    assert "не гарантия" in reports[-1]
+    assert dialog.canvas.diagnostic_snapshot is not None
+    dialog.contour_tolerance.setValue(0.02)
+    assert dialog.canvas.diagnostic_snapshot is None
+    dialog._saved = dialog._document()
+
+
+def test_dxf_export_confirmation_pending_and_dirty_state(qtbot, tmp_path, monkeypatch):
+    import ezdxf
+    from PySide6.QtWidgets import QFileDialog
+
+    dialog = SketchDraftDialog()
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog.plane.setCurrentText("YZ")
+    dialog.plane_offset.setValue(12)
+    dialog.canvas.add_point((1, 2))
+    warnings = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda *args: warnings.append(args[2]))
+    assert not dialog._export_dxf() and warnings
+    dialog.canvas.add_point((3, 4))
+    before = dialog._document()
+    notices = []
+    monkeypatch.setattr(QMessageBox, "question", lambda *args: notices.append(args[2]) or QMessageBox.StandardButton.No)
+    assert not dialog._export_dxf() and "YZ" in notices[-1] and "не сохраняются" in notices[-1]
+    target = tmp_path / "drawing.dxf"
+    monkeypatch.setattr(QMessageBox, "question", lambda *args: QMessageBox.StandardButton.Yes)
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *args, **kwargs: (str(target), ""))
+    assert dialog._export_dxf()
+    assert dialog._document() == before and dialog._dirty()
+    assert len(ezdxf.readfile(target).modelspace()) == 1
+    # Existing target stays untouched, and export never marks the sketch saved.
+    original = target.read_bytes()
+    assert not dialog._export_dxf() and target.read_bytes() == original
+    assert dialog._dirty()
+    dialog._saved = dialog._document()
