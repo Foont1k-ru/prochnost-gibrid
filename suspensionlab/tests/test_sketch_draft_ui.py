@@ -299,3 +299,125 @@ def test_dxf_export_confirmation_pending_and_dirty_state(qtbot, tmp_path, monkey
     assert not dialog._export_dxf() and target.read_bytes() == original
     assert dialog._dirty()
     dialog._saved = dialog._document()
+
+
+def test_arc_creation_edit_roundtrip_and_contour_guard(qtbot, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QFileDialog
+
+    from suspensionlab.model.sketch_draft import arc_end
+    from suspensionlab.model.sketch_io import read_sketch
+    from suspensionlab.ui.sketch_draft_dialog import EntityEditor
+
+    dialog = SketchDraftDialog()
+    qtbot.addWidget(dialog)
+    dialog.show()
+    canvas = dialog.canvas
+    dialog.tool.setCurrentIndex(6)
+    dialog.arc_angle.setValue(-90)
+    canvas.add_point((0, 0))
+    canvas.hover = (10, 0)
+    canvas.repaint()
+    canvas.add_point((10, 0))
+    arc = canvas.draft.entities[0]
+    assert arc.kind == "arc" and arc.sweep_deg == -90
+    assert abs(arc_end(arc)[1] + 10) < 1e-9
+    editor = EntityEditor(arc, dialog)
+    qtbot.addWidget(editor)
+    editor.values[3].setValue(45)
+    assert editor.result_entity().sweep_deg == 45
+    warnings = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda *args: warnings.append(args[2]))
+    dialog._check_contours()
+    assert "дугами" in warnings[-1]
+    path = tmp_path / "arc.slsketch"
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *args, **kwargs: (str(path), ""))
+    assert dialog._save() and read_sketch(path).entities == (arc,)
+    dialog._undo()
+    assert not canvas.draft.entities
+    dialog._redo()
+    assert canvas.draft.entities == [arc] and not dialog._dirty()
+
+
+def test_trim_mouse_and_atomic_undo(qtbot):
+    dialog = SketchDraftDialog()
+    qtbot.addWidget(dialog)
+    dialog.show()
+    canvas = dialog.canvas
+    for start, end in (((0, 0), (100, 0)), ((40, -40), (40, 40)), ((70, -40), (70, 40))):
+        canvas.add_point(start)
+        canvas.add_point(end)
+    original = tuple(canvas.draft.entities)
+    dialog.tool.setCurrentIndex(7)
+    qtbot.mouseClick(canvas, Qt.MouseButton.LeftButton, pos=canvas.to_screen((55, 0)).toPoint())
+    assert len(canvas.draft.entities) == 4
+    assert canvas.draft.entities[0].end == (40, 0)
+    assert canvas.draft.entities[1].start == (70, 0)
+    dialog._undo()
+    assert tuple(canvas.draft.entities) == original
+    dialog._redo()
+    assert len(canvas.draft.entities) == 4
+    dialog._saved = dialog._document()
+
+
+def test_tangent_two_lines_mouse_cancel_and_apply(qtbot, monkeypatch):
+    from PySide6.QtWidgets import QInputDialog
+
+    dialog = SketchDraftDialog()
+    qtbot.addWidget(dialog)
+    dialog.show()
+    canvas = dialog.canvas
+    for start, end in (((-100, 0), (100, 0)), ((0, -100), (0, 100))):
+        canvas.add_point(start)
+        canvas.add_point(end)
+    dialog.tool.setCurrentIndex(8)
+    monkeypatch.setattr(QInputDialog, "getItem", lambda *args: ("", False))
+    for point in ((50, 0), (0, 50)):
+        qtbot.mouseClick(canvas, Qt.MouseButton.LeftButton, pos=canvas.to_screen(point).toPoint())
+    assert len(canvas.draft.entities) == 2 and not canvas.construction_indices
+    monkeypatch.setattr(QInputDialog, "getItem", lambda *args: (args[3][0], True))
+    for point in ((50, 0), (0, 50)):
+        qtbot.mouseClick(canvas, Qt.MouseButton.LeftButton, pos=canvas.to_screen(point).toPoint())
+    assert len(canvas.draft.entities) == 3
+    assert abs(canvas.draft.entities[-1].size - 10) < 1e-8
+    dialog._undo()
+    assert len(canvas.draft.entities) == 2
+    dialog._saved = dialog._document()
+
+
+def test_tangent_three_lines_mouse(qtbot, monkeypatch):
+    from PySide6.QtWidgets import QInputDialog
+
+    dialog = SketchDraftDialog()
+    qtbot.addWidget(dialog)
+    dialog.show()
+    canvas = dialog.canvas
+    for start, end in (((0, 0), (100, 0)), ((100, 0), (0, 100)), ((0, 100), (0, 0))):
+        canvas.add_point(start)
+        canvas.add_point(end)
+    dialog.tool.setCurrentIndex(9)
+    monkeypatch.setattr(QInputDialog, "getItem", lambda *args: (args[3][0], True))
+    for point in ((50, 0), (50, 50), (0, 50)):
+        qtbot.mouseClick(canvas, Qt.MouseButton.LeftButton, pos=canvas.to_screen(point).toPoint())
+    assert len(canvas.draft.entities) == 4 and canvas.draft.entities[-1].kind == "circle"
+    dialog._saved = dialog._document()
+
+
+def test_trim_circle_click_creates_arc_and_undo(qtbot):
+    dialog = SketchDraftDialog()
+    qtbot.addWidget(dialog)
+    dialog.show()
+    canvas = dialog.canvas
+    dialog.tool.setCurrentIndex(1)
+    canvas.add_point((0, 0))
+    canvas.add_point((30, 0))
+    dialog.tool.setCurrentIndex(0)
+    canvas.add_point((-50, 0))
+    canvas.add_point((50, 0))
+    old = tuple(canvas.draft.entities)
+    dialog.tool.setCurrentIndex(7)
+    qtbot.mouseClick(canvas, Qt.MouseButton.LeftButton, pos=canvas.to_screen((0, 30)).toPoint())
+    assert canvas.draft.entities[0].kind == "arc"
+    assert canvas.draft.entities[0].sweep_deg == 180
+    dialog._undo()
+    assert tuple(canvas.draft.entities) == old
+    dialog._saved = dialog._document()

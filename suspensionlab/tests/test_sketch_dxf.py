@@ -66,3 +66,15 @@ def test_export_collision_during_link_does_not_clobber(tmp_path, monkeypatch):
         write_new_dxf(path, document())
     assert path.read_text() == "someone else"
     assert not list(tmp_path.glob(".sketch-dxf-*.tmp"))
+
+
+@pytest.mark.parametrize("sweep,start,end", [(90, 0, 90), (-90, 270, 0)])
+def test_export_analytic_arc(tmp_path, sweep, start, end):
+    import ezdxf
+
+    arc = make_entity("arc", (0, 0), (10, 0), sweep)
+    path = tmp_path / "arc.dxf"
+    write_new_dxf(path, SketchDocument("XY", 0, (arc,)))
+    item = list(ezdxf.readfile(path).modelspace())[0]
+    assert item.dxftype() == "ARC" and item.dxf.radius == 10
+    assert item.dxf.start_angle == start and item.dxf.end_angle == end

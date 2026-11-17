@@ -5,6 +5,7 @@ import io
 import os
 import tempfile
 from contextlib import suppress
+from math import atan2, degrees
 from pathlib import Path
 
 from .sketch_io import SketchDocument, _as_data
@@ -36,8 +37,15 @@ def write_new_dxf(path: str | Path, document: SketchDocument) -> Path:
         for entity in document.entities:
             if entity.kind == "line":
                 space.add_line((*entity.start, 0), (*entity.end, 0))
-            else:
+            elif entity.kind == "circle":
                 space.add_circle((*entity.start, 0), entity.size)
+            else:
+                assert entity.sweep_deg is not None
+                start = degrees(atan2(entity.end[1] - entity.start[1], entity.end[0] - entity.start[0]))
+                finish = start + entity.sweep_deg
+                if entity.sweep_deg < 0:
+                    start, finish = finish, start
+                space.add_arc((*entity.start, 0), entity.size, start % 360, finish % 360)
         out = io.StringIO()
         drawing.write(out)
         content = out.getvalue().encode("utf-8")

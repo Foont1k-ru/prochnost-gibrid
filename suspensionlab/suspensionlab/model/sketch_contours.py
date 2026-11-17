@@ -110,8 +110,10 @@ def check_contours(entities: tuple[Entity, ...], tolerance: float = 0.01) -> Con
         raise ValueError(f"Проверка ограничена {MAX_CHECK_ENTITIES} элементами")
     if not isfinite(tolerance) or not 0.001 <= tolerance <= 1.0:
         raise ValueError("Допуск должен быть от 0,001 до 1 мм")
+    if any(entity.kind == "arc" for entity in entities):
+        raise ValueError("Проверка контуров с дугами пока не поддерживается")
     for entity in entities:
-        make_entity(entity.kind, entity.start, entity.end)
+        make_entity(entity.kind, entity.start, entity.end, entity.sweep_deg)
     found: list[ContourIssue] = []
     total = 0
 

@@ -348,12 +348,18 @@ def run_packaging_check() -> None:
         with patch.object(QMessageBox, "information") as report:
             sketch._check_contours()
         _require(report.called and "Замечаний не найдено" in str(report.call_args), "Проверка контуров недоступна")
+        sketch.tool.setCurrentIndex(6)  # аналитическая дуга
+        sketch.arc_angle.setValue(-90.)
+        sketch.canvas.add_point((150., 0.))
+        sketch.canvas.add_point((160., 0.))
+        _require(sketch.canvas.draft.entities[-1].kind == "arc", "Построение дуги недоступно")
         destination = Path(sketch_dir) / "эскиз.dxf"
         with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes), \
                 patch.object(QFileDialog, "getSaveFileName", return_value=(str(destination), "")):
             _require(sketch._export_dxf(), "DXF эскиза не создан")
         dxf = ezdxf.readfile(destination)
-        _require(dxf.header["$INSUNITS"] == 4 and len(dxf.modelspace()) == 4,
+        _require(dxf.header["$INSUNITS"] == 4 and len(dxf.modelspace()) == 5 and
+                 len(dxf.modelspace().query("ARC")) == 1,
                  "DXF эскиза содержит неверные единицы или геометрию")
         sketch._saved = sketch._document()
         sketch.close()

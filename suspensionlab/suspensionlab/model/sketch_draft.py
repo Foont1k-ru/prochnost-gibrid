@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import hypot, isfinite
+from math import atan2, cos, hypot, isfinite, radians, sin
 from typing import Literal
 
 Point = tuple[float, float]
-Kind = Literal["line", "circle"]
+Kind = Literal["line", "circle", "arc"]
 LIMIT_MM = 1_000_000.0
 MIN_SIZE_MM = 1e-6
 MAX_ENTITIES = 5000
@@ -20,20 +20,36 @@ class Entity:
     start: Point
     # Для окружности: вторая точка на окружности, не полигон.
     end: Point
+    # Для дуги: угол поворота от радиуса end вокруг start, в градусах.
+    sweep_deg: float | None = None
 
     @property
     def size(self) -> float:
         return hypot(self.end[0] - self.start[0], self.end[1] - self.start[1])
 
 
-def make_entity(kind: Kind, start: Point, end: Point) -> Entity:
-    if kind not in ("line", "circle"):
+def arc_end(entity: Entity) -> Point:
+    if entity.kind != "arc" or entity.sweep_deg is None:
+        raise ValueError("Ожидалась дуга")
+    a = atan2(entity.end[1] - entity.start[1], entity.end[0] - entity.start[0]) + radians(entity.sweep_deg)
+    return entity.start[0] + entity.size * cos(a), entity.start[1] + entity.size * sin(a)
+
+
+def make_entity(kind: Kind, start: Point, end: Point, sweep_deg: float | None = None) -> Entity:
+    if kind not in ("line", "circle", "arc"):
         raise ValueError("Неизвестный инструмент")
     if not all(isfinite(v) and abs(v) <= LIMIT_MM for v in (*start, *end)):
         raise ValueError("Координаты должны быть конечными и не более ±1 000 000 мм")
-    entity = Entity(kind, start, end)
+    if kind == "arc":
+        if sweep_deg is None or not isfinite(sweep_deg) or not 1e-6 <= abs(sweep_deg) < 360:
+            raise ValueError("Угол дуги должен быть между 0 и 360 градусами, без нуля")
+    elif sweep_deg is not None:
+        raise ValueError("Угол допустим только для дуги")
+    entity = Entity(kind, start, end, sweep_deg)
     if entity.size < MIN_SIZE_MM:
         raise ValueError("Длина или радиус должны быть больше нуля")
+    if kind == "arc" and not all(abs(v) <= LIMIT_MM for v in arc_end(entity)):
+        raise ValueError("Конечная точка дуги вне допустимых границ")
     return entity
 
 
@@ -53,7 +69,7 @@ def drawing_bounds(entities: tuple[Entity, ...]) -> tuple[float, float, float, f
     xs: list[float] = []
     ys: list[float] = []
     for entity in entities:
-        if entity.kind == "circle":
+        if entity.kind in ("circle", "arc"):
             radius = entity.size
             xs.extend((entity.start[0] - radius, entity.start[0] + radius))
             ys.extend((entity.start[1] - radius, entity.start[1] + radius))
@@ -69,7 +85,7 @@ class SketchDraft:
     def __init__(self, entities: tuple[Entity, ...] = ()) -> None:
         if len(entities) > MAX_ENTITIES:
             raise ValueError("Достигнут предел элементов эскиза")
-        self.entities: list[Entity] = [make_entity(e.kind, e.start, e.end) for e in entities]
+        self.entities: list[Entity] = [make_entity(e.kind, e.start, e.end, e.sweep_deg) for e in entities]
         self._undo: list[tuple[Entity, ...]] = []
         self._redo: list[tuple[Entity, ...]] = []
 
@@ -93,13 +109,29 @@ class SketchDraft:
         self._checkpoint()
         self.entities.extend(parts)
 
-    def replace(self, index: int, kind: Kind, start: Point, end: Point) -> None:
-        entity = make_entity(kind, start, end)
+    def add_arc(self, center: Point, start: Point, sweep_deg: float) -> None:
+        if len(self.entities) >= MAX_ENTITIES:
+            raise ValueError("Достигнут предел элементов эскиза")
+        entity = make_entity("arc", center, start, sweep_deg)
+        self._checkpoint()
+        self.entities.append(entity)
+
+    def replace(self, index: int, kind: Kind, start: Point, end: Point, sweep_deg: float | None = None) -> None:
+        entity = make_entity(kind, start, end, sweep_deg)
         if index < 0 or index >= len(self.entities):
             raise IndexError("Элемент не найден")
         if self.entities[index] != entity:
             self._checkpoint()
             self.entities[index] = entity
+
+    def replace_with(self, index: int, parts: tuple[Entity, ...]) -> None:
+        if index < 0 or index >= len(self.entities):
+            raise IndexError("Элемент не найден")
+        if len(self.entities) - 1 + len(parts) > MAX_ENTITIES:
+            raise ValueError("Достигнут предел элементов эскиза")
+        validated = [make_entity(e.kind, e.start, e.end, e.sweep_deg) for e in parts]
+        self._checkpoint()
+        self.entities[index:index + 1] = validated
 
     def delete(self, index: int) -> None:
         if index < 0 or index >= len(self.entities):

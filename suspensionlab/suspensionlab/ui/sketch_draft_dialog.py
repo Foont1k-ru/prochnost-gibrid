@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from math import floor, hypot
+from math import atan2, degrees, floor, hypot
 from pathlib import Path
 from typing import Literal
 
@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFormLayout,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QMessageBox,
     QPushButton,
@@ -24,6 +25,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..model.sketch_construction import tangent_circles, trim_entity
 from ..model.sketch_contours import ContourIssue, check_contours
 from ..model.sketch_draft import (
     LIMIT_MM,
@@ -31,6 +33,7 @@ from ..model.sketch_draft import (
     Kind,
     Point,
     SketchDraft,
+    arc_end,
     drawing_bounds,
     make_entity,
     rectangle_entities,
@@ -38,15 +41,25 @@ from ..model.sketch_draft import (
 from ..model.sketch_dxf import SketchDxfError, write_new_dxf
 from ..model.sketch_io import SUFFIX, SketchDocument, SketchIOError, read_sketch, write_new_sketch
 
-Tool = Literal["line", "circle", "rectangle", "chain", "measure"]
+Tool = Literal["line", "circle", "rectangle", "chain", "measure", "arc", "trim", "tangent2", "tangent3"]
 
 
 def _distance_to_entity(point: Point, entity: Entity) -> float:
     x, y = point
     ax, ay = entity.start
     bx, by = entity.end
-    if entity.kind == "circle":
-        return abs(hypot(x - ax, y - ay) - entity.size)
+    if entity.kind in ("circle", "arc"):
+        radial = abs(hypot(x - ax, y - ay) - entity.size)
+        if entity.kind == "circle":
+            return radial
+        assert entity.sweep_deg is not None
+        start_angle = degrees(atan2(by - ay, bx - ax))
+        angle = degrees(atan2(y - ay, x - ax))
+        distance_angle = (angle - start_angle) % 360 if entity.sweep_deg > 0 else (start_angle - angle) % 360
+        if distance_angle <= abs(entity.sweep_deg):
+            return radial
+        finish = arc_end(entity)
+        return min(hypot(x - bx, y - by), hypot(x - finish[0], y - finish[1]))
     dx, dy = bx - ax, by - ay
     t = max(0.0, min(1.0, ((x - ax) * dx + (y - ay) * dy) / (dx * dx + dy * dy)))
     return hypot(x - (ax + t * dx), y - (ay + t * dy))
@@ -57,6 +70,8 @@ class SketchCanvas(QWidget):
     position = Signal(float, float)
     changed = Signal()
     selectionChanged = Signal()
+    trimRequested = Signal(int, object)
+    tangentRequested = Signal(object)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -76,6 +91,8 @@ class SketchCanvas(QWidget):
         self._pan: QPointF | None = None
         self.plane_locked = False
         self.selected: int | None = None
+        self.construction_indices: list[int] = []
+        self.arc_sweep = 90.0
         self.diagnostic_indices: set[int] = set()
         self.diagnostic_points: tuple[Point, ...] = ()
         self.diagnostic_snapshot: tuple[Entity, ...] | None = None
@@ -99,6 +116,8 @@ class SketchCanvas(QWidget):
             distance = 10.0 / self.scale
             for entity in self.draft.entities:
                 points: list[tuple[Point, str]] = [(entity.start, "точка"), (entity.end, "точка")]
+                if entity.kind == "arc":
+                    points.append((arc_end(entity), "конец дуги"))
                 if entity.kind == "line":
                     points.append((((entity.start[0] + entity.end[0]) / 2,
                                     (entity.start[1] + entity.end[1]) / 2), "середина"))
@@ -124,13 +143,14 @@ class SketchCanvas(QWidget):
     def cancel(self) -> None:
         self.pending = None
         self.measure_start = None
+        self.construction_indices.clear()
         self.hover = None
         self.update()
         self.message.emit("Выберите элемент" if self.kind is None else "Выберите первую точку")
         self.changed.emit()
 
     def add_point(self, point: Point) -> None:
-        if self.kind is None:
+        if self.kind is None or self.kind in ("trim", "tangent2", "tangent3"):
             return
         if self.kind == "measure":
             if not all(-LIMIT_MM <= value <= LIMIT_MM for value in point):
@@ -153,14 +173,17 @@ class SketchCanvas(QWidget):
             self.pending = point
             self.plane_locked = True
             prompt = {"line": "Выберите вторую точку", "chain": "Выберите следующую точку цепочки",
-                      "rectangle": "Выберите противоположный угол", "circle": "Выберите точку окружности"}
+                      "rectangle": "Выберите противоположный угол", "circle": "Выберите точку окружности",
+                      "arc": "Выберите начальную точку дуги"}
             self.message.emit(prompt[self.kind])
         else:
             try:
                 if self.kind == "rectangle":
                     self.draft.add_rectangle(self.pending, point)
+                elif self.kind == "arc":
+                    self.draft.add_arc(self.pending, point, self.arc_sweep)
                 else:
-                    self.draft.add("line" if self.kind == "chain" else self.kind, self.pending, point)
+                    self.draft.add("circle" if self.kind == "circle" else "line", self.pending, point)
             except ValueError as exc:
                 self.message.emit(str(exc))
                 return
@@ -184,6 +207,26 @@ class SketchCanvas(QWidget):
                 self.selected = best[1] if best[0] <= 8.0 / self.scale else None
                 self.selectionChanged.emit()
                 self.update()
+            elif self.kind in ("trim", "tangent2", "tangent3"):
+                point = self.to_world(event.position(), snap=False)
+                candidates = [(_distance_to_entity(point, e), i) for i, e in enumerate(self.draft.entities)
+                              if e.kind == "line" or (self.kind == "trim" and e.kind == "circle")]
+                best = min(candidates, default=(float("inf"), -1))
+                if best[0] > 8.0 / self.scale:
+                    self.message.emit("Выберите отрезок или окружность" if self.kind == "trim" else "Выберите отрезок рядом с курсором")
+                elif self.kind == "trim":
+                    self.trimRequested.emit(best[1], point)
+                elif best[1] in self.construction_indices:
+                    self.message.emit("Выберите другой отрезок")
+                else:
+                    self.construction_indices.append(best[1])
+                    needed = 2 if self.kind == "tangent2" else 3
+                    self.message.emit(f"Выбрано отрезков: {len(self.construction_indices)} из {needed}; Esc — сброс")
+                    self.update()
+                    if len(self.construction_indices) == needed:
+                        self.tangentRequested.emit(tuple(self.construction_indices))
+                        self.construction_indices.clear()
+                        self.update()
             else:
                 self.add_point(self.mouse_point(event.position()))
 
@@ -191,7 +234,7 @@ class SketchCanvas(QWidget):
         if self._pan is not None:
             self.offset += event.position() - self._pan
             self._pan = event.position()
-        if self.kind is None:
+        if self.kind is None or self.kind in ("trim", "tangent2", "tangent3"):
             self.snap_label = ""
             self.hover = self.to_world(event.position(), snap=False)
         else:
@@ -246,9 +289,10 @@ class SketchCanvas(QWidget):
         p.drawLine(QPointF(origin.x(), 0), QPointF(origin.x(), self.height()))
         p.drawLine(QPointF(0, origin.y()), QPointF(self.width(), origin.y()))
         for i, entity in enumerate(self.draft.entities):
-            color = "#f7ca72" if i == self.selected else ("#ff6e6e" if i in self.diagnostic_indices else "#6ed5f7")
-            p.setPen(QPen(QColor(color), 3 if i == self.selected or i in self.diagnostic_indices else 2))
-            self._draw_entity(p, entity.kind, entity.start, entity.end)
+            selected = i == self.selected or i in self.construction_indices
+            color = "#f7ca72" if selected else ("#ff6e6e" if i in self.diagnostic_indices else "#6ed5f7")
+            p.setPen(QPen(QColor(color), 3 if selected or i in self.diagnostic_indices else 2))
+            self._draw_entity(p, entity.kind, entity.start, entity.end, entity.sweep_deg)
         p.setPen(QPen(QColor("#ff6e6e"), 2))
         for point in self.diagnostic_points:
             p.drawEllipse(self.to_screen(point), 5, 5)
@@ -256,30 +300,38 @@ class SketchCanvas(QWidget):
             p.setPen(QPen(QColor("#f7ca72"), 1, Qt.PenStyle.DashLine))
             p.drawLine(self.to_screen(self.measure_start), self.to_screen(self.hover))
             p.drawEllipse(self.to_screen(self.measure_start), 4, 4)
-        if self.kind is not None and self.kind != "measure" and self.pending is not None and self.hover is not None:
+        if self.kind in ("line", "chain", "circle", "arc", "rectangle") and self.pending is not None and self.hover is not None:
             try:
                 if self.kind == "rectangle":
                     preview = rectangle_entities(self.pending, self.hover)
                 else:
-                    preview = (make_entity("line" if self.kind == "chain" else self.kind, self.pending, self.hover),)
+                    shape: Kind = "arc" if self.kind == "arc" else ("circle" if self.kind == "circle" else "line")
+                    preview = (make_entity(shape, self.pending, self.hover,
+                                           self.arc_sweep if self.kind == "arc" else None),)
             except ValueError:
                 pass
             else:
                 p.setPen(QPen(QColor("#f7ca72"), 1, Qt.PenStyle.DashLine))
                 for item in preview:
-                    self._draw_entity(p, item.kind, item.start, item.end)
+                    self._draw_entity(p, item.kind, item.start, item.end, item.sweep_deg)
         if self.hover is not None and self.snap_label and self.kind is not None:
             p.setPen(QPen(QColor("#f7ca72"), 1))
             p.drawEllipse(self.to_screen(self.hover), 4, 4)
         p.end()
 
-    def _draw_entity(self, p: QPainter, kind: Kind, start: Point, end: Point) -> None:
+    def _draw_entity(self, p: QPainter, kind: Kind, start: Point, end: Point, sweep: float | None = None) -> None:
         a, b = self.to_screen(start), self.to_screen(end)
         if kind == "line":
             p.drawLine(a, b)
         else:
-            radius = make_entity(kind, start, end).size * self.scale
-            p.drawEllipse(QRectF(a.x() - radius, a.y() - radius, radius * 2, radius * 2))
+            radius = make_entity(kind, start, end, sweep).size * self.scale
+            rect = QRectF(a.x() - radius, a.y() - radius, radius * 2, radius * 2)
+            if kind == "arc":
+                assert sweep is not None
+                angle = degrees(atan2(end[1] - start[1], end[0] - start[0]))
+                p.drawArc(rect, round(angle * 16), round(sweep * 16))
+            else:
+                p.drawEllipse(rect)
 
 
 class EntityEditor(QDialog):
@@ -292,9 +344,13 @@ class EntityEditor(QDialog):
         self.values: list[QDoubleSpinBox] = []
         labels: tuple[str, ...] = ("Начало, первая ось", "Начало, вторая ось", "Конец, первая ось", "Конец, вторая ось")
         numbers: tuple[float, ...]
-        if entity.kind == "circle":
+        if entity.kind in ("circle", "arc"):
             labels = ("Центр, первая ось", "Центр, вторая ось", "Радиус")
             numbers = (*entity.start, entity.size)
+            if entity.kind == "arc":
+                assert entity.sweep_deg is not None
+                labels += ("Угол дуги, градусы",)
+                numbers += (entity.sweep_deg,)
         else:
             numbers = (*entity.start, *entity.end)
         for label, value in zip(labels, numbers, strict=True):
@@ -302,6 +358,9 @@ class EntityEditor(QDialog):
             spin.setDecimals(9)
             spin.setRange(-2_900_000, 2_900_000)
             spin.setSuffix(" мм")
+            if "градусы" in label:
+                spin.setRange(-359.999999, 359.999999)
+                spin.setSuffix("°")
             spin.setValue(value)
             self.values.append(spin)
             form.addRow(label, spin)
@@ -323,7 +382,7 @@ class EntityEditor(QDialog):
             dx = (self.entity.end[0] - self.entity.start[0]) / self.entity.size
             dy = (self.entity.end[1] - self.entity.start[1]) / self.entity.size
             end = (start[0] + v[2] * dx, start[1] + v[2] * dy)
-        return make_entity(self.entity.kind, start, end)
+        return make_entity(self.entity.kind, start, end, v[3] if self.entity.kind == "arc" else None)
 
     def _accept_checked(self) -> None:
         try:
@@ -369,7 +428,9 @@ class SketchDraftDialog(QDialog):
         row.addWidget(self.plane_offset)
         self.tool = QComboBox()
         self.tool.addItems(["Отрезок", "Окружность: центр и точка", "Выбор элемента",
-                            "Прямоугольник: два угла", "Цепочка отрезков", "Измерить расстояние"])
+                            "Прямоугольник: два угла", "Цепочка отрезков", "Измерить расстояние",
+                            "Дуга: центр, начало, угол", "Обрезать участок", "Окружность по 2 отрезкам",
+                            "Окружность по 3 отрезкам"])
         row.addWidget(self.tool)
         self.snap = QCheckBox("Сетка")
         self.snap.setChecked(True)
@@ -391,6 +452,23 @@ class SketchDraftDialog(QDialog):
         for button in (undo, redo, cancel, self.edit_button, self.delete_button, fit):
             tools.addWidget(button)
         layout.addLayout(tools)
+        parameters = QHBoxLayout()
+        parameters.addWidget(QLabel("Угол дуги (+ против часовой):"))
+        self.arc_angle = QDoubleSpinBox()
+        self.arc_angle.setRange(-359.999, 359.999)
+        self.arc_angle.setDecimals(3)
+        self.arc_angle.setValue(90)
+        self.arc_angle.setSuffix("°")
+        parameters.addWidget(self.arc_angle)
+        parameters.addWidget(QLabel("Радиус касания к двум отрезкам:"))
+        self.tangent_radius = QDoubleSpinBox()
+        self.tangent_radius.setDecimals(3)
+        self.tangent_radius.setRange(0.001, 1_000_000)
+        self.tangent_radius.setValue(10)
+        self.tangent_radius.setSuffix(" мм")
+        parameters.addWidget(self.tangent_radius)
+        parameters.addStretch(1)
+        layout.addLayout(parameters)
         diagnostics = QHBoxLayout()
         check = QPushButton("Проверить контуры")
         diagnostics.addWidget(check)
@@ -447,6 +525,9 @@ class SketchDraftDialog(QDialog):
         self.canvas.message.connect(self._message)
         self.canvas.changed.connect(self._refresh)
         self.canvas.selectionChanged.connect(self._selection_changed)
+        self.canvas.trimRequested.connect(self._trim)
+        self.canvas.tangentRequested.connect(self._tangent)
+        self.arc_angle.valueChanged.connect(self._arc_angle_changed)
         self.canvas.position.connect(self._position)
         self._refresh()
 
@@ -465,7 +546,7 @@ class SketchDraftDialog(QDialog):
         selected = self.canvas.selected is not None
         self.edit_button.setEnabled(selected)
         self.delete_button.setEnabled(selected)
-        self.add_button.setEnabled(self.canvas.kind is not None)
+        self.add_button.setEnabled(self.canvas.kind in ("line", "circle", "rectangle", "chain", "measure", "arc"))
         name = str(self._path) if self._path else "Новый эскиз"
         self.file_label.setText(name + (" *" if self._dirty() else ""))
 
@@ -490,14 +571,60 @@ class SketchDraftDialog(QDialog):
             entity = self.canvas.draft.entities[index]
             if entity.kind == "line":
                 self._message(f"Элемент {index + 1} — отрезок: длина {entity.size:.3f} мм")
-            else:
+            elif entity.kind == "circle":
                 self._message(f"Элемент {index + 1} — окружность: радиус {entity.size:.3f} мм; диаметр {2 * entity.size:.3f} мм")
+            else:
+                self._message(f"Элемент {index + 1} — дуга: радиус {entity.size:.3f} мм; угол {entity.sweep_deg:.3f}°")
         else:
             self._refresh()
 
     def _set_tool(self, index: int) -> None:
-        kinds: tuple[Tool | None, ...] = ("line", "circle", None, "rectangle", "chain", "measure")
+        kinds: tuple[Tool | None, ...] = ("line", "circle", None, "rectangle", "chain", "measure",
+                                               "arc", "trim", "tangent2", "tangent3")
         self.canvas.set_kind(kinds[index])
+        if kinds[index] == "trim":
+            self._message("Нажмите на удаляемый участок отрезка или окружности между пересечениями")
+        elif kinds[index] in ("tangent2", "tangent3"):
+            self._message("Выберите мышью разные отрезки; касание строится одноразово без ограничения")
+
+    def _arc_angle_changed(self, value: float) -> None:
+        self.canvas.arc_sweep = value
+        self.canvas.update()
+
+    def _trim(self, index: int, point: Point) -> None:
+        try:
+            parts = trim_entity(tuple(self.canvas.draft.entities), index, point)
+            self.canvas.draft.replace_with(index, parts)
+        except ValueError as exc:
+            self._message(str(exc))
+            return
+        self._message("Участок удалён; кнопка отмены вернёт его")
+        self.canvas.update()
+
+    def _tangent(self, indices: tuple[int, ...]) -> None:
+        lines = tuple(self.canvas.draft.entities[index] for index in indices)
+        try:
+            candidates = tangent_circles(lines, self.tangent_radius.value() if len(lines) == 2 else None)
+        except ValueError as exc:
+            self._message(str(exc))
+            return
+        if not candidates:
+            self._message("Нет решения на выбранных конечных отрезках; измените отрезки или радиус")
+            return
+        labels = [f"Центр ({item.start[0]:.4f}, {item.start[1]:.4f}) мм; R {item.size:.4f} мм" for item in candidates]
+        choice, ok = QInputDialog.getItem(self, "Выберите решение", "Касание к отрезкам (не постоянное ограничение):",
+                                          labels, 0, False)
+        if not ok:
+            self._message("Построение отменено")
+            return
+        entity = candidates[labels.index(choice)]
+        try:
+            self.canvas.draft.add("circle", entity.start, entity.end)
+        except ValueError as exc:
+            self._message(str(exc))
+            return
+        self._message("Окружность добавлена; касание не связано с последующим изменением отрезков")
+        self.canvas.update()
 
     def _set_snap(self, enabled: bool) -> None:
         self.canvas.snap = enabled
@@ -574,7 +701,7 @@ class SketchDraftDialog(QDialog):
         editor = EntityEditor(self.canvas.draft.entities[index], self)
         if editor.exec() == QDialog.DialogCode.Accepted:
             entity = editor.result_entity()
-            self.canvas.draft.replace(index, entity.kind, entity.start, entity.end)
+            self.canvas.draft.replace(index, entity.kind, entity.start, entity.end, entity.sweep_deg)
             self._message("Элемент изменён")
             self.canvas.update()
 
@@ -659,6 +786,7 @@ class SketchDraftDialog(QDialog):
         self.canvas.measure_start = None
         self.canvas.hover = None
         self.canvas.selected = None
+        self.canvas.construction_indices.clear()
         self.canvas.plane_locked = bool(doc.entities)
         self.plane.setCurrentText(doc.plane)
         self.plane_offset.setValue(doc.offset_mm)

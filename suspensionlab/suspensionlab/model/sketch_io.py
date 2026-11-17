@@ -54,7 +54,7 @@ def _point(value: Any) -> Point:
 def _parse(value: Any) -> SketchDocument:
     if not isinstance(value, dict) or set(value) != {"format", "version", "units", "plane", "offset_mm", "entities"}:
         raise SketchIOError("Некорректная структура эскиза")
-    if value["format"] != "suspensionlab-sketch" or value["version"] != "1" or value["units"] != "mm":
+    if value["format"] != "suspensionlab-sketch" or value["version"] not in ("1", "2") or value["units"] != "mm":
         raise SketchIOError("Неподдерживаемая версия или единицы")
     plane = value["plane"]
     if plane not in ("XY", "XZ", "YZ"):
@@ -67,20 +67,34 @@ def _parse(value: Any) -> SketchDocument:
         raise SketchIOError("Некорректное количество элементов")
     entities: list[Entity] = []
     for item in items:
-        if not isinstance(item, dict) or set(item) != {"kind", "start", "end"}:
+        if not isinstance(item, dict):
             raise SketchIOError("Некорректный элемент")
-        kind = item["kind"]
-        if kind not in ("line", "circle"):
+        kind = item.get("kind")
+        if kind not in ("line", "circle", "arc"):
             raise SketchIOError("Неизвестный элемент")
-        entities.append(make_entity(cast(Kind, kind), _point(item["start"]), _point(item["end"])))
+        if kind == "arc":
+            if value["version"] != "2" or set(item) != {"kind", "start", "end", "sweep_deg"}:
+                raise SketchIOError("Неподдерживаемая дуга")
+            sweep = _number(item["sweep_deg"])
+        else:
+            if set(item) != {"kind", "start", "end"}:
+                raise SketchIOError("Некорректный элемент")
+            sweep = None
+        entities.append(make_entity(cast(Kind, kind), _point(item["start"]), _point(item["end"]), sweep))
     return SketchDocument(plane, offset, tuple(entities))
 
 
 def _as_data(document: SketchDocument) -> dict[str, Any]:
-    data: dict[str, Any] = {"format": "suspensionlab-sketch", "version": "1", "units": "mm",
-                            "plane": document.plane, "offset_mm": document.offset_mm,
-                            "entities": [{"kind": e.kind, "start": list(e.start), "end": list(e.end)}
-                                         for e in document.entities]}
+    items: list[dict[str, Any]] = []
+    for entity in document.entities:
+        item: dict[str, Any] = {"kind": entity.kind, "start": list(entity.start), "end": list(entity.end)}
+        if entity.kind == "arc":
+            item["sweep_deg"] = entity.sweep_deg
+        items.append(item)
+    data: dict[str, Any] = {"format": "suspensionlab-sketch",
+                            "version": "2" if any(e.kind == "arc" for e in document.entities) else "1",
+                            "units": "mm", "plane": document.plane, "offset_mm": document.offset_mm,
+                            "entities": items}
     _parse(data)
     return data
 

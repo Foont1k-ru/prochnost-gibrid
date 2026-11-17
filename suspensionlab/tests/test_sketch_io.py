@@ -50,7 +50,7 @@ def test_symlink_destination_not_overwritten(tmp_path):
 
 
 @pytest.mark.parametrize("change", [
-    lambda d: d.update(version="2"), lambda d: d.update(units="in"),
+    lambda d: d.update(version="3"), lambda d: d.update(units="in"),
     lambda d: d.update(plane="AA"), lambda d: d.update(offset_mm=True),
     lambda d: d.update(offset_mm=0.00001), lambda d: d.update(extra="unexpected"),
     lambda d: d["entities"][0].update(start=[float("nan"), 1]),
@@ -119,3 +119,17 @@ def test_collision_created_during_save_is_never_replaced(tmp_path, monkeypatch):
         write_new_sketch(path, document())
     assert path.read_text() == "someone else"
     assert not list(tmp_path.glob(".sketch-*.tmp"))
+
+
+def test_version_two_arc_roundtrip_and_old_reader_guard(tmp_path):
+    arc = make_entity("arc", (0, 0), (10, 0), -90)
+    doc = SketchDocument("XY", 0, (arc,))
+    path = tmp_path / "arc.slsketch"
+    write_new_sketch(path, doc)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["version"] == "2" and data["entities"][0]["sweep_deg"] == -90
+    assert read_sketch(path) == doc
+    data["version"] = "1"
+    path.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(SketchIOError):
+        read_sketch(path)
