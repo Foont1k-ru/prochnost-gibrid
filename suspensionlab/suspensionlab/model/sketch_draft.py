@@ -304,12 +304,18 @@ class SketchDraft:
         if first == second or min(first, second) < 0 or max(first, second) >= len(self.entities):
             raise ValueError("Выберите два разных отрезка")
         kinds = (self.entities[first].kind, self.entities[second].kind)
-        if kinds not in (("line", "line"), ("line", "arc"), ("arc", "line")):
-            raise ValueError("Выберите два отрезка или отрезок и дугу")
+        if kinds not in (("line", "line"), ("line", "arc"), ("arc", "line"), ("arc", "arc"),
+                         ("line", "circle"), ("circle", "line")):
+            raise ValueError("Выберите отрезки, дуги или отрезок и окружность")
+        for index in (first, second):
+            if self.entities[index].kind == "circle" and any(
+                    d.entity_index == index or d.other_index == index for d in self.dimensions):
+                raise ValueError("Перед превращением окружности в дугу удалите её размеры")
         if len(self.entities) >= MAX_ENTITIES:
             raise ValueError("Достигнут предел элементов эскиза")
         validated = tuple(make_entity(e.kind, e.start, e.end, e.sweep_deg) for e in pieces)
-        if tuple(e.kind for e in validated) != (*kinds, "arc"):
+        expected_kinds = tuple("arc" if kind == "circle" else kind for kind in kinds) + ("arc",)
+        if tuple(e.kind for e in validated) != expected_kinds:
             raise ValueError("Некорректное сопряжение")
         proposed = list(self.entities)
         proposed[first], proposed[second] = validated[0], validated[1]

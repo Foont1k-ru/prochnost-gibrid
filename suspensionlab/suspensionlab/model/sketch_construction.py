@@ -298,3 +298,163 @@ def fillet_line_arc(line: Entity, arc: Entity, radius: float) -> tuple[tuple[Ent
                                distance(p2, arc_end(candidate[2])) <= NUMERIC_EPS_MM for candidate in candidates):
                         candidates.append((new_line, new_arc, blend))
     return tuple(sorted(candidates, key=lambda pieces: (pieces[2].start, pieces[2].sweep_deg or 0)))
+
+
+def fillet_arcs(first: Entity, second: Entity, radius: float) -> tuple[tuple[Entity, Entity, Entity], ...]:
+    """Плавные сопряжения двух конечных дуг с одним общим концом."""
+    from math import copysign, degrees, sqrt
+
+    from .sketch_curves import NUMERIC_EPS_MM, endpoints
+    from .sketch_draft import arc_end
+
+    if first.kind != "arc" or second.kind != "arc":
+        raise ValueError("Выберите две дуги")
+    if not isfinite(radius) or radius < MIN_SIZE_MM:
+        raise ValueError("Введите положительный радиус")
+    matches = [(i, j) for i, a in enumerate(endpoints(first)) for j, b in enumerate(endpoints(second))
+               if distance(a, b) <= NUMERIC_EPS_MM]
+    if len(matches) != 1:
+        raise ValueError("Дуги должны иметь ровно один общий конец")
+    i, j = matches[0]
+    center_distance = distance(first.start, second.start)
+    if center_distance <= NUMERIC_EPS_MM:
+        raise ValueError("Соосные дуги не поддерживаются для сопряжения")
+    ux = (second.start[0] - first.start[0]) / center_distance
+    uy = (second.start[1] - first.start[1]) / center_distance
+    assert first.sweep_deg is not None and second.sweep_deg is not None
+    candidates: list[tuple[Entity, Entity, Entity]] = []
+    for d1 in (first.size + radius, abs(first.size - radius)):
+        for d2 in (second.size + radius, abs(second.size - radius)):
+            if min(d1, d2) <= NUMERIC_EPS_MM or center_distance > d1 + d2 + NUMERIC_EPS_MM or center_distance < abs(d1 - d2) - NUMERIC_EPS_MM:
+                continue
+            along = (d1 * d1 - d2 * d2 + center_distance * center_distance) / (2 * center_distance)
+            h2 = d1 * d1 - along * along
+            if h2 < -NUMERIC_EPS_MM * max(1.0, d1):
+                continue
+            h = sqrt(max(0.0, h2))
+            for sign in (-1, 1):
+                center = (first.start[0] + along * ux - sign * h * uy,
+                          first.start[1] + along * uy + sign * h * ux)
+                for s1, s2 in product((-1, 1), repeat=2):
+                    p1 = (first.start[0] + s1 * first.size * (center[0] - first.start[0]) / d1,
+                          first.start[1] + s1 * first.size * (center[1] - first.start[1]) / d1)
+                    p2 = (second.start[0] + s2 * second.size * (center[0] - second.start[0]) / d2,
+                          second.start[1] + s2 * second.size * (center[1] - second.start[1]) / d2)
+                    if any(abs(distance(p, center) - radius) > max(NUMERIC_EPS_MM, radius * 1e-10) for p in (p1, p2)):
+                        continue
+                    t1 = parameter(first, p1, eps=NUMERIC_EPS_MM)
+                    t2 = parameter(second, p2, eps=NUMERIC_EPS_MM)
+                    if (t1 is None or t2 is None or min(t1, 1 - t1) * arc_length(first) <= MIN_SIZE_MM or
+                            min(t2, 1 - t2) * arc_length(second) <= MIN_SIZE_MM):
+                        continue
+                    angle1 = degrees(atan2(p1[1] - center[1], p1[0] - center[0]))
+                    angle2 = degrees(atan2(p2[1] - center[1], p2[0] - center[0]))
+                    sweep = (angle2 - angle1 + 180) % 360 - 180
+                    if abs(sweep) < 1e-6:
+                        continue
+                    turn = copysign(1.0, sweep)
+                    v1 = (-turn * (p1[1] - center[1]) / radius, turn * (p1[0] - center[0]) / radius)
+                    v2 = (-turn * (p2[1] - center[1]) / radius, turn * (p2[0] - center[0]) / radius)
+                    turn1 = copysign(1.0, first.sweep_deg) * (-1 if i == 0 else 1)
+                    turn2 = copysign(1.0, second.sweep_deg) * (1 if j == 0 else -1)
+                    f1 = (-turn1 * (p1[1] - first.start[1]) / first.size,
+                          turn1 * (p1[0] - first.start[0]) / first.size)
+                    f2 = (-turn2 * (p2[1] - second.start[1]) / second.size,
+                          turn2 * (p2[0] - second.start[0]) / second.size)
+                    if v1[0] * f1[0] + v1[1] * f1[1] < 1 - 1e-8 or v2[0] * f2[0] + v2[1] * f2[1] < 1 - 1e-8:
+                        continue
+                    try:
+                        new1 = arc_piece(first, t1, 1) if i == 0 else arc_piece(first, 0, t1)
+                        new2 = arc_piece(second, t2, 1) if j == 0 else arc_piece(second, 0, t2)
+                        blend = make_entity("arc", center, p1, sweep)
+                    except ValueError:
+                        continue
+                    if distance(arc_end(blend), p2) > max(NUMERIC_EPS_MM, radius * 1e-10):
+                        continue
+                    if not any(distance(center, c[2].start) <= NUMERIC_EPS_MM and
+                               distance(p1, c[2].end) <= NUMERIC_EPS_MM and
+                               distance(p2, arc_end(c[2])) <= NUMERIC_EPS_MM for c in candidates):
+                        candidates.append((new1, new2, blend))
+    return tuple(sorted(candidates, key=lambda c: (c[2].start, c[2].sweep_deg or 0)))
+
+
+def fillet_line_circle(line: Entity, circle: Entity, radius: float) -> tuple[tuple[Entity, Entity, Entity], ...]:
+    """Варианты сопряжения по концу отрезка на окружности.
+
+    Каждый вариант заменяет окружность дугой от точки касания до прежнего
+    общего конца; этот конец остаётся открытым. Пользователь обязан выбрать
+    вариант и подтвердить изменение топологии перед применением.
+    """
+    from math import copysign, degrees, sqrt
+
+    from .sketch_curves import NUMERIC_EPS_MM, endpoints
+    from .sketch_draft import arc_end
+
+    if line.kind != "line" or circle.kind != "circle":
+        raise ValueError("Выберите отрезок и окружность")
+    if not isfinite(radius) or radius < MIN_SIZE_MM:
+        raise ValueError("Введите положительный радиус")
+    matches = [i for i, point in enumerate(endpoints(line)) if abs(distance(point, circle.start) - circle.size) <= NUMERIC_EPS_MM]
+    if len(matches) != 1:
+        raise ValueError("Ровно один конец отрезка должен лежать на окружности")
+    i = matches[0]
+    corner, far = endpoints(line)[i], endpoints(line)[1 - i]
+    ux, uy = (far[0] - corner[0]) / line.size, (far[1] - corner[1]) / line.size
+    nx, ny = -uy, ux
+    start_angle = atan2(corner[1] - circle.start[1], corner[0] - circle.start[0])
+    candidates: list[tuple[Entity, Entity, Entity]] = []
+    for side in (-1, 1):
+        origin = (corner[0] + side * radius * nx, corner[1] + side * radius * ny)
+        projection = (circle.start[0] - origin[0]) * ux + (circle.start[1] - origin[1]) * uy
+        closest = (origin[0] + projection * ux, origin[1] + projection * uy)
+        perpendicular = distance(closest, circle.start)
+        for separation in (circle.size + radius, abs(circle.size - radius)):
+            if separation <= NUMERIC_EPS_MM or perpendicular > separation + NUMERIC_EPS_MM:
+                continue
+            h2 = max(0.0, separation ** 2 - perpendicular ** 2)
+            for sign in (-1, 1):
+                delta = sqrt(h2) * sign
+                center = (closest[0] + delta * ux, closest[1] + delta * uy)
+                along = (center[0] - corner[0]) * ux + (center[1] - corner[1]) * uy
+                if not MIN_SIZE_MM < along < line.size - MIN_SIZE_MM:
+                    continue
+                p1 = (corner[0] + along * ux, corner[1] + along * uy)
+                cx, cy = (center[0] - circle.start[0]) / separation, (center[1] - circle.start[1]) / separation
+                for radial_sign in (-1, 1):
+                    p2 = (circle.start[0] + radial_sign * circle.size * cx, circle.start[1] + radial_sign * circle.size * cy)
+                    if abs(distance(p2, center) - radius) > max(NUMERIC_EPS_MM, radius * 1e-10):
+                        continue
+                    angle = atan2(p2[1] - circle.start[1], p2[0] - circle.start[0])
+                    a1 = degrees(atan2(p1[1] - center[1], p1[0] - center[0]))
+                    a2 = degrees(atan2(p2[1] - center[1], p2[0] - center[0]))
+                    sweep = (a2 - a1 + 180) % 360 - 180
+                    if abs(sweep) < 1e-6:
+                        continue
+                    turn = copysign(1.0, sweep)
+                    t1 = (-turn * (p1[1] - center[1]) / radius, turn * (p1[0] - center[0]) / radius)
+                    t2 = (-turn * (p2[1] - center[1]) / radius, turn * (p2[0] - center[0]) / radius)
+                    if t1[0] * -ux + t1[1] * -uy < 1 - 1e-8:
+                        continue
+                    for circle_turn in (-1, 1):
+                        removed = ((angle - start_angle) * circle_turn) % TAU
+                        remaining = TAU - removed
+                        if min(removed, remaining) * circle.size <= MIN_SIZE_MM:
+                            continue
+                        arc_tangent = (-circle_turn * (p2[1] - circle.start[1]) / circle.size,
+                                       circle_turn * (p2[0] - circle.start[0]) / circle.size)
+                        if t2[0] * arc_tangent[0] + t2[1] * arc_tangent[1] < 1 - 1e-8:
+                            continue
+                        try:
+                            new_line = make_entity("line", p1 if i == 0 else line.start, p1 if i == 1 else line.end)
+                            remainder = make_entity("arc", circle.start, p2, degrees(circle_turn * remaining))
+                            blend = make_entity("arc", center, p1, sweep)
+                        except ValueError:
+                            continue
+                        if (distance(arc_end(blend), p2) > max(NUMERIC_EPS_MM, radius * 1e-10) or
+                                distance(arc_end(remainder), corner) > max(NUMERIC_EPS_MM, circle.size * 1e-12)):
+                            continue
+                        if not any(distance(center, c[2].start) <= NUMERIC_EPS_MM and
+                                   distance(p2, c[1].end) <= NUMERIC_EPS_MM and
+                                   abs((remainder.sweep_deg or 0) - (c[1].sweep_deg or 0)) < 1e-8 for c in candidates):
+                            candidates.append((new_line, remainder, blend))
+    return tuple(sorted(candidates, key=lambda c: (c[2].start, c[1].sweep_deg or 0)))

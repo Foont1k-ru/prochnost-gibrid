@@ -175,3 +175,38 @@ def test_tangent_shared_arc_endpoint_ignores_unstable_discriminant(monkeypatch):
     assert not sketch_contours._arc_pair_conflict(b, arc, 0.01)
     crossing = make_entity("line", (90, 0), (90, 20))
     assert sketch_contours._arc_pair_conflict(crossing, arc, 0.01)
+
+
+def test_tangent_shared_arcs_tolerate_discriminant_roundoff_but_overlap_rejected(monkeypatch):
+    from suspensionlab.model import sketch_contours
+    from suspensionlab.model.sketch_construction import fillet_arcs
+    from suspensionlab.model.sketch_curves import AmbiguousIntersectionError
+    from suspensionlab.model.sketch_draft import make_entity
+
+    first = make_entity("arc", (-10, 0), (0, 0), 90)
+    second = make_entity("arc", (0, -10), (0, 0), 90)
+    a, b, blend = fillet_arcs(first, second, 2)[0]
+
+    def unstable(*args):
+        raise AmbiguousIntersectionError("floating-point tangent")
+
+    monkeypatch.setattr(sketch_contours, "intersections", unstable)
+    assert not sketch_contours._arc_pair_conflict(a, blend, 0.01)
+    assert not sketch_contours._arc_pair_conflict(b, blend, 0.01)
+    assert sketch_contours._arc_pair_conflict(first, first, 0.01)
+
+
+def test_near_concentric_arc_secants_are_not_mistaken_for_endpoint_tangency(monkeypatch):
+    from suspensionlab.model import sketch_contours
+    from suspensionlab.model.sketch_curves import AmbiguousIntersectionError
+    from suspensionlab.model.sketch_draft import make_entity
+
+    first = make_entity("arc", (0, 0), (0, 10), 100)
+    second = make_entity("arc", (0.000001, 0), (0, 10), -100)
+    called = []
+    def unstable(*args):
+        called.append(True)
+        raise AmbiguousIntersectionError("near concentric")
+    monkeypatch.setattr(sketch_contours, "intersections", unstable)
+    assert sketch_contours._arc_pair_conflict(first, second, 0.01)
+    assert called

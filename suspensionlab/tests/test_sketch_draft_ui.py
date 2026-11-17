@@ -715,3 +715,61 @@ def test_fillet_choice_dialog_draws_and_selects(qtbot):
     choice.choice.setCurrentIndex(1)
     assert choice.selected_pieces() == options[1]
     assert not choice.preview.grab().isNull()
+
+
+def test_arc_arc_fillet_mouse_and_undo(qtbot):
+    from suspensionlab.model.sketch_draft import SketchDraft, make_entity
+
+    dialog = SketchDraftDialog()
+    qtbot.addWidget(dialog)
+    dialog.show()
+    canvas = dialog.canvas
+    first = make_entity("arc", (-20, 0), (0, 0), 90)
+    second = make_entity("arc", (0, -20), (0, 0), 90)
+    canvas.draft = SketchDraft((first, second))
+    dialog.tool.setCurrentIndex(12)
+    dialog.fillet_radius.setValue(2)
+    for point in ((-5.86, 14.14), (-14.14, -5.86)):
+        qtbot.mouseClick(canvas, Qt.MouseButton.LeftButton, pos=canvas.to_screen(point).toPoint())
+    assert len(canvas.draft.entities) == 3
+    assert all(entity.kind == "arc" for entity in canvas.draft.entities)
+    dialog._undo()
+    assert tuple(canvas.draft.entities) == (first, second)
+    dialog._saved = dialog._document()
+
+
+def test_circle_fillet_requires_explicit_confirmation_and_undo(qtbot, monkeypatch):
+    from PySide6.QtWidgets import QDialog
+
+    from suspensionlab.model.sketch_draft import SketchDraft, make_entity
+    from suspensionlab.ui.sketch_draft_dialog import FilletChoiceDialog
+
+    dialog = SketchDraftDialog()
+    qtbot.addWidget(dialog)
+    dialog.show()
+    canvas = dialog.canvas
+    source = make_entity("line", (10, 0), (30, 0))
+    circle = make_entity("circle", (0, 0), (10, 0))
+    canvas.draft = SketchDraft((circle, source))
+    dialog.tool.setCurrentIndex(12)
+    dialog.fillet_radius.setValue(2)
+    notices = []
+
+    def reject(choice):
+        notices.append(choice.preview.circle_conversion)
+        assert not choice.preview.grab().isNull()
+        return QDialog.DialogCode.Rejected
+    monkeypatch.setattr(FilletChoiceDialog, "exec", reject)
+    for point in ((0, 10), (20, 0)):
+        qtbot.mouseClick(canvas, Qt.MouseButton.LeftButton, pos=canvas.to_screen(point).toPoint())
+    assert notices == [True]
+    assert tuple(canvas.draft.entities) == (circle, source)
+    monkeypatch.setattr(FilletChoiceDialog, "exec", lambda choice: QDialog.DialogCode.Accepted)
+    for point in ((0, 10), (20, 0)):
+        qtbot.mouseClick(canvas, Qt.MouseButton.LeftButton, pos=canvas.to_screen(point).toPoint())
+    assert [e.kind for e in canvas.draft.entities] == ["arc", "line", "arc"]
+    dialog._undo()
+    assert tuple(canvas.draft.entities) == (circle, source)
+    dialog._redo()
+    assert [e.kind for e in canvas.draft.entities] == ["arc", "line", "arc"]
+    dialog._saved = dialog._document()

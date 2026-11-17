@@ -26,7 +26,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..model.sketch_construction import fillet_line_arc, fillet_lines, tangent_circles, trim_entity
+from ..model.sketch_construction import (
+    fillet_arcs,
+    fillet_line_arc,
+    fillet_line_circle,
+    fillet_lines,
+    tangent_circles,
+    trim_entity,
+)
 from ..model.sketch_contours import ContourIssue, check_contours
 from ..model.sketch_draft import (
     LIMIT_MM,
@@ -274,11 +281,11 @@ class SketchCanvas(QWidget):
                 point = self.to_world(event.position(), snap=False)
                 candidates = [(_distance_to_entity(point, e), i) for i, e in enumerate(self.draft.entities)
                               if (e.kind == "line" or (self.kind in ("trim", "dimension") and e.kind in ("circle", "arc")) or
-                                  (self.kind == "fillet" and e.kind == "arc"))]
+                                  (self.kind == "fillet" and e.kind in ("arc", "circle")))]
                 best = min(candidates, default=(float("inf"), -1))
                 if best[0] > 8.0 / self.scale:
                     self.message.emit("Выберите отрезок, окружность или дугу" if self.kind in ("trim", "dimension") else
-                                      "Выберите отрезок или дугу" if self.kind == "fillet" else "Выберите отрезок рядом с курсором")
+                                      "Выберите отрезок, дугу или окружность" if self.kind == "fillet" else "Выберите отрезок рядом с курсором")
                 elif self.kind == "trim":
                     self.trimRequested.emit(best[1], point)
                 elif self.kind == "dimension":
@@ -541,9 +548,11 @@ class TangentChoiceDialog(QDialog):
 
 
 class FilletPreview(QWidget):
-    def __init__(self, options: tuple[tuple[Entity, Entity, Entity], ...], parent: QWidget) -> None:
+    def __init__(self, options: tuple[tuple[Entity, Entity, Entity], ...], parent: QWidget, *,
+                 circle_conversion: bool = False) -> None:
         super().__init__(parent)
         self.options = options
+        self.circle_conversion = circle_conversion
         self.index = 0
         self.setMinimumSize(440, 300)
 
@@ -576,21 +585,31 @@ class FilletPreview(QWidget):
                 assert entity.sweep_deg is not None
                 painter.drawArc(QRectF(center.x() - radius, center.y() - radius, 2 * radius, 2 * radius),
                                 round(angle * 16), round(entity.sweep_deg * 16))
+        if self.circle_conversion:
+            painter.setPen(QPen(QColor("#ff6e6e"), 2))
+            painter.drawEllipse(screen(arc_end(pieces[1])), 5, 5)
         painter.end()
 
 
 class FilletChoiceDialog(QDialog):
-    def __init__(self, options: tuple[tuple[Entity, Entity, Entity], ...], parent: QWidget) -> None:
+    def __init__(self, options: tuple[tuple[Entity, Entity, Entity], ...], parent: QWidget, *,
+                 circle_conversion: bool = False) -> None:
         super().__init__(parent)
         self.options = options
         self.setWindowTitle("Выбор сопряжения")
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel("Выберите вариант; жёлтым показана новая дуга сопряжения."))
+        text = ("Окружность будет заменена дугой; прежняя точка соединения останется открытой. "
+                "Это может разомкнуть контур. Выберите вариант или отмените операцию. "
+                "Жёлтым показана новая дуга сопряжения, красным — открытый конец." if circle_conversion else
+                "Выберите вариант; жёлтым показана новая дуга сопряжения.")
+        notice = QLabel(text)
+        notice.setWordWrap(True)
+        layout.addWidget(notice)
         self.choice = QComboBox()
         self.choice.addItems([f"Вариант {i + 1}: центр ({p[2].start[0]:.4f}, {p[2].start[1]:.4f})"
                               for i, p in enumerate(options)])
         layout.addWidget(self.choice)
-        self.preview = FilletPreview(options, self)
+        self.preview = FilletPreview(options, self, circle_conversion=circle_conversion)
         layout.addWidget(self.preview)
         self.choice.currentIndexChanged.connect(self.preview.set_index)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
@@ -726,7 +745,7 @@ class SketchDraftDialog(QDialog):
         self.tool.addItems(["Отрезок", "Окружность: центр и точка", "Выбор элемента",
                             "Прямоугольник: два угла", "Цепочка отрезков", "Измерить расстояние",
                             "Дуга: центр, начало, угол", "Обрезать участок", "Окружность по 2 отрезкам",
-                            "Окружность по 3 отрезкам", "Поставить размер", "Удалить размер", "Сопряжение: отрезок / дуга"])
+                            "Окружность по 3 отрезкам", "Поставить размер", "Удалить размер", "Сопряжение элементов"])
         row.addWidget(self.tool)
         self.snap = QCheckBox("Сетка")
         self.snap.setChecked(True)
@@ -903,7 +922,7 @@ class SketchDraftDialog(QDialog):
         elif kinds[index] in ("tangent2", "tangent3"):
             self._message("Выберите мышью разные отрезки; касание строится одноразово без ограничения")
         elif kinds[index] == "fillet":
-            self._message("Укажите два отрезка или отрезок и дугу с общим концом; радиус задаётся сверху")
+            self._message("Выберите два элемента с общим концом; окружность будет заменена дугой после подтверждения")
         elif kinds[index] == "dimension":
             self._message("Выберите элемент, затем место надписи; щелчок по числу меняет только этот элемент")
         elif kinds[index] == "erase_dim":
@@ -998,16 +1017,28 @@ class SketchDraftDialog(QDialog):
     def _fillet(self, indices: tuple[int, ...]) -> None:
         first, second = indices
         a, b = self.canvas.draft.entities[first], self.canvas.draft.entities[second]
+        circle_conversion = "circle" in (a.kind, b.kind)
         try:
             if a.kind == b.kind == "line":
                 pieces = fillet_lines(a, b, self.fillet_radius.value())
-            elif {a.kind, b.kind} == {"line", "arc"}:
-                line, arc = (a, b) if a.kind == "line" else (b, a)
-                options = fillet_line_arc(line, arc, self.fillet_radius.value())
+            else:
+                swap = a.kind != "line" and b.kind == "line"
+                if swap:
+                    source1, source2 = b, a
+                else:
+                    source1, source2 = a, b
+                if source1.kind == "line" and source2.kind == "arc":
+                    options = fillet_line_arc(source1, source2, self.fillet_radius.value())
+                elif source1.kind == "line" and source2.kind == "circle":
+                    options = fillet_line_circle(source1, source2, self.fillet_radius.value())
+                elif source1.kind == source2.kind == "arc":
+                    options = fillet_arcs(source1, source2, self.fillet_radius.value())
+                else:
+                    raise ValueError("Выберите два отрезка, две дуги, отрезок и дугу или отрезок и окружность")
                 if not options:
-                    raise ValueError("Нет плавного сопряжения на этих конечных элементах при заданном радиусе")
-                if len(options) > 1:
-                    choice = FilletChoiceDialog(options, self)
+                    raise ValueError("Нет плавного сопряжения на этих элементах при заданном радиусе")
+                if len(options) > 1 or circle_conversion:
+                    choice = FilletChoiceDialog(options, self, circle_conversion=circle_conversion)
                     result = choice.exec()
                     selected = choice.selected_pieces() if result == QDialog.DialogCode.Accepted else None
                     choice.deleteLater()
@@ -1015,15 +1046,13 @@ class SketchDraftDialog(QDialog):
                         self._message("Построение отменено")
                         return
                     options = (selected,)
-                line_piece, arc_piece, blend = options[0]
-                pieces = (line_piece, arc_piece, blend) if a.kind == "line" else (arc_piece, line_piece, blend)
-            else:
-                raise ValueError("Выберите два отрезка или отрезок и дугу")
+                x, y, blend = options[0]
+                pieces = (y, x, blend) if swap else (x, y, blend)
             self.canvas.draft.apply_fillet(first, second, pieces)
         except ValueError as exc:
             self._message(str(exc))
             return
-        self._message("Сопряжение создано; кнопка отмены восстанавливает исходные элементы")
+        self._message("Сопряжение создано; проверьте контур. Отмена восстанавливает исходные элементы")
         self.canvas.update()
 
     def _set_snap(self, enabled: bool) -> None:

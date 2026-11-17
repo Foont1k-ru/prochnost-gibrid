@@ -327,7 +327,7 @@ def run_packaging_check() -> None:
     import numpy as np
     from PySide6.QtCore import QEvent, QPointF, Qt
     from PySide6.QtGui import QMouseEvent
-    from PySide6.QtWidgets import QComboBox, QFileDialog, QInputDialog, QLineEdit, QMessageBox
+    from PySide6.QtWidgets import QComboBox, QDialog, QFileDialog, QInputDialog, QLineEdit, QMessageBox
 
     from .core.cad_measurement import measurement_distance, point_on_projected_triangle
     from .core.cad_mesh import CadMesh
@@ -336,7 +336,7 @@ def run_packaging_check() -> None:
     from .ui.cad_preview_dialog import CadPreviewDialog
     from .ui.cad_preview_settings import CadPreviewSettingsDialog
     from .ui.canvas.cad_preview import CadPreview
-    from .ui.sketch_draft_dialog import SketchDraftDialog, SketchExtrusionPreview
+    from .ui.sketch_draft_dialog import FilletChoiceDialog, SketchDraftDialog, SketchExtrusionPreview
     from .ui.widgets.camera_views import CameraViews
 
     with TemporaryDirectory(prefix="suspensionlab-sketch-check-") as sketch_dir:
@@ -408,6 +408,21 @@ def run_packaging_check() -> None:
                  "Сопряжение дуги и отрезка недоступно")
         sketch2._undo()
         _require(tuple(sketch2.canvas.draft.entities) == (arc, line), "Отмена сопряжения дуги недоступна")
+        arc_a = make_entity("arc", (-10., 0.), (0., 0.), 90.)
+        arc_b = make_entity("arc", (0., -10.), (0., 0.), 90.)
+        sketch2.canvas.draft = SketchDraft((arc_a, arc_b))
+        sketch2._fillet((0, 1))
+        _require(len(sketch2.canvas.draft.entities) == 3, "Сопряжение двух дуг недоступно")
+        sketch2._undo()
+        _require(tuple(sketch2.canvas.draft.entities) == (arc_a, arc_b), "Отмена сопряжения дуг недоступна")
+        circle = make_entity("circle", (0., 0.), (10., 0.))
+        sketch2.canvas.draft = SketchDraft((circle, line))
+        with patch.object(FilletChoiceDialog, "exec", return_value=QDialog.DialogCode.Accepted):
+            sketch2._fillet((0, 1))
+        _require([e.kind for e in sketch2.canvas.draft.entities] == ["arc", "line", "arc"],
+                 "Сопряжение отрезка и окружности недоступно")
+        sketch2._undo()
+        _require(tuple(sketch2.canvas.draft.entities) == (circle, line), "Окружность не восстановлена отменой")
         first = make_entity("line", (0., 0.), (50., 0.))
         second = make_entity("line", (0., 0.), (0., 50.))
         sketch2.canvas.draft = SketchDraft((first, second))

@@ -139,6 +139,18 @@ def _arc_pair_conflict(a: Entity, b: Entity, tol: float) -> bool:
                 tangent_offset = abs((q[0] - arc.start[0]) * ux + (q[1] - arc.start[1]) * uy)
                 if distance(p, q) <= NUMERIC_EPS_MM and tangent_offset <= 1e-10:
                     return False
+    if a.kind == b.kind == "arc":
+        centers = distance(a.start, b.start)
+        # Non-coincident circles with a shared, numerically tangent endpoint
+        # have no other intersection. Scale by center distance so almost
+        # concentric secants cannot be mistaken for tangent curves.
+        if centers > NUMERIC_EPS_MM:
+            for p in a_ends:
+                for q in b_ends:
+                    if distance(p, q) <= 1e-10:
+                        ar, br = _minus(p, a.start), _minus(q, b.start)
+                        if abs(_cross(ar, br)) / centers <= 1e-10:
+                            return False
     try:
         points = intersections(a, b)
     except AmbiguousIntersectionError:

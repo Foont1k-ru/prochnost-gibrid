@@ -273,3 +273,130 @@ def test_line_arc_fillet_preserves_closed_sector():
     draft.apply_fillet(0, 1, pieces)
     report = check_contours(tuple(draft.entities))
     assert report.total_issues == 0 and report.closed_loops == 1
+
+
+@pytest.mark.parametrize("first_sweep,second_sweep,reverse1,reverse2", [
+    (a, b, x, y) for a in (85, -85, 170, -170) for b in (90, -90) for x in (False, True) for y in (False, True)
+])
+def test_arc_arc_fillet_tangency_directions_and_undo(first_sweep, second_sweep, reverse1, reverse2):
+    from suspensionlab.model.sketch_construction import fillet_arcs
+    from suspensionlab.model.sketch_curves import distance
+
+    first = make_entity("arc", (-10, 0), (0, 0), first_sweep)
+    second = make_entity("arc", (0, -10), (0, 0), second_sweep)
+    if reverse1:
+        first = make_entity("arc", first.start, arc_end(first), -first.sweep_deg)
+    if reverse2:
+        second = make_entity("arc", second.start, arc_end(second), -second.sweep_deg)
+    options = fillet_arcs(first, second, 2)
+    assert options
+    for a, b, blend in options:
+        p1, p2 = blend.end, arc_end(blend)
+        assert min(distance(p1, a.end), distance(p1, arc_end(a))) < 1e-8
+        assert min(distance(p2, b.end), distance(p2, arc_end(b))) < 1e-8
+        for p, original in ((p1, first), (p2, second)):
+            x, y = p[0] - original.start[0], p[1] - original.start[1]
+            u, v = p[0] - blend.start[0], p[1] - blend.start[1]
+            assert x * v - y * u == pytest.approx(0, abs=1e-7)
+        assert blend.size == pytest.approx(2)
+        draft = SketchDraft((first, second))
+        draft.apply_fillet(0, 1, (a, b, blend))
+        draft.undo()
+        assert tuple(draft.entities) == (first, second)
+        draft.redo()
+        assert tuple(draft.entities) == (a, b, blend)
+
+
+@pytest.mark.parametrize("reverse,inward", [(a, b) for a in (False, True) for b in (False, True)])
+def test_line_circle_fillet_converts_to_open_arc_and_undo(reverse, inward):
+    from suspensionlab.model.sketch_construction import fillet_line_circle
+    from suspensionlab.model.sketch_contours import check_contours
+    from suspensionlab.model.sketch_curves import distance
+
+    circle = make_entity("circle", (0, 0), (10, 0))
+    far = (0, 0) if inward else (30, 0)
+    line1 = line(far, (10, 0)) if reverse else line((10, 0), far)
+    options = fillet_line_circle(line1, circle, 2)
+    assert len(options) == 2
+    for new_line, remainder, blend in options:
+        assert remainder.kind == blend.kind == "arc"
+        assert arc_end(remainder) == pytest.approx((10, 0), abs=1e-8)
+        assert distance(arc_end(blend), remainder.end) < 1e-8
+        assert min(distance(blend.end, new_line.start), distance(blend.end, new_line.end)) < 1e-8
+        report = check_contours((new_line, remainder, blend))
+        assert report.total_issues > 0  # the cut at the old corner is an open end
+        draft = SketchDraft((circle, line1))
+        draft.apply_fillet(1, 0, (new_line, remainder, blend))
+        draft.undo()
+        assert tuple(draft.entities) == (circle, line1)
+        draft.redo()
+        assert tuple(draft.entities) == (remainder, new_line, blend)
+
+
+def test_fillet_circle_with_dimension_requires_removal():
+    from suspensionlab.model.sketch_construction import fillet_line_circle
+
+    segment = line((10, 0), (30, 0))
+    circle = make_entity("circle", (0, 0), (10, 0))
+    draft = SketchDraft((segment, circle))
+    draft.add_dimension(1, (15, 15), "diameter")
+    pieces = fillet_line_circle(segment, circle, 2)[0]
+    with pytest.raises(ValueError, match="размер"):
+        draft.apply_fillet(0, 1, pieces)
+    assert tuple(draft.entities) == (segment, circle) and len(draft.dimensions) == 1
+
+
+def test_fillet_arcs_and_circle_invalid_geometries_are_rejected():
+    from suspensionlab.model.sketch_construction import fillet_arcs, fillet_line_circle
+
+    first = make_entity("arc", (0, 0), (10, 0), 90)
+    with pytest.raises(ValueError, match="общий конец"):
+        fillet_arcs(first, make_entity("arc", (50, 50), (60, 50), 90), 2)
+    with pytest.raises(ValueError, match="Соосные"):
+        fillet_arcs(first, make_entity("arc", (0, 0), (10, 0), -90), 2)
+    circle = make_entity("circle", (0, 0), (10, 0))
+    with pytest.raises(ValueError, match="конец"):
+        fillet_line_circle(line((-20, 0), (20, 0)), circle, 2)
+    with pytest.raises(ValueError, match="конец"):
+        fillet_line_circle(line((-10, 0), (10, 0)), circle, 2)
+    for bad in (0, -1, float("inf"), float("nan")):
+        with pytest.raises(ValueError):
+            fillet_line_circle(line((10, 0), (30, 0)), circle, bad)
+        with pytest.raises(ValueError):
+            fillet_arcs(first, make_entity("arc", (0, -10), (0, 0), 90), bad)
+
+
+def test_arc_arc_fillet_closed_contour_and_extrusion():
+    from suspensionlab.model.sketch_construction import fillet_arcs
+    from suspensionlab.model.sketch_contours import check_contours
+    from suspensionlab.model.sketch_extrusion import extrusion_mesh
+    from suspensionlab.model.sketch_io import SketchDocument
+
+    a = make_entity("arc", (-10, 0), (0, 0), 90)
+    b = make_entity("arc", (0, -10), (0, 0), 90)
+    draft = SketchDraft((a, b, line(arc_end(a), arc_end(b))))
+    assert check_contours(tuple(draft.entities)).closed_loops == 1
+    draft.apply_fillet(0, 1, fillet_arcs(a, b, 2)[0])
+    report = check_contours(tuple(draft.entities))
+    assert report.total_issues == 0 and report.closed_loops == 1
+    mesh = extrusion_mesh(SketchDocument("XY", 0, tuple(draft.entities)), 5)
+    assert len(mesh) > 12
+
+
+def test_arc_fillet_keeps_dimensions_and_roundtrips(tmp_path):
+    from suspensionlab.model.sketch_construction import fillet_arcs
+    from suspensionlab.model.sketch_draft import dimension_value
+    from suspensionlab.model.sketch_io import SketchDocument, read_sketch, write_new_sketch
+
+    a = make_entity("arc", (-10, 0), (0, 0), 90)
+    b = make_entity("arc", (0, -10), (0, 0), 90)
+    draft = SketchDraft((a, b))
+    draft.add_dimension(0, (0, 10), "angle")
+    draft.apply_fillet(0, 1, fillet_arcs(a, b, 2)[0])
+    assert dimension_value(draft.dimensions[0], draft.entities[0]) < 90
+    document = SketchDocument("XY", 0, tuple(draft.entities), tuple(draft.dimensions))
+    path = tmp_path / "fillet.slsketch"
+    write_new_sketch(path, document)
+    assert read_sketch(path) == document
+    draft.undo()
+    assert tuple(draft.entities) == (a, b) and len(draft.dimensions) == 1
