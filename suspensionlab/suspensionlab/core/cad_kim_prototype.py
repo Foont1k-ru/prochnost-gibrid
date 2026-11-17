@@ -92,7 +92,7 @@ def build_part(document: dict[str, Any]) -> Any:
 def build_assembly(document: dict[str, Any]) -> Any:
     """Создаёт соединение перенесённых экземпляров, не связывая их со схемой."""
     _assembly(document)
-    if document["version"] in ("0.2", "0.3", "0.4"):
+    if document["version"] in ("0.2", "0.3", "0.4", "0.5"):
         raise ValueError("incomplete weldment: use the explicitly partial tube preview")
     from OCP.BRep import BRep_Builder
     from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
@@ -154,3 +154,39 @@ def build_rear_tube_preview(document: dict[str, Any]) -> Any:
     if not cut.IsDone() or cut.Shape().IsNull() or not BRepCheck_Analyzer(cut.Shape()).IsValid():
         raise RuntimeError('could not build rear tube')
     return cut.Shape()
+
+
+def build_front_arm_tubes_preview(document: dict[str, Any]) -> Any:
+    """Только две неподрезанные полые трубы; крепления и сварка отсутствуют."""
+    import math
+
+    from OCP.BRep import BRep_Builder
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+    from OCP.BRepCheck import BRepCheck_Analyzer
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder
+    from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt
+    from OCP.TopoDS import TopoDS_Compound
+
+    from ..model.front_tube_arm import LEGS, front_tube_arm_points
+
+    points = front_tube_arm_points(document)
+    radius, wall = float(document['radius_mm']), float(document['wall_mm'])
+    builder, compound = BRep_Builder(), TopoDS_Compound()
+    builder.MakeCompound(compound)
+    for index, leg in enumerate(LEGS):
+        start, end = points[index], points[2]
+        bend = document['bends'].get(leg)
+        if bend is not None:
+            shape = _build_bent_tube({'radius_mm': radius, 'wall_mm': wall,
+                                      'bend_vertex_mm': bend['vertex_mm'], 'bend_radius_mm': bend['radius_mm']},
+                                     endpoints=(start, end))
+        else:
+            axis = gp_Ax2(gp_Pnt(*start), gp_Dir(*(end[i] - start[i] for i in range(3))))
+            length = math.dist(start, end)
+            cut = BRepAlgoAPI_Cut(BRepPrimAPI_MakeCylinder(axis, radius, length).Shape(),
+                                  BRepPrimAPI_MakeCylinder(axis, radius - wall, length).Shape())
+            if not cut.IsDone() or cut.Shape().IsNull() or not BRepCheck_Analyzer(cut.Shape()).IsValid():
+                raise RuntimeError('could not build front tube')
+            shape = cut.Shape()
+        builder.Add(compound, shape)
+    return compound

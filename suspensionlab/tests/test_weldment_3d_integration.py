@@ -238,3 +238,43 @@ def test_reopened_rear_tube_uses_saved_3d_then_updates_current_cad(qtbot, tmp_pa
     d._save_copy()
     assert read_document(target, 'assembly')['bend']['radius_mm'] == 25 and source.read_bytes() == original
     d.close()
+
+
+def test_front_right_reopened_tubes_rebuild_real_cad(qtbot, tmp_path, monkeypatch):
+    from suspensionlab.model.front_tube_arm import make_front_tube_arm
+    from suspensionlab.model.kim_format import read_document
+    from suspensionlab.ui.front_tubes_dialog import FrontTubesDialog
+
+    c = AppController()
+    for code, xyz in {'uca_f_in': (0., 0., 0.), 'uca_r_in': (0., -100., 0.), 'ubj': (100., 100., 0.)}.items():
+        point = c.project.front.hardpoints[code]
+        point.x, point.y, point.z = xyz
+    bends = {'front': {'vertex_mm': [100, 0, 0], 'radius_mm': 20},
+             'rear': {'vertex_mm': [100, 100, 0], 'radius_mm': 25}}
+    source = tmp_path / 'front-right.kima'
+    doc = make_front_tube_arm(c.project, 'front_upper_right', 10, 2, bends)
+    write_document(source, 'assembly', doc)
+    original = source.read_bytes()
+    d = FrontTubesDialog(c)
+    qtbot.addWidget(d)
+    d.show()
+    monkeypatch.setattr(QFileDialog, 'getOpenFileName', lambda *args: (str(source), ''))
+    d._open_file()
+    d._three_d._enable.setChecked(True)
+    qtbot.waitUntil(lambda: d._three_d._view.mesh is not None, timeout=45000)
+    assert not d._save.isEnabled() and d._candidate == doc
+    d._start_preview()
+    qtbot.waitUntil(lambda: d._three_d._view.mesh is not None, timeout=45000)
+    d._bend_editor.fields['rear'][3].setText('30')
+    assert d._three_d._view.mesh is None and not d._save.isEnabled()
+    qtbot.waitUntil(lambda: d._three_d._view.mesh is not None, timeout=45000)
+    d._bend_editor.fields['rear'][3].setText('1000')
+    assert d._three_d._view.mesh is None and not d._save.isEnabled()
+    d._bend_editor.fields['rear'][3].setText('30')
+    qtbot.waitUntil(lambda: d._three_d._view.mesh is not None, timeout=45000)
+    target = tmp_path / 'copy.kima'
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(target), ''))
+    d._save_copy()
+    assert read_document(target, 'assembly')['bends']['rear']['radius_mm'] == 30
+    assert source.read_bytes() == original
+    d.close()

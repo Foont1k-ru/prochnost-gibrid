@@ -30,11 +30,14 @@ class ArmPlan(QWidget):
         self.axes = axes
         self.view: ArmView | None = None
         self.path: tuple[tuple[float, float, float], ...] | None = None
+        self.paths: tuple[tuple[tuple[float, float, float], ...], ...] | None = None
         self.setMinimumSize(360, 300)
 
-    def set_view(self, view: ArmView | None, path: tuple[tuple[float, float, float], ...] | None = None) -> None:
+    def set_view(self, view: ArmView | None, path: tuple[tuple[float, float, float], ...] | None = None, *,
+                 paths: tuple[tuple[tuple[float, float, float], ...], ...] | None = None) -> None:
         self.view = view
         self.path = path if view is not None else None
+        self.paths = paths if view is not None else None
         self.update()
 
     def paintEvent(self, event: QPaintEvent) -> None:  # noqa: N802
@@ -47,7 +50,7 @@ class ArmPlan(QWidget):
             return
         a, b = self.axes
         points = self.view.points
-        extent = (*points, *(self.path or ()))
+        extent = (*points, *(self.path or ()), *(p for path in (self.paths or ()) for p in path))
         first, second = [p[a] for p in extent], [p[b] for p in extent]
         scale = min(max(self.width()-140, 1)/max(max(first)-min(first), 1.),
                     max(self.height()-100, 1)/max(max(second)-min(second), 1.))
@@ -56,7 +59,10 @@ class ArmPlan(QWidget):
             return QPointF(self.width()/2 + (p[a]-center_a)*scale,
                            self.height()/2 - (p[b]-center_b)*scale)
         painter.setPen(QPen(QColor('#387fa3'), 4))
-        if self.path is not None:
+        if self.paths is not None:
+            for path in self.paths:
+                painter.drawPolyline(QPolygonF([map_point(point) for point in path]))
+        elif self.path is not None:
             painter.drawPolyline(QPolygonF([map_point(point) for point in self.path]))
         else:
             for start, end in self.view.segments:
