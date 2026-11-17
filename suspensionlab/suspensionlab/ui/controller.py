@@ -156,6 +156,16 @@ class AppController(QObject):
         self.statusMessage.emit("status.saved")
         return saved_path
 
+    def is_protected_export_target(self, destination: Path) -> bool:
+        """Не экспортировать поверх проекта или копии восстановления/автосохранения.
+
+        Ошибки доступа передаются вызывающему коду для безопасного отказа;
+        эта проверка не устраняет внешние гонки изменения путей.
+        """
+        sources = (autosave_path(), Path(self.project.path) if self.project.path else None,
+                   self._recovery_source, self._recovery_guard)
+        return any(source is not None and same_project_file(destination, source) for source in sources)
+
     @property
     def recovery_pending(self) -> bool:
         """Исходный файл автосохранения защищён до сохранения копии."""

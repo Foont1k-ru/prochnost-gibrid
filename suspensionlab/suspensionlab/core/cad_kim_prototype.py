@@ -10,6 +10,7 @@ def build_part(document: dict[str, Any]) -> Any:
     """Перестраивает только экспериментальную геометрию, не реальную деталь."""
     _part(document)
     from OCP.BRep import BRep_Builder
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
     from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder
     from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt
     from OCP.TopoDS import TopoDS_Compound
@@ -27,7 +28,15 @@ def build_part(document: dict[str, Any]) -> Any:
     for inner in points[:2]:
         direction = [float(b) - float(a) for a, b in zip(inner, outer, strict=True)]
         axis = gp_Ax2(gp_Pnt(*map(float, inner)), gp_Dir(*direction))
-        rod = BRepPrimAPI_MakeCylinder(axis, float(geometry["radius_mm"]), math.dist(inner, outer)).Shape()
+        length = math.dist(inner, outer)
+        radius = float(geometry["radius_mm"])
+        rod = BRepPrimAPI_MakeCylinder(axis, radius, length).Shape()
+        if geometry["kind"] == "prototype_lower_arm_tubes":
+            bore = BRepPrimAPI_MakeCylinder(axis, radius - float(geometry["wall_mm"]), length).Shape()
+            cut = BRepAlgoAPI_Cut(rod, bore)
+            if not cut.IsDone() or cut.Shape().IsNull():
+                raise RuntimeError("could not build prototype tube")
+            rod = cut.Shape()
         builder.Add(compound, rod)
     return compound
 

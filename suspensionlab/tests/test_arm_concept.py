@@ -57,3 +57,10 @@ def test_incompatible_or_missing_source_and_bad_style_rejected():
         make_arm_concept(project, 'tube', 10, 2, 3)
     with pytest.raises(KimFormatError):
         make_arm_concept(Project.create_default(), 'not-a-style', 10, 2, 3)
+
+
+def test_inner_radius_must_meet_prototype_minimum():
+    project = Project.create_default()
+    with pytest.raises(KimFormatError):
+        make_arm_concept(project, 'tube', 10., 9.995, 3.)
+    assert make_arm_concept(project, 'tube', 10., 9.98, 3.).wall_mm == 9.98

@@ -87,3 +87,34 @@ def test_lower_arm_rods_rebuild_with_expected_volume_and_position(tmp_path):
     assert not compare_lower_arm_source(saved['parts'][0], project)
     updated = make_lower_arm_prototype('arm', 'Черновик рычага', project, 2.)
     assert volume(build_part(updated)) == pytest.approx(math.pi * 2**2 * (200 + math.sqrt(50000)))
+
+
+def test_hollow_tubes_have_expected_volume_and_rebuild_from_changed_scheme(tmp_path):
+    from suspensionlab.model.entities import Project
+    from suspensionlab.model.kim_format import (
+        compare_lower_arm_source,
+        make_lower_arm_tube_prototype,
+        rebuild_lower_arm_prototype,
+    )
+
+    project = Project.create_default()
+    for code, position in {
+        'lca_f_in': (0., 0., 0.), 'lca_r_in': (100., 0., 0.), 'lbj': (0., 100., 0.),
+    }.items():
+        point = project.front.hardpoints[code]
+        point.x, point.y, point.z = position
+    part = make_lower_arm_tube_prototype('arm', 'Трубы', project, 10., 2.)
+    path = tmp_path / 'рычаг.kim'
+    write_document(path, 'part', part)
+    saved = read_document(path, 'part')
+    shape = build_part(saved)
+    assert BRepCheck_Analyzer(shape).IsValid()
+    area = math.pi * (10**2 - 8**2)
+    assert volume(shape) == pytest.approx(area * (100 + math.sqrt(20000)), rel=1e-7)
+    project.front.hardpoints['lbj'].y = 200
+    assert not compare_lower_arm_source(saved, project)
+    updated = rebuild_lower_arm_prototype(saved, project)
+    assert compare_lower_arm_source(updated, project)
+    assert BRepCheck_Analyzer(build_part(updated)).IsValid()
+    assert volume(build_part(updated)) == pytest.approx(area * (200 + math.sqrt(50000)), rel=1e-7)
+    assert read_document(path, 'part') == saved  # no silent file overwrite

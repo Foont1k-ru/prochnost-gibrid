@@ -1,6 +1,7 @@
 """Немодальный эскиз: производная схема, не CAD-деталь и не расчёт прочности."""
 from __future__ import annotations
 
+from pathlib import Path
 from typing import cast
 
 from PySide6.QtCore import QPointF, Qt
@@ -10,15 +11,18 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
+    QFileDialog,
     QFormLayout,
     QLabel,
+    QMessageBox,
+    QPushButton,
     QVBoxLayout,
     QWidget,
 )
 
 from ..i18n import tr
 from ..model.arm_concept import ArmConcept, ArmStyle, make_arm_concept
-from ..model.kim_format import KimFormatError
+from ..model.kim_format import KimFormatError, make_lower_arm_tube_prototype, write_document
 from .controller import AppController
 
 
@@ -76,6 +80,7 @@ class ArmConceptDialog(QDialog):
         super().__init__(parent)
         self.controller = controller
         self.concept: ArmConcept | None = None
+        self._revision = 0
         self.setWindowTitle(tr("arm_concept.title"))
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.resize(620, 620)
@@ -103,6 +108,12 @@ class ArmConceptDialog(QDialog):
         self._summary = QLabel(self)
         self._summary.setWordWrap(True)
         layout.addWidget(self._summary)
+        self._save_tube = QPushButton(tr("arm_concept.save_tube"), self)
+        self._save_tube.clicked.connect(self._save_tube_snapshot)
+        layout.addWidget(self._save_tube)
+        self._save_status = QLabel(self)
+        self._save_status.setWordWrap(True)
+        layout.addWidget(self._save_status)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close, self)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
@@ -123,6 +134,8 @@ class ArmConceptDialog(QDialog):
         return spin
 
     def _refresh(self, *_args: object) -> None:
+        self._revision += 1
+        self._save_status.clear()
         style = cast(ArmStyle, self._style.currentData())
         self._radius.setEnabled(style == "tube")
         self._wall.setEnabled(style == "tube")
@@ -135,9 +148,36 @@ class ArmConceptDialog(QDialog):
             self._canvas.set_concept(None)
             self._status.setText(tr("arm_concept.invalid"))
             self._summary.clear()
+            self._save_tube.setEnabled(False)
             return
+        self._save_tube.setEnabled(style == "tube")
         self.concept = concept
         self._canvas.set_concept(concept)
         self._status.setText(tr("arm_concept.current", project=self.controller.project.meta.name or tr("arm_concept.unnamed")))
         self._summary.setText(tr("arm_concept.summary", a=f"{concept.lengths_mm[0]:.2f}",
                                  b=f"{concept.lengths_mm[1]:.2f}", area=f"{concept.triangle_area_mm2:.2f}"))
+
+    def _save_tube_snapshot(self) -> None:
+        """Сохранить снимок параметров, не устанавливая живую связь с файлом."""
+        if self.concept is None or self.concept.style != "tube":
+            return
+        revision = self._revision
+        selected, _ = QFileDialog.getSaveFileName(self, tr("arm_concept.save_title"), "", tr("arm_concept.save_filter"))
+        if not selected:
+            return
+        path = Path(selected)
+        if path.suffix.lower() != ".kim":
+            path = path.with_name(path.name + ".kim")
+        if revision != self._revision or self.concept is None or self.concept.style != "tube":
+            QMessageBox.warning(self, tr("arm_concept.save_title"), tr("arm_concept.save_changed"))
+            return
+        try:
+            if self.controller.is_protected_export_target(path):
+                raise KimFormatError("protected project or autosave")
+            part = make_lower_arm_tube_prototype("front_lower_left", tr("arm_concept.part_name"),
+                                                 self.controller.project, self.concept.radius_mm, self.concept.wall_mm)
+            write_document(path, "part", part)
+        except (KimFormatError, OSError, RuntimeError, ValueError):
+            QMessageBox.warning(self, tr("arm_concept.save_title"), tr("arm_concept.save_failed"))
+            return
+        self._save_status.setText(tr("arm_concept.save_done", path=str(path)))

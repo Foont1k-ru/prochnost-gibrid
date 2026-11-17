@@ -43,8 +43,8 @@ def make_arm_concept(project: Project, style: ArmStyle, radius_mm: float,
         raise KimFormatError("invalid concept dimensions") from error
     if invalid:
         raise KimFormatError("invalid concept dimensions")
-    if style == "tube" and wall_mm >= radius_mm:
-        raise KimFormatError("tube wall must be less than radius")
+    if style == "tube" and radius_mm - wall_mm < 0.01:
+        raise KimFormatError("tube wall must leave at least 0.01 mm inner radius")
     prototype = make_lower_arm_prototype("concept", "concept", project, radius_mm)
     source = prototype["geometry"]["source"]
     coords = source["coordinates_mm"]

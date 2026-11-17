@@ -76,3 +76,86 @@ def test_invalid_points_or_suspension_clear_old_result_and_recover(qtbot):
     c.new_project()
     assert dialog.concept is not None
     assert not c.dirty
+
+
+def test_save_tube_snapshot_tracks_current_scheme_but_is_not_live(qtbot, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QFileDialog
+
+    from suspensionlab.model.kim_format import compare_lower_arm_source, read_document
+
+    c = AppController()
+    dialog = ArmConceptDialog(c)
+    qtbot.addWidget(dialog)
+    dialog.show()
+    before = c.project.to_dict()
+    path = tmp_path / 'нижний передний'
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(path), ''))
+    dialog._radius.setValue(20.)
+    dialog._wall.setValue(2.5)
+    assert dialog._save_tube.isEnabled()
+    dialog._save_tube.click()
+    actual = path.with_name(path.name + '.kim')
+    saved = read_document(actual, 'part')
+    assert saved['geometry']['kind'] == 'prototype_lower_arm_tubes'
+    assert saved['geometry']['radius_mm'] == 20. and saved['geometry']['wall_mm'] == 2.5
+    assert compare_lower_arm_source(saved, c.project)
+    assert 'автоматически не обновляется' in dialog._save_status.text()
+    assert c.project.to_dict() == before and not c.dirty and c.project.path is None
+    old_bytes = actual.read_bytes()
+    point = c.project.front.hardpoints['lbj']
+    c.move_point(point, (point.x, point.y + 50, point.z))
+    assert dialog.concept is not None and not compare_lower_arm_source(saved, c.project)
+    assert actual.read_bytes() == old_bytes and not dialog._save_status.text()
+    dialog._style.setCurrentIndex(1)
+    assert not dialog._save_tube.isEnabled()
+
+
+def test_save_rejects_changes_while_file_dialog_is_open(qtbot, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QFileDialog, QMessageBox
+
+    c = AppController()
+    dialog = ArmConceptDialog(c)
+    qtbot.addWidget(dialog)
+    target = tmp_path / 'arm.kim'
+    def choose(*args):
+        point = c.project.front.hardpoints['lbj']
+        c.move_point(point, (point.x, point.y + 1, point.z))
+        return str(target), ''
+    warnings = []
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', choose)
+    monkeypatch.setattr(QMessageBox, 'warning', lambda *args: warnings.append(args))
+    dialog._save_tube_snapshot()
+    assert warnings and 'изменились' in warnings[0][2] and not target.exists()
+    assert c.dirty
+
+
+def test_export_refuses_hardlinks_to_project_and_autosave(qtbot, tmp_path, monkeypatch):
+    import os
+
+    import pytest
+    from PySide6.QtWidgets import QFileDialog, QMessageBox
+
+    from suspensionlab.ui import controller as module
+
+    backup = tmp_path / 'auto.susp.json'
+    monkeypatch.setattr(module, 'autosave_path', lambda: backup)
+    c = AppController()
+    project_file = c.save_project(tmp_path / 'project')
+    assert c.autosave()
+    old_project, old_backup = project_file.read_bytes(), backup.read_bytes()
+    alias = tmp_path / 'target.kim'
+    try:
+        os.link(project_file, alias)
+    except OSError:
+        pytest.skip('Hard links are unavailable')
+    dialog = ArmConceptDialog(c)
+    qtbot.addWidget(dialog)
+    warnings = []
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(alias), ''))
+    monkeypatch.setattr(QMessageBox, 'warning', lambda *args: warnings.append(args))
+    dialog._save_tube_snapshot()
+    assert warnings and project_file.read_bytes() == old_project and alias.read_bytes() == old_project
+    alias.unlink()
+    os.link(backup, alias)
+    dialog._save_tube_snapshot()
+    assert len(warnings) == 2 and backup.read_bytes() == old_backup and alias.read_bytes() == old_backup
