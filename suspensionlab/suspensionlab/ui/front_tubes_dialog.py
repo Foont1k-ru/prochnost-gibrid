@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 from ..i18n import tr
 from ..model.autosave_guard import same_project_file
 from ..model.entities import Project
+from ..model.front_pair_snapshot import front_pair_sides, make_front_pair_snapshot, mirror_front_tube_arm
 from ..model.front_tube_arm import (
     front_tube_arm_centerlines,
     front_tube_arm_points,
@@ -46,6 +47,7 @@ class FrontTubesDialog(QDialog):
         self.controller = controller
         self._candidate: dict[str, Any] | None = None
         self._source: dict[str, Any] | None = None
+        self._saved_pair: dict[str, Any] | None = None
         self._source_paths: tuple[Path, ...] = ()
         self._active = True
         self._pending_project_changes = False
@@ -102,6 +104,9 @@ class FrontTubesDialog(QDialog):
         pair_note = QLabel(tr('front_pair.note'), body)
         pair_note.setWordWrap(True)
         layout.addWidget(pair_note)
+        mirror_note = QLabel(tr('front_pair.preview'), body)
+        mirror_note.setWordWrap(True)
+        layout.addWidget(mirror_note)
         self._status = QLabel(body)
         self._status.setWordWrap(True)
         layout.addWidget(self._status)
@@ -114,10 +119,18 @@ class FrontTubesDialog(QDialog):
             tabs.addTab(plan, label)
         self._three_d = Weldment3D(tabs, is_current=self._candidate_is_current)
         tabs.addTab(self._three_d, tr('front_tubes.tab_3d'))
+        self._mirror_plans = [ArmPlan(axes, tabs) for axes in ((0, 1), (0, 2), (1, 2))]
+        for plan, label in zip(self._mirror_plans, ('XY', 'XZ', 'YZ'), strict=True):
+            tabs.addTab(plan, tr('front_pair.tab', axes=label))
+        self._pair_3d = Weldment3D(tabs, is_current=self._pair_is_current, four_tubes=True)
+        tabs.addTab(self._pair_3d, tr('front_pair.tab_both'))
         layout.addWidget(tabs, 1)
         self._save = QPushButton(tr('front_tubes.save'), body)
         self._save.clicked.connect(self._save_copy)
         layout.addWidget(self._save)
+        self._save_pair = QPushButton(tr('front_pair.save'), body)
+        self._save_pair.clicked.connect(self._save_pair_copy)
+        layout.addWidget(self._save_pair)
         self._saved = QLabel(body)
         self._saved.setWordWrap(True)
         self._saved.setTextFormat(Qt.TextFormat.PlainText)
@@ -130,6 +143,7 @@ class FrontTubesDialog(QDialog):
         self._wall.textChanged.connect(self._refresh)
         self._bend_editor.changed.connect(self._refresh)
         self._three_d.availabilityChanged.connect(self._update_save)
+        self._pair_3d.availabilityChanged.connect(self._update_save)
         controller.modelChanged.connect(self._refresh)
         controller.projectReplaced.connect(self._project_replaced)
         self._refresh()
@@ -148,6 +162,7 @@ class FrontTubesDialog(QDialog):
             return
         self._source, self._source_paths, self._active = None, (), True
         self._saved_candidate = None
+        self._saved_pair = None
         self._pending_project_changes = False
         widgets = [self._arm, self._radius, self._wall]
         blockers = [QSignalBlocker(widget) for widget in widgets]
@@ -175,7 +190,11 @@ class FrontTubesDialog(QDialog):
             path = Path(selected).absolute()
             resolved = path.resolve()
             document = read_document(path, 'assembly')
-            validate_front_tube_arm(document)
+            pair_document = document if document['version'] == '0.7' else None
+            if pair_document is not None:
+                document, _ = front_pair_sides(pair_document)
+            else:
+                validate_front_tube_arm(document)
         except (KimFormatError, OSError, ValueError, RuntimeError):
             QMessageBox.warning(self, tr('front_tubes.title'), tr('front_tubes.open_failed'))
             return
@@ -186,6 +205,7 @@ class FrontTubesDialog(QDialog):
             QMessageBox.warning(self, tr('front_tubes.title'), tr('weldment.changed'))
             return
         self._source, self._source_paths, self._active = document, (path, resolved), False
+        self._saved_pair = pair_document
         self._pending_project_changes = False
         widgets = [self._arm, self._radius, self._wall]
         blockers = [QSignalBlocker(widget) for widget in widgets]
@@ -210,8 +230,7 @@ class FrontTubesDialog(QDialog):
 
     def _project_replaced(self) -> None:
         if self._source is not None:
-            self._pending_project_changes = self._pending_project_changes or (
-                self._active and self._saved_candidate is not None and self._saved_candidate != self._candidate)
+            self._pending_project_changes = self._pending_project_changes or self._has_unsaved()
             self._active = False
         self._refresh()
 
@@ -260,13 +279,8 @@ class FrontTubesDialog(QDialog):
         if not self._active or candidate is None or not self._candidate_is_current(candidate):
             self._refresh()
             return
-        arm = candidate['arm']
-        other = arm.removesuffix('_left') + '_right' if arm.endswith('_left') else arm.removesuffix('_right') + '_left'
-        bends = {leg: {'vertex_mm': [bend['vertex_mm'][0], -bend['vertex_mm'][1], bend['vertex_mm'][2]],
-                       'radius_mm': bend['radius_mm']} for leg, bend in candidate['bends'].items()}
         try:
-            paired = make_front_tube_arm(self.controller.project, other, candidate['radius_mm'],
-                                         candidate['wall_mm'], bends)
+            paired = mirror_front_tube_arm(candidate)
         except (KimFormatError, ValueError, TypeError, OverflowError):
             QMessageBox.warning(self, tr('front_tubes.title'), tr('front_pair.failed'))
             return
@@ -286,14 +300,19 @@ class FrontTubesDialog(QDialog):
         self._bend_editor.set_editable(self._active)
         self._activate.setVisible(self._source is not None)
         self._activate.setEnabled(self._source is not None and not self._active)
-        for plan in self._plans:
+        for plan in (*self._plans, *self._mirror_plans):
             plan.set_view(None)
         self._three_d.set_document(None)
+        self._pair_3d.set_document(None)
         self._update_save()
         try:
             candidate = self._source if self._source is not None and not self._active else self._make_candidate()
             paths = front_tube_arm_centerlines(candidate)
             view = make_niva_arm_view(Project.from_dict(candidate['scheme']), candidate['arm'])
+            snapshot = make_front_pair_snapshot(candidate)
+            paired = mirror_front_tube_arm(candidate)
+            mirror_paths = front_tube_arm_centerlines(paired)
+            mirror_view = make_niva_arm_view(Project.from_dict(paired['scheme']), paired['arm'])
         except (KimFormatError, ValueError, TypeError, OverflowError):
             self._status.setText(tr('front_tubes.invalid'))
             self._update_edit_status()
@@ -302,7 +321,10 @@ class FrontTubesDialog(QDialog):
         self._mirror.setEnabled(self._active)
         for plan in self._plans:
             plan.set_view(view, paths=paths)
+        for plan in self._mirror_plans:
+            plan.set_view(mirror_view, paths=mirror_paths)
         self._three_d.set_document(candidate)
+        self._pair_3d.set_document(snapshot)
         if self._source is not None and not self._active:
             self._status.setText(tr('front_tubes.snapshot'))
         elif self._source is not None:
@@ -320,7 +342,8 @@ class FrontTubesDialog(QDialog):
     def _has_unsaved(self) -> bool:
         return (self._baseline is not None and (self._input_state() != self._baseline or
                 self._pending_project_changes or (self._active and self._saved_candidate is not None and
-                                                  self._saved_candidate != self._candidate)))
+                                                  self._saved_candidate != self._candidate) or
+                (self._active and self._saved_pair is not None and self._saved_pair['source'] != self._candidate)))
 
     def _update_edit_status(self) -> None:
         self._edit_status.setText(tr("front_tubes.unsaved") if self._has_unsaved() else "")
@@ -345,8 +368,19 @@ class FrontTubesDialog(QDialog):
         except (KimFormatError, ValueError, TypeError, OverflowError):
             return False
 
+    def _pair_is_current(self, snapshot: dict[str, Any]) -> bool:
+        if self._candidate is None or not self._candidate_is_current(self._candidate):
+            return False
+        try:
+            return make_front_pair_snapshot(self._candidate) == snapshot
+        except (KimFormatError, ValueError, TypeError, OverflowError):
+            return False
+
     def _update_save(self, *_args: object) -> None:
         self._save.setEnabled(self._active and self._candidate is not None and self._three_d.can_save())
+        pair = self._pair_3d._document
+        self._save_pair.setEnabled(self._active and pair is not None and self._pair_is_current(pair) and
+                                   self._three_d.can_save() and self._pair_3d.can_save())
 
     def _save_copy(self) -> None:
         candidate = self._candidate
@@ -380,8 +414,45 @@ class FrontTubesDialog(QDialog):
         self._update_edit_status()
         self._saved.setText(tr('weldment.saved', path=str(path)))
 
+    def _save_pair_copy(self) -> None:
+        pair = self._pair_3d._document
+        if (not self._active or pair is None or not self._pair_is_current(pair) or
+                not self._three_d.can_save() or not self._pair_3d.can_save()):
+            return
+        revision, state = self._revision, self._input_state()
+        gens = (self._three_d.generation, self._pair_3d.generation)
+        selected, _ = QFileDialog.getSaveFileName(self, tr('front_pair.save'), '', tr('arm_concept.assembly_filter'))
+        if not selected:
+            return
+        path = Path(selected)
+        if path.suffix.lower() != '.kima':
+            path = path.with_name(path.name + '.kima')
+        if (revision != self._revision or state != self._input_state() or
+                gens != (self._three_d.generation, self._pair_3d.generation) or
+                not self._three_d.can_save() or not self._pair_3d.can_save() or not self._pair_is_current(pair)):
+            QMessageBox.warning(self, tr('front_tubes.title'), tr('weldment.changed'))
+            return
+        try:
+            if any(same_project_file(path, source) for source in self._source_paths):
+                raise KimFormatError('original source path')
+            if self.controller.is_protected_export_target(path):
+                raise KimFormatError('protected project')
+            write_document(path, 'assembly', pair, overwrite=False)
+        except (KimFormatError, OSError, ValueError, TypeError, RuntimeError):
+            QMessageBox.warning(self, tr('front_tubes.title'), tr('weldment.save_failed'))
+            self._refresh()
+            return
+        self._baseline = self._input_state()
+        self._saved_candidate = self._candidate
+        self._saved_pair = pair
+        self._pending_project_changes = False
+        self._update_edit_status()
+        self._saved.setText(tr('weldment.saved', path=str(path)))
+
     def shutdown(self) -> bool:
-        return self._three_d.shutdown()
+        single = self._three_d.shutdown()
+        pair = self._pair_3d.shutdown()
+        return single and pair
 
     def reject(self) -> None:
         if self.confirm_close() and self.shutdown():

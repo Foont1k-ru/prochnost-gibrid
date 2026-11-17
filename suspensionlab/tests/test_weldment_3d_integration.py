@@ -394,3 +394,48 @@ def test_saved_rear_pair_reopens_and_rebuilds_both_cad_views(qtbot, tmp_path, mo
     assert read_document(target, 'assembly')['source']['bend']['radius_mm'] == 30
     assert d.shutdown()
     d.close()
+
+
+def test_front_mirrored_pair_3d_and_persistent_reopen(qtbot, tmp_path, monkeypatch):
+    from suspensionlab.model.front_pair_snapshot import front_pair_sides
+    from suspensionlab.model.kim_format import read_document
+    from suspensionlab.ui.front_tubes_dialog import FrontTubesDialog
+
+    c = AppController()
+    for code, xyz in {'uca_f_in': (0, 20, 0), 'uca_r_in': (0, -80, 0), 'ubj': (100, 120, 0)}.items():
+        point = c.project.front.hardpoints[code]
+        point.x, point.y, point.z = xyz
+    d = FrontTubesDialog(c)
+    qtbot.addWidget(d)
+    d._arm.setCurrentIndex(d._arm.findData('front_upper_left'))
+    for leg, values in [('front', ('100', '20', '0', '20')), ('rear', ('100', '-80', '0', '25'))]:
+        d._bend_editor.checks[leg].setChecked(True)
+        for field, value in zip(d._bend_editor.fields[leg], values, strict=True):
+            field.setText(value)
+    d._pair_3d._enable.setChecked(True)
+    assert not d._save_pair.isEnabled()
+    qtbot.waitUntil(lambda: d._save_pair.isEnabled(), timeout=45000)
+    assert d._pair_3d._view.mesh is not None
+    path = tmp_path / 'front-pair.kima'
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(path), ''))
+    d._save_pair_copy()
+    assert read_document(path, 'assembly')['version'] == '0.7'
+    assert d.shutdown()
+    d.close()
+    d = FrontTubesDialog(c)
+    qtbot.addWidget(d)
+    monkeypatch.setattr(QFileDialog, 'getOpenFileName', lambda *args: (str(path), ''))
+    d._open_file()
+    d._pair_3d._enable.setChecked(True)
+    qtbot.waitUntil(lambda: d._pair_3d._view.mesh is not None, timeout=45000)
+    d._start_preview()
+    qtbot.waitUntil(lambda: d._save_pair.isEnabled(), timeout=45000)
+    d._bend_editor.fields['rear'][3].setText('30')
+    assert d._pair_3d._view.mesh is None and not d._save_pair.isEnabled()
+    qtbot.waitUntil(lambda: d._save_pair.isEnabled(), timeout=45000)
+    target = tmp_path / 'front-pair-edit.kima'
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(target), ''))
+    d._save_pair_copy()
+    assert front_pair_sides(read_document(target, 'assembly'))[1]['bends']['rear']['radius_mm'] == 30
+    assert d.shutdown()
+    d.close()

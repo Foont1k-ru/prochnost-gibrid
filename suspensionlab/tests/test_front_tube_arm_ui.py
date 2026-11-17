@@ -215,3 +215,85 @@ def test_auto_mirror_is_not_applied_when_loading_a_snapshot(qtbot, tmp_path, mon
     d._arm.setCurrentIndex(d._arm.findData('front_upper_left'))
     assert d._candidate is not None and d._candidate['bends']['rear']['vertex_mm'][1] == -100
     clean_close(d)
+
+
+def test_live_mirror_save_reopen_edit_and_protect_pair(qtbot, tmp_path, monkeypatch):
+    from suspensionlab.model.front_pair_snapshot import front_pair_sides
+
+    c = controller()
+    before = c.project.to_dict()
+    d = FrontTubesDialog(c)
+    qtbot.addWidget(d)
+    d._arm.setCurrentIndex(d._arm.findData('front_upper_left'))
+    for leg, values in [('front', ('100', '0', '0', '20')), ('rear', ('100', '-100', '0', '25'))]:
+        d._bend_editor.checks[leg].setChecked(True)
+        for field, value in zip(d._bend_editor.fields[leg], values, strict=True):
+            field.setText(value)
+    assert all(plan.view.key == 'front_upper_right' for plan in d._mirror_plans)
+    old = d._pair_3d._document
+    d._bend_editor.fields['rear'][3].setText('30')
+    assert not d._pair_is_current(old)
+    assert front_pair_sides(d._pair_3d._document)[1]['bends']['rear']['radius_mm'] == 30
+    assert d._save_pair.isEnabled()
+    path = tmp_path / 'pair.kima'
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(path), ''))
+    d._save_pair_copy()
+    snapshot = read_document(path, 'assembly')
+    assert snapshot['version'] == '0.7' and not d._has_unsaved()
+    original = path.read_bytes()
+    assert d.shutdown()
+    d.close()
+    d = FrontTubesDialog(c)
+    qtbot.addWidget(d)
+    monkeypatch.setattr(QFileDialog, 'getOpenFileName', lambda *args: (str(path), ''))
+    d._open_file()
+    assert not d._active and d._pair_3d._document == snapshot and d._candidate == snapshot['source']
+    assert not d._save_pair.isEnabled() and not d._has_unsaved()
+    d._start_preview()
+    assert d._save_pair.isEnabled() and not d._has_unsaved()
+    d._bend_editor.fields['rear'][3].setText('35')
+    assert d._has_unsaved() and front_pair_sides(d._pair_3d._document)[1]['bends']['rear']['radius_mm'] == 35
+    warnings = []
+    monkeypatch.setattr(QMessageBox, 'warning', lambda *args: warnings.append(args))
+    d._save_pair_copy()
+    assert warnings and path.read_bytes() == original
+    target = tmp_path / 'edited.kima'
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(target), ''))
+    d._save_pair_copy()
+    updated = read_document(target, 'assembly')
+    assert front_pair_sides(updated)[1]['bends']['rear']['radius_mm'] == 35
+    assert not d._has_unsaved() and path.read_bytes() == original and c.project.to_dict() == before
+    assert d.shutdown()
+    d.close()
+
+
+def test_single_save_does_not_mark_changed_pair_saved_and_dialog_race(qtbot, tmp_path, monkeypatch):
+    c = controller()
+    d = FrontTubesDialog(c)
+    qtbot.addWidget(d)
+    pair = tmp_path / 'pair.kima'
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(pair), ''))
+    d._save_pair_copy()
+    assert not d._has_unsaved() and read_document(pair, 'assembly')['version'] == '0.7'
+    d._radius.setText('13')
+    single = tmp_path / 'single.kima'
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(single), ''))
+    d._save_copy()
+    assert read_document(single, 'assembly')['version'] == '0.5' and d._has_unsaved()
+    target, warnings = tmp_path / 'race.kima', []
+    monkeypatch.setattr(QMessageBox, 'warning', lambda *args: warnings.append(args))
+    def change(*args):
+        with QSignalBlocker(d._wall):
+            d._wall.setText('3')
+        return str(target), ''
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', change)
+    d._save_pair_copy()
+    assert warnings and not target.exists() and d._has_unsaved()
+    monkeypatch.setattr(QMessageBox, 'question', lambda *args: QMessageBox.StandardButton.No)
+    d._new_draft()
+    assert d._wall.text() == '3'
+    monkeypatch.setattr(QMessageBox, 'question', lambda *args: QMessageBox.StandardButton.Yes)
+    d._new_draft()
+    assert d._saved_pair is None and not d._has_unsaved()
+    assert d.shutdown()
+    d.close()

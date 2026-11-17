@@ -44,3 +44,35 @@ def test_front_arm_tubes_are_real_valid_cad_for_all_four_arms():
                 build_assembly(doc)
         mesh = WeldmentCadJob().run(doc)
         assert len(mesh.triangles) > 0 and mesh.skipped_faces == mesh.recovered_faces == 0
+
+
+def test_mirrored_pair_has_four_solids_and_doubled_volume_in_worker():
+    from OCP.TopAbs import TopAbs_ShapeEnum
+    from OCP.TopExp import TopExp_Explorer
+
+    from suspensionlab.core.cad_kim_prototype import build_front_pair_preview
+    from suspensionlab.model.front_pair_snapshot import make_front_pair_snapshot
+
+    p = Project.create_default()
+    for code, xyz in {'uca_f_in': (0, 20, 0), 'uca_r_in': (0, -80, 0), 'ubj': (100, 120, 0)}.items():
+        point = p.front.hardpoints[code]
+        point.x, point.y, point.z = xyz
+    bends = {'front': {'vertex_mm': [100, 20, 0], 'radius_mm': 20},
+             'rear': {'vertex_mm': [100, -80, 0], 'radius_mm': 25}}
+    source = make_front_tube_arm(p, 'front_upper_left', 10, 2, bends)
+    pair = make_front_pair_snapshot(source)
+    shape = build_front_pair_preview(pair)
+    assert BRepCheck_Analyzer(shape).IsValid()
+    explorer, solids = TopExp_Explorer(shape, TopAbs_ShapeEnum.TopAbs_SOLID), 0
+    while explorer.More():
+        solids += 1
+        explorer.Next()
+    assert solids == 4
+    whole, single = GProp_GProps(), GProp_GProps()
+    BRepGProp.VolumeProperties_s(shape, whole)
+    BRepGProp.VolumeProperties_s(build_front_arm_tubes_preview(source), single)
+    assert whole.Mass() == pytest.approx(2 * single.Mass(), rel=1e-6)
+    with pytest.raises(ValueError):
+        build_assembly(pair)
+    mesh = WeldmentCadJob().run(pair)
+    assert len(mesh.triangles) and mesh.skipped_faces == mesh.recovered_faces == 0
