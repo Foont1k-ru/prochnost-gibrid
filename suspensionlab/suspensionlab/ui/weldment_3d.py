@@ -5,7 +5,7 @@ from collections.abc import Callable
 from typing import Any
 
 from PySide6.QtCore import QThread, QTimer, Signal
-from PySide6.QtWidgets import QCheckBox, QLabel, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QCheckBox, QComboBox, QLabel, QPushButton, QVBoxLayout, QWidget
 
 from ..core.cad_mesh import CadMesh
 from ..core.cad_transport import CadPreviewError
@@ -18,15 +18,16 @@ class _TubeReader(QThread):
     completed = Signal(int, object)
     failed = Signal(int, str)
 
-    def __init__(self, document: dict[str, Any], token: int, parent: QWidget) -> None:
+    def __init__(self, document: dict[str, Any], token: int, parent: QWidget, deviation: float = 2.) -> None:
         super().__init__(parent)
         self.document = document
         self.token = token
+        self.deviation = deviation
         self.job = WeldmentCadJob()
 
     def run(self) -> None:
         try:
-            self.completed.emit(self.token, self.job.run(self.document))
+            self.completed.emit(self.token, self.job.run(self.document, deviation=self.deviation))
         except CadPreviewError as error:
             self.failed.emit(self.token, error.code)
         except Exception:
@@ -65,6 +66,15 @@ class Weldment3D(QWidget):
         self._enable = QCheckBox(tr(enable_key), self)
         self._enable.toggled.connect(self._toggle)
         layout.addWidget(self._enable)
+        quality_label = QLabel(tr("weldment_3d.quality_label"), self)
+        quality_label.setWordWrap(True)
+        layout.addWidget(quality_label)
+        self._quality = QComboBox(self)
+        self._quality.setAccessibleName(tr("weldment_3d.quality_accessible"))
+        self._quality.addItem(tr("weldment_3d.quality_smooth"), 0.2)
+        self._quality.addItem(tr("weldment_3d.quality_fast"), 2.0)
+        self._quality.currentIndexChanged.connect(self._schedule)
+        layout.addWidget(self._quality)
         self._status = QLabel(tr("weldment_3d.off"), self)
         self._status.setWordWrap(True)
         layout.addWidget(self._status)
@@ -91,7 +101,7 @@ class Weldment3D(QWidget):
         self._document = document
         self._schedule()
 
-    def _schedule(self) -> None:
+    def _schedule(self, *_args: object) -> None:
         self.generation += 1
         self._ready = False
         self._pending = None
@@ -121,7 +131,7 @@ class Weldment3D(QWidget):
         if self._worker is not None or self._pending is None or self._closed:
             return
         document, self._pending = self._pending, None
-        worker = _TubeReader(document, self.generation, self)
+        worker = _TubeReader(document, self.generation, self, float(self._quality.currentData()))
         self._worker = worker
         worker.completed.connect(self._completed)
         worker.failed.connect(self._failed)

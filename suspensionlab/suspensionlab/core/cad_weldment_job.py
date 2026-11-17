@@ -17,10 +17,10 @@ class WeldmentCadJob:
     def cancel(self) -> None:
         self._job.cancel()
 
-    def run(self, document: dict[str, Any]) -> CadMesh:
+    def run(self, document: dict[str, Any], *, deviation: float = 2.) -> CadMesh:
         if self._job.is_cancelled():
             raise CadPreviewError("cancelled")
         with tempfile.TemporaryDirectory(prefix="suspension-weldment-") as directory:
             source = Path(directory) / "snapshot.kima"
             write_document(source, "assembly", document, overwrite=False)
-            return self._job.run(source, 2., timeout=60, mode="weldment")
+            return self._job.run(source, deviation, timeout=60, mode="weldment")

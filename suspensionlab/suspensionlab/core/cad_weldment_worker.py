@@ -58,7 +58,8 @@ def create_mesh(path: Path, deviation: float) -> tuple[np.ndarray, int]:
         shape = build_weldment_tubes_preview(doc)
     if shape.IsNull() or not BRepCheck_Analyzer(shape).IsValid():
         raise CadWorkerError("no_shape")
-    mesher = BRepMesh_IncrementalMesh(shape, deviation, False, 0.7, False)
+    angular_deviation = 0.25 if deviation <= 0.5 else 0.7
+    mesher = BRepMesh_IncrementalMesh(shape, deviation, False, angular_deviation, False)
     if not mesher.IsDone():
         raise CadWorkerError("mesh")
     explorer = TopExp_Explorer(shape, TopAbs_ShapeEnum.TopAbs_FACE)

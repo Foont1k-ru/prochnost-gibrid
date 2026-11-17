@@ -23,7 +23,7 @@ def test_live_editor_3d_cancels_obsolete_work_and_saves_only_current(qtbot, tmp_
             jobs.append(self)
         def cancel(self):
             self.cancelled = True  # emulate a result arriving despite cancellation
-        def run(self, document):
+        def run(self, document, *, deviation=2.):
             self.started.set()
             assert self.release.wait(10)
             radius = document['parts'][0]['geometry']['radius_mm']
@@ -62,7 +62,7 @@ def test_live_editor_clears_3d_on_invalid_data_and_missing_kernel(qtbot, monkeyp
     class Job:
         def cancel(self):
             pass
-        def run(self, document):
+        def run(self, document, *, deviation=2.):
             raise CadPreviewError('missing_cad')
     monkeypatch.setattr(module, 'WeldmentCadJob', Job)
     c = AppController()
@@ -92,7 +92,7 @@ def test_closing_main_window_cancels_editor_process(qtbot, tmp_path, monkeypatch
             jobs.append(self)
         def cancel(self):
             self.cancelled.set()
-        def run(self, document):
+        def run(self, document, *, deviation=2.):
             assert self.cancelled.wait(10)
             raise CadPreviewError('cancelled')
     monkeypatch.setattr(module, 'WeldmentCadJob', Job)

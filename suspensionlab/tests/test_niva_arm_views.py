@@ -67,3 +67,13 @@ def test_rejects_wrong_layout_type_and_degenerate_points():
     p.x, p.y, p.z = q.as_tuple()
     with pytest.raises(ValueError):
         make_niva_arm_view(project, 'rear_upper_left')
+
+
+def test_schematic_round_surfaces_use_more_segments():
+    from suspensionlab.core.niva_arm_mesh import _surface
+
+    tris = np.asarray(_surface(np.zeros(3), np.array([0., 0., 1.]), [(0, 10), (100, 10)]))
+    # The indicative cylinder uses 48 azimuth segments, not the previous 16.
+    assert len(tris) == 96
+    radial = np.linalg.norm(tris[:, :, :2], axis=2)
+    assert np.allclose(radial, 10)

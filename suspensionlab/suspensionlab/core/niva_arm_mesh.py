@@ -18,7 +18,7 @@ def _basis(axis: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
 
 
 def _surface(center: np.ndarray, axis: np.ndarray, profile: list[tuple[float, float]],
-             *, sides: int = 16) -> list[np.ndarray]:
+             *, sides: int = 48) -> list[np.ndarray]:
     """Поверхность вращения профиля (высота, радиус), без булевых операций."""
     direction, u, v = _basis(axis)
     rings = []
@@ -55,7 +55,7 @@ def schematic_mesh(view: ArmView) -> CadMesh:
             axis = np.array([0., 0., 1.])
             triangles.extend(_surface(p, axis, [(-6, 8.3), (-6, 15), (6, 15), (6, 8.3),
                                                 (3, 9.84), (0, 10.3), (-3, 9.84), (-6, 8.3)]))
-            profile = [(10*math.cos(math.pi*i/12), 10*math.sin(math.pi*i/12)) for i in range(13)]
+            profile = [(10*math.cos(math.pi*i/24), 10*math.sin(math.pi*i/24)) for i in range(25)]
             triangles.extend(_surface(p, axis, profile))
             triangles.extend(_surface(p, axis, [(8, 0), (8, 4), (25, 4), (25, 0)]))
         else:

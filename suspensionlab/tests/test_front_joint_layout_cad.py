@@ -78,3 +78,18 @@ def test_same_pair_layout_joint_centers_are_independent_conditional_placements()
         assert box.CornerMax().Z() == pytest.approx(points[2][2] + DEFAULTS['ball']['pin_length_mm'], abs=1e-4)
     mesh = WeldmentCadJob().run(doc)
     assert len(mesh.triangles) and mesh.skipped_faces == mesh.recovered_faces == 0
+
+
+def test_fine_mesh_increases_curved_surface_detail_without_changing_document():
+    from copy import deepcopy
+
+    p = Project.create_default()
+    pair = make_front_pair_snapshot(make_front_tube_arm(p, 'front_upper_left', 10, 2))
+    doc = make_front_joint_layout(pair, make_joint_concept('ball', DEFAULTS['ball']),
+                                  make_joint_concept('bushing', DEFAULTS['bushing']))
+    before = deepcopy(doc)
+    coarse = WeldmentCadJob().run(doc, deviation=2.)
+    fine = WeldmentCadJob().run(doc, deviation=0.2)
+    assert len(fine.triangles) > len(coarse.triangles)
+    assert len(fine.triangles) < 100_000 and fine.skipped_faces == 0
+    assert doc == before

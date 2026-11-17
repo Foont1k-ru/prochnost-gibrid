@@ -36,7 +36,7 @@ def test_old_job_result_discarded_and_latest_appears(qtbot, tmp_path, monkeypatc
             jobs.append(self)
         def cancel(self):
             self.cancelled = True  # simulate a late result even after cancellation
-        def run(self, document):
+        def run(self, document, *, deviation=2.):
             self.started.set()
             assert self.release.wait(10)
             x = document['parts'][0]['geometry']['source']['coordinates_mm'][2][0]
@@ -72,7 +72,7 @@ def test_failure_and_unsignalled_change_never_show_old_3d(qtbot, tmp_path, monke
             jobs.append(self)
         def cancel(self):
             self.release.set()
-        def run(self, document):
+        def run(self, document, *, deviation=2.):
             self.release.wait(10)
             if len(jobs) == 1:
                 raise CadPreviewError('missing_cad')
@@ -106,7 +106,7 @@ def test_close_cancels_inflight_job(qtbot, tmp_path, monkeypatch):
             jobs.append(self)
         def cancel(self):
             self.done.set()
-        def run(self, document):
+        def run(self, document, *, deviation=2.):
             assert self.done.wait(10)
             raise CadPreviewError('cancelled')
     monkeypatch.setattr(module, 'WeldmentCadJob', Job)
@@ -118,3 +118,39 @@ def test_close_cancels_inflight_job(qtbot, tmp_path, monkeypatch):
     assert worker is not None
     d.close()
     assert jobs[0].done.is_set() and not worker.isRunning()
+
+
+def test_quality_change_cancels_old_job_and_rebuilds(qtbot, tmp_path, monkeypatch):
+    from suspensionlab.ui import weldment_3d as module
+
+    jobs = []
+    class Job:
+        def __init__(self):
+            self.release = threading.Event()
+            self.started = threading.Event()
+            self.cancelled = False
+            self.deviation = None
+            jobs.append(self)
+        def cancel(self):
+            self.cancelled = True
+        def run(self, document, *, deviation=2.):
+            self.deviation = deviation
+            self.started.set()
+            assert self.release.wait(10)
+            x = deviation
+            return CadMesh(np.array([[[x, 0, 0], [x, 1, 0], [x, 0, 1]]]), 1)
+    monkeypatch.setattr(module, 'WeldmentCadJob', Job)
+    _, d = setup_dialog(qtbot, tmp_path, monkeypatch)
+    panel = d._three_d
+    panel._enable.setChecked(True)
+    qtbot.waitUntil(lambda: len(jobs) == 1 and jobs[0].started.is_set(), timeout=5000)
+    assert jobs[0].deviation == 0.2 and not d._save.isEnabled()
+    panel._quality.setCurrentIndex(1)
+    assert jobs[0].cancelled and panel._view.mesh is None and not d._save.isEnabled()
+    jobs[0].release.set()
+    qtbot.waitUntil(lambda: len(jobs) == 2 and jobs[1].started.is_set(), timeout=5000)
+    assert jobs[1].deviation == 2.0 and panel._view.mesh is None
+    jobs[1].release.set()
+    qtbot.waitUntil(lambda: panel._view.mesh is not None, timeout=5000)
+    assert panel._view.mesh.triangles[0, 0, 0] == 2.0 and d._save.isEnabled()
+    assert d.shutdown()

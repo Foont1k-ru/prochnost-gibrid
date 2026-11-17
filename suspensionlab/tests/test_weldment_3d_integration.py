@@ -627,3 +627,23 @@ def test_front_same_layout_3d_save_and_reopen(qtbot, tmp_path, monkeypatch):
     qtbot.waitUntil(lambda: d._save_layout.isEnabled(), timeout=45000)
     assert d.shutdown()
     d.close()
+
+
+def test_quality_selection_real_cad_rebuilds_preview(qtbot):
+    from suspensionlab.model.joint_concept import DEFAULTS, make_joint_concept
+    from suspensionlab.ui.weldment_3d import Weldment3D
+
+    doc = make_joint_concept('bushing', DEFAULTS['bushing'])
+    panel = Weldment3D(joint=True)
+    qtbot.addWidget(panel)
+    panel.set_document(doc)
+    panel._quality.setCurrentIndex(1)
+    panel._enable.setChecked(True)
+    qtbot.waitUntil(lambda: panel._view.mesh is not None and panel.can_save(), timeout=45000)
+    coarse_count = len(panel._view.mesh.triangles)
+    panel._quality.setCurrentIndex(0)
+    assert panel._view.mesh is None and not panel.can_save()
+    qtbot.waitUntil(lambda: panel._view.mesh is not None and panel.can_save(), timeout=45000)
+    assert len(panel._view.mesh.triangles) > coarse_count
+    assert panel._document == doc and panel.shutdown()
+    panel.close()
