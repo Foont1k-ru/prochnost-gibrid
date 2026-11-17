@@ -112,7 +112,7 @@ def autosave_write_lock(path: Path) -> Iterator[None]:
             else:
                 import fcntl
 
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)  # type: ignore[attr-defined]
             locked = True
         except OSError as error:
             if error.errno in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
@@ -130,7 +130,7 @@ def autosave_write_lock(path: Path) -> Iterator[None]:
                 else:
                     import fcntl
 
-                    fcntl.flock(fd, fcntl.LOCK_UN)
+                    fcntl.flock(fd, fcntl.LOCK_UN)  # type: ignore[attr-defined]
         finally:
             os.close(fd)
 
