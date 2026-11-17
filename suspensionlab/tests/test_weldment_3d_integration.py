@@ -84,3 +84,49 @@ def test_editor_builds_live_3d_without_first_saving_file(qtbot, tmp_path, monkey
     dialog._wall.setValue(20.)
     assert panel._view.mesh is None and not dialog._save_assembly.isEnabled()
     dialog.close()
+
+
+def test_bent_tube_editor_and_reopened_assembly_use_actual_cad(qtbot, tmp_path, monkeypatch):
+    from suspensionlab.model.kim_format import read_document
+    from suspensionlab.ui.arm_concept_dialog import ArmConceptDialog
+
+    c = AppController()
+    for code, xyz in {
+        'lca_f_in': (0., 0., 0.), 'lca_r_in': (0., -100., 0.), 'lbj': (100., 100., 0.),
+    }.items():
+        point = c.project.front.hardpoints[code]
+        point.x, point.y, point.z = xyz
+    d = ArmConceptDialog(c)
+    qtbot.addWidget(d)
+    d.show()
+    for field, value in zip(d._bend_fields['front'], ('100', '0', '0', '20'), strict=True):
+        field.setText(value)
+    d._bend_checks['front'].setChecked(True)
+    d._three_d._enable.setChecked(True)
+    qtbot.waitUntil(lambda: d._three_d._view.mesh is not None, timeout=45000)
+    old = d._three_d._view.mesh
+    assert old is not None and d._save_assembly.isEnabled()
+    path = tmp_path / 'bent.kima'
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(path), ''))
+    d._save_weldment_snapshot()
+    doc = read_document(path, 'assembly')
+    assert doc['version'] == '0.3' and doc['parts'][0]['geometry']['bend_radius_mm'] == 20
+    viewer = WeldmentDialog(c)
+    qtbot.addWidget(viewer)
+    viewer.show()
+    monkeypatch.setattr(QFileDialog, 'getOpenFileName', lambda *args: (str(path), ''))
+    viewer._open_file()
+    viewer._start_preview()
+    viewer._three_d._enable.setChecked(True)
+    qtbot.waitUntil(lambda: viewer._three_d._view.mesh is not None, timeout=45000)
+    outer = c.project.front.hardpoints['lbj']
+    c.move_point(outer, (100, 150, 0))
+    assert d._three_d._view.mesh is None and viewer._three_d._view.mesh is None
+    qtbot.waitUntil(lambda: d._three_d._view.mesh is not None and viewer._three_d._view.mesh is not None,
+                    timeout=45000)
+    assert d._three_d._view.mesh.triangles[:, :, 1].max() > old.triangles[:, :, 1].max() + 40
+    c.move_point(outer, (100, 10, 0))
+    assert d._three_d._view.mesh is None and viewer._three_d._view.mesh is None
+    assert not d._save_assembly.isEnabled() and not viewer._save.isEnabled()
+    d.close()
+    viewer.close()

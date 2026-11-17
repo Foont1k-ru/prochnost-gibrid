@@ -21,6 +21,7 @@ from .project_io import ProjectIOError, _read_project_bytes, _unique_object, pro
 from .project_limits import MAX_PROJECT_BYTES
 
 VERSION = "0.1"
+BENT_PART_VERSION = "0.2"
 MAX_PARTS = 256
 MAX_INSTANCES = 1024
 MAX_MM = 1_000_000.0  # защитная граница прототипа, не инженерный допуск
@@ -66,30 +67,34 @@ def _number(value: Any, *, positive: bool = False) -> float:
 
 def _part(data: Any) -> None:
     doc = _keys(data, {"format", "version", "id", "name", "units", "geometry"})
-    if doc["format"] != "kim-part" or doc["version"] != VERSION or doc["units"] != "mm":
+    if doc["format"] != "kim-part" or doc["version"] not in (VERSION, BENT_PART_VERSION) or doc["units"] != "mm":
         raise KimFormatError("unsupported part format, version or units")
     _id(doc["id"])
     _name(doc["name"])
     shape = doc["geometry"]
     if not isinstance(shape, dict):
         raise KimFormatError("invalid geometry")
+    if (shape.get("kind") == "prototype_arm_bent_tube") != (doc["version"] == BENT_PART_VERSION):
+        raise KimFormatError("part version does not match geometry")
     if shape.get("kind") == "prototype_cylinder":
         _keys(shape, {"kind", "radius_mm", "length_mm"})
         _number(shape["radius_mm"], positive=True)
         _number(shape["length_mm"], positive=True)
-    elif shape.get("kind") in ("prototype_lower_arm_rods", "prototype_lower_arm_tubes", "prototype_arm_tube"):
+    elif shape.get("kind") in ("prototype_lower_arm_rods", "prototype_lower_arm_tubes", "prototype_arm_tube", "prototype_arm_bent_tube"):
         keys = {"kind", "radius_mm", "source"}
-        if shape["kind"] in ("prototype_lower_arm_tubes", "prototype_arm_tube"):
+        if shape["kind"] in ("prototype_lower_arm_tubes", "prototype_arm_tube", "prototype_arm_bent_tube"):
             keys.add("wall_mm")
-        if shape["kind"] == "prototype_arm_tube":
+        if shape["kind"] in ("prototype_arm_tube", "prototype_arm_bent_tube"):
             keys.add("leg")
+        if shape["kind"] == "prototype_arm_bent_tube":
+            keys.update({"bend_vertex_mm", "bend_radius_mm"})
         _keys(shape, keys)
         radius = _number(shape["radius_mm"], positive=True)
         if radius < MIN_PROTOTYPE_LENGTH_MM:
             raise KimFormatError("radius too small for prototype")
-        if shape["kind"] == "prototype_arm_tube" and shape["leg"] not in ("front", "rear"):
+        if shape["kind"] in ("prototype_arm_tube", "prototype_arm_bent_tube") and shape["leg"] not in ("front", "rear"):
             raise KimFormatError("unsupported tube leg")
-        if shape["kind"] in ("prototype_lower_arm_tubes", "prototype_arm_tube"):
+        if shape["kind"] in ("prototype_lower_arm_tubes", "prototype_arm_tube", "prototype_arm_bent_tube"):
             wall = _number(shape["wall_mm"], positive=True)
             if wall < MIN_PROTOTYPE_LENGTH_MM or radius - wall < MIN_PROTOTYPE_LENGTH_MM:
                 raise KimFormatError("invalid tube wall or inner radius")
@@ -110,6 +115,16 @@ def _part(data: Any) -> None:
         if any(math.dist(points[i], points[j]) < MIN_PROTOTYPE_LENGTH_MM
                for i, j in ((0, 1), (0, 2), (1, 2))):
             raise KimFormatError("coincident arm points")
+        if shape["kind"] == "prototype_arm_bent_tube":
+            if not isinstance(shape["bend_vertex_mm"], list):
+                raise KimFormatError("bend vertex must be a coordinate list")
+            from .bent_tube import BentTubeError, make_bend_path
+
+            try:
+                make_bend_path(points[0 if shape["leg"] == "front" else 1], shape["bend_vertex_mm"],
+                               points[2], shape["bend_radius_mm"], shape["radius_mm"])
+            except BentTubeError as error:
+                raise KimFormatError("invalid bent tube path") from error
     else:
         raise KimFormatError("unsupported geometry")
 
@@ -132,7 +147,7 @@ def _scheme(data: Any) -> None:
 
 
 def _assembly(data: Any) -> None:
-    if isinstance(data, dict) and data.get("version") == "0.2":
+    if isinstance(data, dict) and data.get("version") in ("0.2", "0.3"):
         from .welded_arm import validate_welded_arm
 
         validate_welded_arm(data)
@@ -241,7 +256,7 @@ def compare_lower_arm_source(part: dict[str, Any], project: Project) -> bool:
     """Сравнить тип и три точки, не другие параметры, и ничего не обновлять."""
     _part(part)
     geometry = part["geometry"]
-    if geometry["kind"] not in ("prototype_lower_arm_rods", "prototype_lower_arm_tubes", "prototype_arm_tube"):
+    if geometry["kind"] not in ("prototype_lower_arm_rods", "prototype_lower_arm_tubes", "prototype_arm_tube", "prototype_arm_bent_tube"):
         raise KimFormatError("not a lower arm prototype")
     try:
         current = _lower_arm_source(project)
@@ -275,7 +290,7 @@ def inspect_assembly_arm_sources(document: dict[str, Any]) -> dict[str, str]:
     scheme = Project.from_dict(document["scheme"]) if document["scheme"] is not None else None
     result: dict[str, str] = {}
     for part in document["parts"]:
-        if part["geometry"]["kind"] not in ("prototype_lower_arm_rods", "prototype_lower_arm_tubes", "prototype_arm_tube"):
+        if part["geometry"]["kind"] not in ("prototype_lower_arm_rods", "prototype_lower_arm_tubes", "prototype_arm_tube", "prototype_arm_bent_tube"):
             continue
         if scheme is None:
             result[part["id"]] = "no_scheme"

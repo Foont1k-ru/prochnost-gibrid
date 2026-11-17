@@ -189,3 +189,49 @@ def test_isolated_tube_mesh_rebuild_follows_scheme_and_rejects_stale(tmp_path):
     cancelled.cancel()
     with pytest.raises(CadPreviewError, match='cancelled'):
         cancelled.run(updated)
+
+
+def test_bent_tube_is_hollow_valid_and_has_expected_centerline_volume():
+    from suspensionlab.core.cad_weldment_job import WeldmentCadJob
+    from suspensionlab.model.entities import Project
+    from suspensionlab.model.welded_arm import make_welded_arm, rebuild_welded_arm
+
+    project = Project.create_default()
+    for code, position in {
+        'lca_f_in': (0., 0., 0.), 'lca_r_in': (0., -100., 0.), 'lbj': (100., 100., 0.),
+    }.items():
+        point = project.front.hardpoints[code]
+        point.x, point.y, point.z = position
+    doc = make_welded_arm(project, 10, 2, 'unknown', bends={
+        'front': {'vertex_mm': [100., 0., 0.], 'radius_mm': 20.},
+    })
+    shape = build_part(doc['parts'][0])
+    assert BRepCheck_Analyzer(shape).IsValid()
+    expected = math.pi * (10**2 - 8**2) * (160 + 10 * math.pi)
+    assert volume(shape) == pytest.approx(expected, rel=1e-7)
+    mesh = WeldmentCadJob().run(doc)
+    assert len(mesh.triangles) > 0 and mesh.skipped_faces == mesh.recovered_faces == 0
+    project.front.hardpoints['lbj'].y = 150
+    updated = rebuild_welded_arm(doc, project)
+    assert volume(build_part(updated['parts'][0])) == pytest.approx(expected + math.pi * 36 * 50, rel=1e-7)
+    assert WeldmentCadJob().run(updated).triangles[:, :, 1].max() > mesh.triangles[:, :, 1].max() + 40
+
+
+def test_bent_tube_in_spatial_plane_is_valid_and_incomplete_assembly_refused():
+    from suspensionlab.model.entities import Project
+    from suspensionlab.model.welded_arm import make_welded_arm
+
+    p = Project.create_default()
+    for code, xyz in {
+        'lca_f_in': (4., 5., 6.), 'lca_r_in': (0., -20., 0.), 'lbj': (4., 105., 106.),
+    }.items():
+        pt = p.front.hardpoints[code]
+        pt.x, pt.y, pt.z = xyz
+    doc = make_welded_arm(p, 10, 2, 'unknown', bends={
+        'front': {'vertex_mm': [4, 105, 6], 'radius_mm': 20},
+    })
+    shape = build_part(doc['parts'][0])
+    assert BRepCheck_Analyzer(shape).IsValid()
+    assert volume(shape) == pytest.approx(math.pi * 36 * (160 + 10 * math.pi), rel=1e-7)
+    with pytest.raises(ValueError):
+        build_assembly(doc)

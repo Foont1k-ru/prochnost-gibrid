@@ -6,6 +6,47 @@ from typing import Any
 from ..model.kim_format import _assembly, _part
 
 
+def _build_bent_tube(geometry: dict[str, Any]) -> Any:
+    """Круглое полое сечение вдоль двух прямых и касательной дуги."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakeWire
+    from OCP.BRepCheck import BRepCheck_Analyzer
+    from OCP.BRepOffsetAPI import BRepOffsetAPI_MakePipe
+    from OCP.GC import GC_MakeArcOfCircle
+    from OCP.gp import gp_Ax2, gp_Circ, gp_Dir, gp_Pnt
+    from OCP.TopoDS import TopoDS
+
+    from ..model.bent_tube import make_bend_path
+
+    points = geometry["source"]["coordinates_mm"]
+    path = make_bend_path(points[0 if geometry["leg"] == "front" else 1], geometry["bend_vertex_mm"],
+                          points[2], geometry["bend_radius_mm"], geometry["radius_mm"])
+    start, t1, middle, t2, end = (gp_Pnt(*p) for p in
+                                   (path.start, path.tangent_start, path.midpoint, path.tangent_end, path.end))
+    arc = GC_MakeArcOfCircle(t1, middle, t2)
+    if not arc.IsDone():
+        raise RuntimeError("could not construct bend arc")
+    wire = BRepBuilderAPI_MakeWire()
+    wire.Add(BRepBuilderAPI_MakeEdge(start, t1).Edge())
+    wire.Add(BRepBuilderAPI_MakeEdge(arc.Value()).Edge())
+    wire.Add(BRepBuilderAPI_MakeEdge(t2, end).Edge())
+    if not wire.IsDone():
+        raise RuntimeError("could not construct bend path")
+    direction = [path.tangent_start[i] - path.start[i] for i in range(3)]
+    axis = gp_Ax2(start, gp_Dir(*direction))
+    outer = float(geometry["radius_mm"])
+    inner = outer - float(geometry["wall_mm"])
+    def circle(radius: float) -> Any:
+        return BRepBuilderAPI_MakeWire(BRepBuilderAPI_MakeEdge(gp_Circ(axis, radius)).Edge()).Wire()
+    face = BRepBuilderAPI_MakeFace(circle(outer), True)
+    face.Add(TopoDS.Wire(circle(inner).Reversed()))
+    if not face.IsDone():
+        raise RuntimeError("could not construct hollow section")
+    sweep = BRepOffsetAPI_MakePipe(wire.Wire(), face.Face())
+    if not sweep.IsDone() or sweep.Shape().IsNull() or not BRepCheck_Analyzer(sweep.Shape()).IsValid():
+        raise RuntimeError("could not build bent tube")
+    return sweep.Shape()
+
+
 def build_part(document: dict[str, Any]) -> Any:
     """Перестраивает только экспериментальную геометрию, не реальную деталь."""
     _part(document)
@@ -16,6 +57,8 @@ def build_part(document: dict[str, Any]) -> Any:
     from OCP.TopoDS import TopoDS_Compound
 
     geometry = document["geometry"]
+    if geometry["kind"] == "prototype_arm_bent_tube":
+        return _build_bent_tube(geometry)
     if geometry["kind"] == "prototype_cylinder":
         return BRepPrimAPI_MakeCylinder(float(geometry["radius_mm"]), float(geometry["length_mm"])).Shape()
     import math
@@ -47,7 +90,7 @@ def build_part(document: dict[str, Any]) -> Any:
 def build_assembly(document: dict[str, Any]) -> Any:
     """Создаёт соединение перенесённых экземпляров, не связывая их со схемой."""
     _assembly(document)
-    if document["version"] == "0.2":
+    if document["version"] in ("0.2", "0.3"):
         raise ValueError("incomplete weldment: use the explicitly partial tube preview")
     from OCP.BRep import BRep_Builder
     from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform

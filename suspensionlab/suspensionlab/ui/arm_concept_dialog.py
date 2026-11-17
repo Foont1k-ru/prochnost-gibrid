@@ -7,15 +7,19 @@ from typing import Any, cast
 from PySide6.QtCore import QPointF, Qt
 from PySide6.QtGui import QColor, QPainter, QPaintEvent, QPen, QPolygonF
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
+    QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -24,7 +28,7 @@ from PySide6.QtWidgets import (
 from ..i18n import tr
 from ..model.arm_concept import ArmConcept, ArmStyle, make_arm_concept
 from ..model.kim_format import KimFormatError, make_lower_arm_tube_prototype, write_document
-from ..model.welded_arm import make_welded_arm
+from ..model.welded_arm import make_welded_arm, weldment_centerlines
 from .controller import AppController
 from .weldment_3d import Weldment3D
 
@@ -35,10 +39,13 @@ class ArmConceptCanvas(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.concept: ArmConcept | None = None
+        self.paths: tuple[tuple[tuple[float, float, float], ...], ...] | None = None
         self.setMinimumSize(420, 250)
 
-    def set_concept(self, concept: ArmConcept | None) -> None:
+    def set_concept(self, concept: ArmConcept | None,
+                    paths: tuple[tuple[tuple[float, float, float], ...], ...] | None = None) -> None:
         self.concept = concept
+        self.paths = paths if concept is not None else None
         self.update()
 
     def paintEvent(self, event: QPaintEvent) -> None:  # noqa: N802
@@ -50,13 +57,18 @@ class ArmConceptCanvas(QWidget):
             painter.drawText(self.rect(), int(Qt.AlignmentFlag.AlignCenter), tr("arm_concept.no_preview"))
             return
         points = self.concept.points
-        xs = [p[0] for p in points]
-        ys = [p[1] for p in points]
+        paths = self.paths if self.paths is not None and self.concept.style == "tube" else (
+            (points[0], points[2]), (points[1], points[2]))
+        extent = [*points, *(point for path in paths for point in path)]
+        xs = [p[0] for p in extent]
+        ys = [p[1] for p in extent]
         span_x, span_y = max(max(xs) - min(xs), 1.), max(max(ys) - min(ys), 1.)
         scale = min(max(self.width() - 110., 1.) / span_x, max(self.height() - 90., 1.) / span_y)
         cx, cy = (max(xs) + min(xs)) / 2, (max(ys) + min(ys)) / 2
-        mapped = [QPointF(self.width() / 2 + (p[0] - cx) * scale,
-                          self.height() / 2 - (p[1] - cy) * scale) for p in points]
+        def project(point: tuple[float, float, float]) -> QPointF:
+            return QPointF(self.width() / 2 + (point[0] - cx) * scale,
+                           self.height() / 2 - (point[1] - cy) * scale)
+        mapped = [project(p) for p in points]
         if self.concept.style == "sheet":
             painter.setPen(QPen(QColor("#387fa3"), 2))
             painter.setBrush(QColor(71, 150, 187, 90))
@@ -65,8 +77,8 @@ class ArmConceptCanvas(QWidget):
             # Deliberately capped for readability: not a true projected tube.
             width = max(2., min(24., 2 * self.concept.radius_mm * scale))
             painter.setPen(QPen(QColor("#387fa3"), width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-            painter.drawLine(mapped[0], mapped[2])
-            painter.drawLine(mapped[1], mapped[2])
+            for path in paths:
+                painter.drawPolyline(QPolygonF([project(point) for point in path]))
         painter.setPen(self.palette().text().color())
         painter.setBrush(self.palette().text())
         for point, label in zip(mapped, (tr("arm_concept.front_point"), tr("arm_concept.rear_point"),
@@ -88,7 +100,13 @@ class ArmConceptDialog(QDialog):
         self.setWindowTitle(tr("arm_concept.title"))
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.resize(680, 760)
-        layout = QVBoxLayout(self)
+        root = QVBoxLayout(self)
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        root.addWidget(scroll)
+        content = QWidget(scroll)
+        scroll.setWidget(content)
+        layout = QVBoxLayout(content)
         warning = QLabel(tr("arm_concept.warning"), self)
         warning.setWordWrap(True)
         layout.addWidget(warning)
@@ -108,7 +126,27 @@ class ArmConceptDialog(QDialog):
         self._damper.addItem(tr("arm_concept.damper_required"), "required")
         self._damper.addItem(tr("arm_concept.damper_not_required"), "not_required")
         form.addRow(tr("arm_concept.damper_mount"), self._damper)
+        self._bend_checks: dict[str, QCheckBox] = {}
+        self._bend_fields: dict[str, list[QLineEdit]] = {}
+        for leg in ("front", "rear"):
+            row = QHBoxLayout()
+            check = QCheckBox(tr(f"arm_concept.bend_{leg}"), self)
+            row.addWidget(check)
+            fields = []
+            for key in ("x", "y", "z", "r"):
+                field = QLineEdit(self)
+                field.setPlaceholderText(tr(f"arm_concept.bend_{key}"))
+                field.setAccessibleName(tr(f"arm_concept.bend_{leg}") + " " + tr(f"arm_concept.bend_{key}"))
+                field.setMaxLength(24)
+                row.addWidget(field)
+                fields.append(field)
+            self._bend_checks[leg] = check
+            self._bend_fields[leg] = fields
+            form.addRow(row)
         layout.addLayout(form)
+        bend_note = QLabel(tr("arm_concept.bend_note"), self)
+        bend_note.setWordWrap(True)
+        layout.addWidget(bend_note)
         self._status = QLabel(self)
         self._status.setWordWrap(True)
         self._status.setTextFormat(Qt.TextFormat.PlainText)
@@ -143,6 +181,11 @@ class ArmConceptDialog(QDialog):
         self._damper.currentIndexChanged.connect(self._refresh)
         for spin in (self._radius, self._wall, self._sheet):
             spin.valueChanged.connect(self._refresh)
+        for check in self._bend_checks.values():
+            check.toggled.connect(self._refresh)
+        for fields in self._bend_fields.values():
+            for field in fields:
+                field.textChanged.connect(self._refresh)
         controller.modelChanged.connect(self._refresh)
         controller.projectReplaced.connect(self._refresh)
         self._refresh()
@@ -167,6 +210,11 @@ class ArmConceptDialog(QDialog):
         self._wall.setEnabled(style == "tube")
         self._sheet.setEnabled(style == "sheet")
         self._damper.setEnabled(style == "tube")
+        for leg, check in self._bend_checks.items():
+            check.setEnabled(style == "tube")
+            for field in self._bend_fields[leg]:
+                field.setEnabled(style == "tube" and check.isChecked())
+        has_bend = style == "tube" and any(check.isChecked() for check in self._bend_checks.values())
         try:
             concept = make_arm_concept(self.controller.project, style, self._radius.value(),
                                        self._wall.value(), self._sheet.value())
@@ -178,20 +226,34 @@ class ArmConceptDialog(QDialog):
             self._save_tube.setEnabled(False)
             self._save_assembly.setEnabled(False)
             return
-        self._save_tube.setEnabled(style == "tube")
+        self._save_tube.setEnabled(style == "tube" and not has_bend)
         self.concept = concept
         if style == "tube":
             try:
                 self._candidate = make_welded_arm(self.controller.project, concept.radius_mm,
-                                                  concept.wall_mm, str(self._damper.currentData()))
+                                                  concept.wall_mm, str(self._damper.currentData()), bends=self._read_bends())
             except (KimFormatError, TypeError, ValueError, OverflowError):
-                self._snapshot_status.setText(tr("arm_concept.snapshot_invalid"))
+                self._snapshot_status.setText(tr("arm_concept.bend_invalid" if has_bend else "arm_concept.snapshot_invalid"))
         self._three_d.set_document(self._candidate)
         self._update_save()
-        self._canvas.set_concept(concept)
+        paths = weldment_centerlines(self._candidate) if self._candidate is not None and style == "tube" else None
+        # A requested but invalid bend must not fall back to the old straight lines.
+        self._canvas.set_concept(None if has_bend and self._candidate is None else concept, paths)
         self._status.setText(tr("arm_concept.current", project=self.controller.project.meta.name or tr("arm_concept.unnamed")))
         self._summary.setText(tr("arm_concept.summary", a=f"{concept.lengths_mm[0]:.2f}",
                                  b=f"{concept.lengths_mm[1]:.2f}", area=f"{concept.triangle_area_mm2:.2f}"))
+
+    def _read_bends(self) -> dict[str, dict[str, Any]]:
+        result: dict[str, dict[str, Any]] = {}
+        for leg, check in self._bend_checks.items():
+            if not check.isChecked():
+                continue
+            try:
+                numbers = [float(field.text().strip().replace(",", ".")) for field in self._bend_fields[leg]]
+            except ValueError as error:
+                raise KimFormatError("all bend inputs are required") from error
+            result[leg] = {"vertex_mm": numbers[:3], "radius_mm": numbers[3]}
+        return result
 
     def _candidate_is_current(self, candidate: dict[str, Any]) -> bool:
         if self._candidate is None or candidate != self._candidate or self._style.currentData() != "tube":
@@ -200,7 +262,7 @@ class ArmConceptDialog(QDialog):
             concept = make_arm_concept(self.controller.project, "tube", self._radius.value(),
                                        self._wall.value(), self._sheet.value())
             current = make_welded_arm(self.controller.project, concept.radius_mm, concept.wall_mm,
-                                      str(self._damper.currentData()))
+                                      str(self._damper.currentData()), bends=self._read_bends())
             return current == candidate
         except (KimFormatError, TypeError, ValueError, OverflowError):
             return False
@@ -232,6 +294,8 @@ class ArmConceptDialog(QDialog):
     def _save_snapshot(self, kind: str) -> None:
         if self.concept is None or self.concept.style != "tube":
             return
+        if kind == "part" and any(check.isChecked() for check in self._bend_checks.values()):
+            return  # old two-straight-tube format cannot represent bends
         is_assembly = kind == "assembly"
         candidate = self._candidate if is_assembly else None
         if is_assembly and (candidate is None or not self._three_d.can_save()):

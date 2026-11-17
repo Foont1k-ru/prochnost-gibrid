@@ -163,6 +163,16 @@ def run_cad_check() -> None:
         assert second is not None
         _require(np.ptp(second.triangles[:, :, 2]) > np.ptp(first.triangles[:, :, 2]) + 10,
                  "3D труб не перестроен по новому размеру")
+        for field, value in zip(dialog._bend_fields["front"], ("100", "0", "0", "30"), strict=True):
+            field.setText(value)
+        dialog._bend_checks["front"].setChecked(True)
+        _require(panel._view.mesh is None and not dialog._save_assembly.isEnabled(),
+                 "Старая сетка не очищена при задании изгиба")
+        curved = wait_for_mesh()
+        _require(curved is not None and dialog._candidate is not None and
+                 dialog._candidate["version"] == "0.3" and
+                 dialog._candidate["parts"][0]["geometry"]["kind"] == "prototype_arm_bent_tube",
+                 "В собранном приложении недоступен гнутый 3D-черновик")
     finally:
         dialog.close()
         app.processEvents()

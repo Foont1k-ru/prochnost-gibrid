@@ -23,7 +23,12 @@ from ..i18n import tr
 from ..model.arm_concept import make_arm_concept
 from ..model.autosave_guard import same_project_file
 from ..model.kim_format import KimFormatError, read_document, write_document
-from ..model.welded_arm import preview_rebuild_welded_arm, validate_welded_arm, weldment_source_matches
+from ..model.welded_arm import (
+    preview_rebuild_welded_arm,
+    validate_welded_arm,
+    weldment_centerlines,
+    weldment_source_matches,
+)
 from .arm_concept_dialog import ArmConceptCanvas
 from .controller import AppController
 from .weldment_3d import Weldment3D
@@ -111,7 +116,7 @@ class WeldmentDialog(QDialog):
             source_path = Path(selected).absolute()
             original_path = source_path.resolve()
             doc = read_document(source_path, "assembly")
-            validate_welded_arm(doc)  # only the supported 0.2 welded-arm graph
+            validate_welded_arm(doc)  # only the supported welded-arm graph
             matches = weldment_source_matches(doc)
         except (KimFormatError, OSError, ValueError, RuntimeError):
             self._status.setText(tr("weldment.open_failed"))
@@ -166,7 +171,7 @@ class WeldmentDialog(QDialog):
             self._status.setText(tr("weldment.invalid"))
             return
         self._candidate = candidate
-        self._canvas.set_concept(concept)
+        self._canvas.set_concept(concept, weldment_centerlines(candidate))
         self._three_d.set_document(candidate)
         self._update_save()
         self._status.setText(tr("weldment.match" if matches else "weldment.different"))
