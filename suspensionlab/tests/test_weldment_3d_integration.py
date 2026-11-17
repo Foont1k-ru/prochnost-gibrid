@@ -41,3 +41,46 @@ def test_actual_cad_process_and_qt_follow_changes(qtbot, tmp_path, monkeypatch):
     c.move_point(first, point.as_tuple())
     assert panel._view.mesh is None and not dialog._save.isEnabled()
     dialog.close()
+
+
+def test_editor_builds_live_3d_without_first_saving_file(qtbot, tmp_path, monkeypatch):
+    import numpy as np
+
+    from suspensionlab.model.kim_format import read_document
+    from suspensionlab.ui.arm_concept_dialog import ArmConceptDialog
+
+    c = AppController()
+    for code, xyz in {
+        'lca_f_in': (0., 0., 0.), 'lca_r_in': (100., 0., 0.), 'lbj': (0., 100., 0.),
+    }.items():
+        point = c.project.front.hardpoints[code]
+        point.x, point.y, point.z = xyz
+    before = c.project.to_dict()
+    dialog = ArmConceptDialog(c)
+    qtbot.addWidget(dialog)
+    dialog.show()
+    panel = dialog._three_d
+    panel._enable.setChecked(True)
+    assert panel._view.mesh is None and not dialog._save_assembly.isEnabled()
+    qtbot.waitUntil(lambda: panel._view.mesh is not None, timeout=45000)
+    old = panel._view.mesh
+    assert old is not None and dialog._save_assembly.isEnabled()
+    dialog._radius.setValue(20.)
+    assert panel._view.mesh is None and not dialog._save_assembly.isEnabled()
+    qtbot.waitUntil(lambda: panel._view.mesh is not None, timeout=45000)
+    new = panel._view.mesh
+    assert new is not None and np.ptp(new.triangles[:, :, 2]) > np.ptp(old.triangles[:, :, 2]) + 10
+    assert c.project.to_dict() == before and not c.dirty and list(tmp_path.iterdir()) == []
+    point = c.project.front.hardpoints['lbj']
+    c.move_point(point, (point.x, point.y + 100, point.z))
+    assert panel._view.mesh is None and not dialog._save_assembly.isEnabled()
+    qtbot.waitUntil(lambda: panel._view.mesh is not None, timeout=45000)
+    target = tmp_path / 'result.kima'
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(target), ''))
+    dialog._save_weldment_snapshot()
+    doc = read_document(target, 'assembly')
+    assert doc['parts'][0]['geometry']['radius_mm'] == 20
+    assert doc['parts'][0]['geometry']['source']['coordinates_mm'][2][1] == 200
+    dialog._wall.setValue(20.)
+    assert panel._view.mesh is None and not dialog._save_assembly.isEnabled()
+    dialog.close()

@@ -240,3 +240,48 @@ def test_weldment_save_refuses_hardlinks_to_project_and_autosave(qtbot, tmp_path
     os.link(backup, alias)
     dialog._save_weldment_snapshot()
     assert len(warnings) == 2 and backup.read_bytes() == old_backup and alias.read_bytes() == old_backup
+
+
+def test_editor_saves_only_new_paths_and_rechecks_unsignalled_project_changes(qtbot, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QFileDialog, QMessageBox
+
+    c = AppController()
+    dialog = ArmConceptDialog(c)
+    qtbot.addWidget(dialog)
+    warnings = []
+    monkeypatch.setattr(QMessageBox, 'warning', lambda *args: warnings.append(args))
+    target = tmp_path / 'arm.kima'
+    target.write_bytes(b'old saved data')
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(target.with_suffix('')), ''))
+    dialog._save_weldment_snapshot()
+    assert warnings and target.read_bytes() == b'old saved data'
+    part = tmp_path / 'arm.kim'
+    part.write_bytes(b'old part')
+    dialog._save_tube_snapshot()
+    assert len(warnings) == 2 and part.read_bytes() == b'old part'
+    fresh = tmp_path / 'fresh.kima'
+    def choose(*args):
+        c.project.front.hardpoints['lbj'].y += 1  # no modelChanged signal
+        return str(fresh), ''
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', choose)
+    dialog._save_weldment_snapshot()
+    assert len(warnings) == 3 and not fresh.exists() and target.read_bytes() == b'old saved data'
+
+
+def test_editor_save_aborts_when_3d_changes_during_path_selection(qtbot, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QFileDialog, QMessageBox
+
+    c = AppController()
+    dialog = ArmConceptDialog(c)
+    qtbot.addWidget(dialog)
+    warnings = []
+    monkeypatch.setattr(QMessageBox, 'warning', lambda *args: warnings.append(args))
+    target = tmp_path / 'new.kima'
+    def choose(*args):
+        dialog._three_d._enable.setChecked(True)
+        return str(target), ''
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', choose)
+    dialog._save_weldment_snapshot()
+    assert warnings and 'изменились' in warnings[0][2] and not target.exists()
+    assert not dialog._save_assembly.isEnabled()
+    assert dialog.shutdown()

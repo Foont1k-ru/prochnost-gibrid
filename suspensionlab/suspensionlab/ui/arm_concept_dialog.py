@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 from PySide6.QtCore import QPointF, Qt
 from PySide6.QtGui import QColor, QPainter, QPaintEvent, QPen, QPolygonF
@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMessageBox,
     QPushButton,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -25,6 +26,7 @@ from ..model.arm_concept import ArmConcept, ArmStyle, make_arm_concept
 from ..model.kim_format import KimFormatError, make_lower_arm_tube_prototype, write_document
 from ..model.welded_arm import make_welded_arm
 from .controller import AppController
+from .weldment_3d import Weldment3D
 
 
 class ArmConceptCanvas(QWidget):
@@ -81,6 +83,7 @@ class ArmConceptDialog(QDialog):
         super().__init__(parent)
         self.controller = controller
         self.concept: ArmConcept | None = None
+        self._candidate: dict[str, Any] | None = None
         self._revision = 0
         self.setWindowTitle(tr("arm_concept.title"))
         self.setWindowModality(Qt.WindowModality.NonModal)
@@ -108,9 +111,17 @@ class ArmConceptDialog(QDialog):
         layout.addLayout(form)
         self._status = QLabel(self)
         self._status.setWordWrap(True)
+        self._status.setTextFormat(Qt.TextFormat.PlainText)
         layout.addWidget(self._status)
-        self._canvas = ArmConceptCanvas(self)
-        layout.addWidget(self._canvas, 1)
+        tabs = QTabWidget(self)
+        self._canvas = ArmConceptCanvas(tabs)
+        tabs.addTab(self._canvas, tr("weldment_3d.tab_2d"))
+        self._three_d = Weldment3D(tabs, is_current=self._candidate_is_current)
+        tabs.addTab(self._three_d, tr("weldment_3d.tab_3d"))
+        layout.addWidget(tabs, 1)
+        self._snapshot_status = QLabel(self)
+        self._snapshot_status.setWordWrap(True)
+        layout.addWidget(self._snapshot_status)
         self._summary = QLabel(self)
         self._summary.setWordWrap(True)
         layout.addWidget(self._summary)
@@ -122,10 +133,12 @@ class ArmConceptDialog(QDialog):
         layout.addWidget(self._save_tube)
         self._save_status = QLabel(self)
         self._save_status.setWordWrap(True)
+        self._save_status.setTextFormat(Qt.TextFormat.PlainText)
         layout.addWidget(self._save_status)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close, self)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+        self._three_d.availabilityChanged.connect(self._update_save)
         self._style.currentIndexChanged.connect(self._refresh)
         self._damper.currentIndexChanged.connect(self._refresh)
         for spin in (self._radius, self._wall, self._sheet):
@@ -146,6 +159,9 @@ class ArmConceptDialog(QDialog):
     def _refresh(self, *_args: object) -> None:
         self._revision += 1
         self._save_status.clear()
+        self._candidate = None
+        self._three_d.set_document(None)
+        self._snapshot_status.clear()
         style = cast(ArmStyle, self._style.currentData())
         self._radius.setEnabled(style == "tube")
         self._wall.setEnabled(style == "tube")
@@ -163,12 +179,47 @@ class ArmConceptDialog(QDialog):
             self._save_assembly.setEnabled(False)
             return
         self._save_tube.setEnabled(style == "tube")
-        self._save_assembly.setEnabled(style == "tube")
         self.concept = concept
+        if style == "tube":
+            try:
+                self._candidate = make_welded_arm(self.controller.project, concept.radius_mm,
+                                                  concept.wall_mm, str(self._damper.currentData()))
+            except (KimFormatError, TypeError, ValueError, OverflowError):
+                self._snapshot_status.setText(tr("arm_concept.snapshot_invalid"))
+        self._three_d.set_document(self._candidate)
+        self._update_save()
         self._canvas.set_concept(concept)
         self._status.setText(tr("arm_concept.current", project=self.controller.project.meta.name or tr("arm_concept.unnamed")))
         self._summary.setText(tr("arm_concept.summary", a=f"{concept.lengths_mm[0]:.2f}",
                                  b=f"{concept.lengths_mm[1]:.2f}", area=f"{concept.triangle_area_mm2:.2f}"))
+
+    def _candidate_is_current(self, candidate: dict[str, Any]) -> bool:
+        if self._candidate is None or candidate != self._candidate or self._style.currentData() != "tube":
+            return False
+        try:
+            concept = make_arm_concept(self.controller.project, "tube", self._radius.value(),
+                                       self._wall.value(), self._sheet.value())
+            current = make_welded_arm(self.controller.project, concept.radius_mm, concept.wall_mm,
+                                      str(self._damper.currentData()))
+            return current == candidate
+        except (KimFormatError, TypeError, ValueError, OverflowError):
+            return False
+
+    def _update_save(self, *_args: object) -> None:
+        self._save_assembly.setEnabled(self._candidate is not None and self._three_d.can_save())
+
+    def shutdown(self) -> bool:
+        return self._three_d.shutdown()
+
+    def reject(self) -> None:
+        if self.shutdown():
+            super().reject()
+
+    def closeEvent(self, event) -> None:  # noqa: N802
+        if self.shutdown():
+            super().closeEvent(event)
+        else:
+            event.ignore()
 
     def _save_tube_snapshot(self) -> None:
         """Старый эксперимент — две трубы в одном документе, не деталь."""
@@ -181,8 +232,21 @@ class ArmConceptDialog(QDialog):
     def _save_snapshot(self, kind: str) -> None:
         if self.concept is None or self.concept.style != "tube":
             return
-        revision = self._revision
         is_assembly = kind == "assembly"
+        candidate = self._candidate if is_assembly else None
+        if is_assembly and (candidate is None or not self._three_d.can_save()):
+            return
+        revision = self._revision
+        generation = self._three_d.generation
+        # Capture the old experiment too, so even unsignalled edits cannot
+        # silently produce a different file while the native dialog is open.
+        try:
+            part = (None if is_assembly else
+                    make_lower_arm_tube_prototype("front_lower_left", tr("arm_concept.part_name"),
+                                                  self.controller.project, self._radius.value(), self._wall.value()))
+        except (KimFormatError, TypeError, ValueError, OverflowError):
+            QMessageBox.warning(self, tr("arm_concept.save_title"), tr("arm_concept.save_failed"))
+            return
         suffix = ".kima" if is_assembly else ".kim"
         filter_key = "arm_concept.assembly_filter" if is_assembly else "arm_concept.save_filter"
         selected, _ = QFileDialog.getSaveFileName(self, tr("arm_concept.save_title"), "", tr(filter_key))
@@ -191,22 +255,28 @@ class ArmConceptDialog(QDialog):
         path = Path(selected)
         if path.suffix.lower() != suffix:
             path = path.with_name(path.name + suffix)
-        if revision != self._revision or self.concept is None or self.concept.style != "tube":
+        changed = (revision != self._revision or self.concept is None or self.concept.style != "tube" or
+                   (is_assembly and (generation != self._three_d.generation or not self._three_d.can_save())))
+        if changed:
             QMessageBox.warning(self, tr("arm_concept.save_title"), tr("arm_concept.save_changed"))
             return
         try:
-            if self.controller.is_protected_export_target(path):
-                raise KimFormatError("protected project or autosave")
             if is_assembly:
-                document = make_welded_arm(self.controller.project, self.concept.radius_mm,
-                                           self.concept.wall_mm, str(self._damper.currentData()))
+                if candidate is None or not self._candidate_is_current(candidate):
+                    raise KimFormatError("project changed")
+                document = candidate
             else:
                 document = make_lower_arm_tube_prototype("front_lower_left", tr("arm_concept.part_name"),
-                                                        self.controller.project, self.concept.radius_mm,
-                                                        self.concept.wall_mm)
-            write_document(path, kind, document)
-        except (KimFormatError, OSError, RuntimeError, ValueError):
+                                                        self.controller.project, self._radius.value(), self._wall.value())
+                if document != part:
+                    raise KimFormatError("project changed")
+            if self.controller.is_protected_export_target(path):
+                raise KimFormatError("protected project or autosave")
+            # A new path only: also closes the suffix-appending overwrite gap.
+            write_document(path, kind, document, overwrite=False)
+        except (KimFormatError, OSError, RuntimeError, ValueError, TypeError, OverflowError):
             QMessageBox.warning(self, tr("arm_concept.save_title"), tr("arm_concept.save_failed"))
+            self._refresh()
             return
         done = "arm_concept.assembly_done" if is_assembly else "arm_concept.save_done"
         self._save_status.setText(tr(done, path=str(path)))
