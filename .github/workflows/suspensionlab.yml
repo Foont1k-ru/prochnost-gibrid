@@ -98,11 +98,26 @@ jobs:
         shell: bash
         run: |
           set +e
-          PYTHONFAULTHANDLER=1 python -m pytest -q --junitxml=python311-results.xml > python311-console.txt 2>&1
+          PYTHONFAULTHANDLER=1 python -m pytest -q --ignore=tests/test_weldment_3d_integration.py --junitxml=python311-results.xml > python311-console.txt 2>&1
           result=$?
           cat python311-console.txt
           if [ "$result" -ne 0 ]; then
             python -c "from pathlib import Path; t=Path('python311-console.txt').read_text(encoding='utf-8', errors='replace')[-12000:]; print('::error title=Python test output::'+t.replace('%','%25').replace(chr(13),'%0D').replace(chr(10),'%0A'))"
+          fi
+          exit "$result"
+      # Run CAD+Qt integration in a fresh interpreter: the monolithic Linux
+      # suite intermittently segfaults during Qt garbage collection. This is
+      # test-process isolation, not proof that the underlying crash is fixed.
+      - name: CAD+Qt интеграция в отдельном процессе (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set +e
+          PYTHONFAULTHANDLER=1 python -m pytest -q tests/test_weldment_3d_integration.py --junitxml=python311-integration-results.xml > python311-integration-console.txt 2>&1
+          result=$?
+          cat python311-integration-console.txt
+          if [ "$result" -ne 0 ]; then
+            python -c "from pathlib import Path; t=Path('python311-integration-console.txt').read_text(encoding='utf-8', errors='replace')[-12000:]; print('::error title=Python integration output::'+t.replace('%','%25').replace(chr(13),'%0D').replace(chr(10),'%0A'))"
           fi
           exit "$result"
       - name: Полный набор тестов и отдельные процессы Qt (Windows)
@@ -111,6 +126,10 @@ jobs:
       - name: Показать ошибки Python 3.11 в аннотациях
         if: failure()
         run: python scripts/annotate_pytest.py python311-results.xml
+      - name: Показать ошибки отдельной CAD+Qt интеграции
+        if: failure() && runner.os == 'Linux'
+        shell: bash
+        run: if [ -f python311-integration-results.xml ]; then python scripts/annotate_pytest.py python311-integration-results.xml; fi
       - name: Проверить исходный запуск и таблицу в smoke-тесте
         run: python packaging_entry.py --packaging-check python311-smoke.txt
       - name: Сохранить отчёт тестов
@@ -118,7 +137,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: suspensionlab-python311-${{ matrix.os }}-test-results
-          path: suspensionlab/python311-results.xml
+          path: |
+            suspensionlab/python311-results.xml
+            suspensionlab/python311-integration-results.xml
           if-no-files-found: warn
 
   package:
