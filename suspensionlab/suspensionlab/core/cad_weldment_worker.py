@@ -46,7 +46,7 @@ def create_mesh(path: Path, deviation: float) -> tuple[np.ndarray, int]:
         shape = build_front_joint_layout_preview(doc)
     elif doc["version"] == "0.8":
         shape = build_joint_preview(doc)
-    elif doc["version"] == "0.7":
+    elif doc["version"] in ("0.7", "0.11"):
         shape = build_front_pair_preview(doc)
     elif doc["version"] == "0.6":
         shape = build_rear_pair_preview(doc)

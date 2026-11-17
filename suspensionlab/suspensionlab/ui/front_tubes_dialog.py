@@ -29,6 +29,7 @@ from ..model.autosave_guard import same_project_file
 from ..model.entities import Project
 from ..model.front_joint_layout import make_front_joint_layout, validate_front_joint_layout
 from ..model.front_pair_snapshot import front_pair_sides, make_front_pair_snapshot, mirror_front_tube_arm
+from ..model.front_same_pair import front_same_pair_sides, make_front_same_pair
 from ..model.front_tube_arm import (
     front_tube_arm_centerlines,
     front_tube_arm_points,
@@ -62,6 +63,7 @@ class FrontTubesDialog(QDialog):
         self._closing_confirmed = False
         self._saved_candidate: dict[str, Any] | None = None
         self._baseline: tuple[Any, ...] | None = None
+        self._pair_baseline: str | None = None
         self.setWindowTitle(tr('front_tubes.title'))
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.resize(800, 790)
@@ -108,7 +110,13 @@ class FrontTubesDialog(QDialog):
         self._mirror = QPushButton(tr('front_pair.apply'), body)
         self._mirror.clicked.connect(self._apply_mirror)
         layout.addWidget(self._mirror)
-        pair_note = QLabel(tr('front_pair.note'), body)
+        mode_form = QFormLayout()
+        self._pair_mode = QComboBox(body)
+        self._pair_mode.addItem(tr('front_same.mirror'), 'mirror')
+        self._pair_mode.addItem(tr('front_same.same'), 'same')
+        mode_form.addRow(tr('front_same.mode'), self._pair_mode)
+        layout.addLayout(mode_form)
+        pair_note = QLabel(tr('front_same.note'), body)
         pair_note.setWordWrap(True)
         layout.addWidget(pair_note)
         mirror_note = QLabel(tr('front_pair.preview'), body)
@@ -168,6 +176,7 @@ class FrontTubesDialog(QDialog):
         self._arm.currentIndexChanged.connect(self._arm_changed)
         self._radius.textChanged.connect(self._refresh)
         self._wall.textChanged.connect(self._refresh)
+        self._pair_mode.currentIndexChanged.connect(self._refresh)
         self._bend_editor.changed.connect(self._refresh)
         self._three_d.availabilityChanged.connect(self._update_save)
         self._pair_3d.availabilityChanged.connect(self._update_save)
@@ -176,6 +185,7 @@ class FrontTubesDialog(QDialog):
         controller.projectReplaced.connect(self._project_replaced)
         self._refresh()
         self._baseline = self._input_state()
+        self._pair_baseline = str(self._pair_mode.currentData())
         self._update_edit_status()
 
     @staticmethod
@@ -196,10 +206,11 @@ class FrontTubesDialog(QDialog):
         self._joint_baseline = self._joint_state()
         self._update_joint_labels()
         self._pending_project_changes = False
-        widgets = [self._arm, self._radius, self._wall]
+        widgets = [self._arm, self._radius, self._wall, self._pair_mode]
         blockers = [QSignalBlocker(widget) for widget in widgets]
         try:
             self._arm.setCurrentIndex(0)
+            self._pair_mode.setCurrentIndex(self._pair_mode.findData('mirror'))
             self._radius.setText('12')
             self._wall.setText('2')
             self._bend_editor.load({})
@@ -208,6 +219,7 @@ class FrontTubesDialog(QDialog):
                 blocker.unblock()
         self._source_label.setText(tr('front_tubes.new'))
         self._baseline = self._input_state()
+        self._pair_baseline = str(self._pair_mode.currentData())
         self._refresh()
 
     def _open_file(self) -> None:
@@ -227,9 +239,10 @@ class FrontTubesDialog(QDialog):
                 validate_front_joint_layout(layout_document)
                 pair_document = layout_document['pair']
             else:
-                pair_document = document if document['version'] == '0.7' else None
+                pair_document = document if document['version'] in ('0.7', '0.11') else None
             if pair_document is not None:
-                document, _ = front_pair_sides(pair_document)
+                document, _ = (front_same_pair_sides(pair_document) if pair_document['version'] == '0.11'
+                               else front_pair_sides(pair_document))
             else:
                 validate_front_tube_arm(document)
         except (KimFormatError, OSError, ValueError, RuntimeError):
@@ -250,10 +263,12 @@ class FrontTubesDialog(QDialog):
         self._joint_baseline = self._joint_state()
         self._update_joint_labels()
         self._pending_project_changes = False
-        widgets = [self._arm, self._radius, self._wall]
+        widgets = [self._arm, self._radius, self._wall, self._pair_mode]
         blockers = [QSignalBlocker(widget) for widget in widgets]
         try:
             self._arm.setCurrentIndex(self._arm.findData(document['arm']))
+            self._pair_mode.setCurrentIndex(self._pair_mode.findData(
+                'same' if pair_document and pair_document['version'] == '0.11' else 'mirror'))
             self._radius.setText(str(document['radius_mm']))
             self._wall.setText(str(document['wall_mm']))
             self._bend_editor.load(document['bends'])
@@ -262,6 +277,7 @@ class FrontTubesDialog(QDialog):
                 blocker.unblock()
         self._source_label.setText(tr('front_tubes.source', path=str(path), name=document['name']))
         self._baseline = self._input_state()
+        self._pair_baseline = str(self._pair_mode.currentData())
         self._saved_candidate = document
         self._refresh()
 
@@ -381,7 +397,7 @@ class FrontTubesDialog(QDialog):
         self._saved.clear()
         self._candidate = None
         self._mirror.setEnabled(False)
-        for widget in (self._arm, self._radius, self._wall, *self._joint_buttons.values()):
+        for widget in (self._arm, self._radius, self._wall, self._pair_mode, *self._joint_buttons.values()):
             widget.setEnabled(self._active)
         self._bend_editor.set_editable(self._active)
         self._activate.setVisible(self._source is not None)
@@ -396,10 +412,6 @@ class FrontTubesDialog(QDialog):
             candidate = self._source if self._source is not None and not self._active else self._make_candidate()
             paths = front_tube_arm_centerlines(candidate)
             view = make_niva_arm_view(Project.from_dict(candidate['scheme']), candidate['arm'])
-            snapshot = make_front_pair_snapshot(candidate)
-            paired = mirror_front_tube_arm(candidate)
-            mirror_paths = front_tube_arm_centerlines(paired)
-            mirror_view = make_niva_arm_view(Project.from_dict(paired['scheme']), paired['arm'])
         except (KimFormatError, ValueError, TypeError, OverflowError):
             self._status.setText(tr('front_tubes.invalid'))
             self._update_edit_status()
@@ -408,11 +420,23 @@ class FrontTubesDialog(QDialog):
         self._mirror.setEnabled(self._active)
         for plan in self._plans:
             plan.set_view(view, paths=paths)
+        self._three_d.set_document(candidate)
+        try:
+            snapshot = self._make_pair(candidate)
+            _, paired = (front_same_pair_sides(snapshot) if snapshot['version'] == '0.11'
+                         else front_pair_sides(snapshot))
+            mirror_paths = front_tube_arm_centerlines(paired)
+            mirror_view = make_niva_arm_view(Project.from_dict(paired['scheme']), paired['arm'])
+        except (KimFormatError, ValueError, TypeError, OverflowError):
+            self._status.setText(tr('front_same.invalid'))
+            self._update_save()
+            self._update_edit_status()
+            return
         for plan in self._mirror_plans:
             plan.set_view(mirror_view, paths=mirror_paths)
-        self._three_d.set_document(candidate)
         self._pair_3d.set_document(snapshot)
-        if self._joint_docs['ball'] is not None and self._joint_docs['bushing'] is not None:
+        if (snapshot['version'] == '0.7' and self._joint_docs['ball'] is not None and
+                self._joint_docs['bushing'] is not None):
             try:
                 layout_doc = make_front_joint_layout(snapshot, self._joint_docs['ball'], self._joint_docs['bushing'])
                 self._layout_3d.set_document(layout_doc)
@@ -431,16 +455,21 @@ class FrontTubesDialog(QDialog):
         self._update_edit_status()
 
     def _input_state(self) -> tuple[Any, ...]:
-        return (self._arm.currentData(), self._radius.text(), self._wall.text(), self._bend_editor.state())
+        return (self._arm.currentData(), self._radius.text(), self._wall.text(), self._bend_editor.state(),
+                self._pair_mode.currentData())
 
     def _has_unsaved(self) -> bool:
-        return (self._baseline is not None and (self._input_state() != self._baseline or
-                self._joint_state() != self._joint_baseline or
-                (self._active and self._saved_layout is not None and
-                 self._saved_layout['pair']['source'] != self._candidate) or
-                self._pending_project_changes or (self._active and self._saved_candidate is not None and
-                                                  self._saved_candidate != self._candidate) or
-                (self._active and self._saved_pair is not None and self._saved_pair['source'] != self._candidate)))
+        pair_changed = str(self._pair_mode.currentData()) != self._pair_baseline
+        if self._active and (self._saved_pair is not None or self._saved_layout is not None):
+            try:
+                pair = self._make_pair(self._candidate) if self._candidate is not None else None
+                pair_changed = (pair_changed or (self._saved_pair is not None and pair != self._saved_pair) or
+                                (self._saved_layout is not None and pair != self._saved_layout['pair']))
+            except (KimFormatError, ValueError, TypeError, OverflowError):
+                pair_changed = True
+        return (self._baseline is not None and (self._input_state() != self._baseline or pair_changed or
+                self._joint_state() != self._joint_baseline or self._pending_project_changes or
+                (self._active and self._saved_candidate is not None and self._saved_candidate != self._candidate)))
 
     def _update_edit_status(self) -> None:
         self._edit_status.setText(tr("front_tubes.unsaved") if self._has_unsaved() else "")
@@ -465,11 +494,18 @@ class FrontTubesDialog(QDialog):
         except (KimFormatError, ValueError, TypeError, OverflowError):
             return False
 
+    def _make_pair(self, candidate: dict[str, Any]) -> dict[str, Any]:
+        if self._pair_mode.currentData() == 'same':
+            return make_front_same_pair(candidate)
+        if self._pair_mode.currentData() == 'mirror':
+            return make_front_pair_snapshot(candidate)
+        raise KimFormatError('unknown pair mode')
+
     def _pair_is_current(self, snapshot: dict[str, Any]) -> bool:
         if self._candidate is None or not self._candidate_is_current(self._candidate):
             return False
         try:
-            return make_front_pair_snapshot(self._candidate) == snapshot
+            return self._make_pair(self._candidate) == snapshot
         except (KimFormatError, ValueError, TypeError, OverflowError):
             return False
 
@@ -480,7 +516,7 @@ class FrontTubesDialog(QDialog):
         if ball is None or bushing is None:
             return False
         try:
-            return make_front_joint_layout(make_front_pair_snapshot(self._candidate), ball, bushing) == layout
+            return make_front_joint_layout(self._make_pair(self._candidate), ball, bushing) == layout
         except (KimFormatError, ValueError, TypeError, OverflowError):
             return False
 
@@ -559,6 +595,7 @@ class FrontTubesDialog(QDialog):
         self._baseline = self._input_state()
         self._saved_candidate = self._candidate
         self._saved_pair = pair
+        self._pair_baseline = str(self._pair_mode.currentData())
         self._pending_project_changes = False
         self._update_edit_status()
         self._saved.setText(tr('weldment.saved', path=str(path)))
@@ -597,6 +634,7 @@ class FrontTubesDialog(QDialog):
         self._baseline = self._input_state()
         self._saved_candidate = self._candidate
         self._saved_pair = layout['pair']
+        self._pair_baseline = str(self._pair_mode.currentData())
         self._saved_layout = layout
         self._joint_baseline = self._joint_state()
         self._pending_project_changes = False

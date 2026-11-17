@@ -92,7 +92,7 @@ def build_part(document: dict[str, Any]) -> Any:
 def build_assembly(document: dict[str, Any]) -> Any:
     """Создаёт соединение перенесённых экземпляров, не связывая их со схемой."""
     _assembly(document)
-    if document["version"] in ("0.2", "0.3", "0.4", "0.5", "0.6", "0.7", "0.8", "0.9", "0.10"):
+    if document["version"] in ("0.2", "0.3", "0.4", "0.5", "0.6", "0.7", "0.8", "0.9", "0.10", "0.11"):
         raise ValueError("incomplete weldment: use the explicitly partial tube preview")
     from OCP.BRep import BRep_Builder
     from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
@@ -212,10 +212,12 @@ def build_front_pair_preview(document: dict[str, Any]) -> Any:
     from OCP.TopoDS import TopoDS_Compound
 
     from ..model.front_pair_snapshot import front_pair_sides
+    from ..model.front_same_pair import front_same_pair_sides
 
     builder, compound = BRep_Builder(), TopoDS_Compound()
     builder.MakeCompound(compound)
-    for arm in front_pair_sides(document):
+    sides = front_same_pair_sides(document) if document.get('version') == '0.11' else front_pair_sides(document)
+    for arm in sides:
         builder.Add(compound, build_front_arm_tubes_preview(arm))
     return compound
 

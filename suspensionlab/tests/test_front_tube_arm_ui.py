@@ -386,3 +386,111 @@ def test_joint_file_races_and_single_pair_save_leave_attachments_unsaved(qtbot, 
     assert d._joint_docs['ball'] is None and not d._has_unsaved()
     assert d.shutdown()
     d.close()
+
+
+def test_front_same_pair_save_open_and_mode_changes(qtbot, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QFileDialog, QMessageBox
+
+    from suspensionlab.model.kim_format import read_document
+    from suspensionlab.ui.front_tubes_dialog import FrontTubesDialog
+
+    c = controller()
+    for code, xyz in {'uca_f_in': (0, 0, 0), 'uca_r_in': (0, -100, 0), 'ubj': (100, 100, 0)}.items():
+        point = c.project.front.hardpoints[code]
+        point.x, point.y, point.z = xyz
+    before = c.project.to_dict()
+    d = FrontTubesDialog(c)
+    qtbot.addWidget(d)
+    d._arm.setCurrentIndex(d._arm.findData('front_upper_left'))
+    d._pair_mode.setCurrentIndex(d._pair_mode.findData('same'))
+    assert d._save_pair.isEnabled() and d._has_unsaved()
+    path = tmp_path / 'same.kima'
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(path), ''))
+    d._save_pair_copy()
+    assert read_document(path, 'assembly')['version'] == '0.11' and not d._has_unsaved()
+    original = path.read_bytes()
+    assert d.shutdown()
+    d.close()
+    d = FrontTubesDialog(c)
+    qtbot.addWidget(d)
+    monkeypatch.setattr(QFileDialog, 'getOpenFileName', lambda *args: (str(path), ''))
+    d._open_file()
+    assert d._pair_mode.currentData() == 'same' and not d._active
+    assert d._pair_3d._document['version'] == '0.11' and not d._save_pair.isEnabled()
+    d._start_preview()
+    assert d._save_pair.isEnabled() and not d._has_unsaved()
+    d._pair_mode.setCurrentIndex(d._pair_mode.findData('mirror'))
+    assert d._pair_3d._document['version'] == '0.7' and d._has_unsaved()
+    single = tmp_path / 'single.kima'
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(single), ''))
+    d._save_copy()
+    assert read_document(single, 'assembly')['version'] == '0.5' and d._has_unsaved()
+    warnings = []
+    monkeypatch.setattr(QMessageBox, 'warning', lambda *args: warnings.append(args))
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(path), ''))
+    d._save_pair_copy()
+    assert warnings and path.read_bytes() == original
+    mirror = tmp_path / 'mirror.kima'
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(mirror), ''))
+    d._save_pair_copy()
+    assert read_document(mirror, 'assembly')['version'] == '0.7' and not d._has_unsaved()
+    assert c.project.to_dict() == before and d.shutdown()
+    d.close()
+
+
+def test_front_same_rejects_collinear_but_single_stays_available(qtbot, monkeypatch):
+    from suspensionlab.ui.front_tubes_dialog import FrontTubesDialog
+
+    c = controller()
+    for code, xyz in {'uca_f_in': (0, 0, 0), 'uca_r_in': (100, 0, 0), 'ubj': (200, 0, 0)}.items():
+        point = c.project.front.hardpoints[code]
+        point.x, point.y, point.z = xyz
+    d = FrontTubesDialog(c)
+    qtbot.addWidget(d)
+    d._arm.setCurrentIndex(d._arm.findData('front_upper_left'))
+    d._pair_mode.setCurrentIndex(d._pair_mode.findData('same'))
+    assert d._candidate is not None and d._save.isEnabled() and not d._save_pair.isEnabled()
+    assert d._pair_3d._document is None and all(p.view is None for p in d._mirror_plans)
+    d._pair_mode.setCurrentIndex(d._pair_mode.findData('mirror'))
+    assert d._save_pair.isEnabled()
+    d._baseline = d._input_state()
+    d._pair_baseline = 'mirror'
+    assert d.shutdown()
+    d.close()
+
+
+def test_front_pair_mode_race_and_existing_layout_remain_unsaved(qtbot, tmp_path, monkeypatch):
+    from suspensionlab.model.joint_concept import DEFAULTS, make_joint_concept
+
+    c = controller()
+    d = FrontTubesDialog(c)
+    qtbot.addWidget(d)
+    for kind in ('ball', 'bushing'):
+        path = tmp_path / f'{kind}.kima'
+        write_document(path, 'assembly', make_joint_concept(kind, DEFAULTS[kind]))
+        monkeypatch.setattr(QFileDialog, 'getOpenFileName', lambda *args, path=path: (str(path), ''))
+        d._load_joint(kind)
+    layout = tmp_path / 'layout.kima'
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(layout), ''))
+    d._save_layout_copy()
+    assert not d._has_unsaved()
+    d._pair_mode.setCurrentIndex(d._pair_mode.findData('same'))
+    assert d._layout_3d._document is None and not d._save_layout.isEnabled()
+    pair = tmp_path / 'pair.kima'
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(pair), ''))
+    d._save_pair_copy()
+    assert read_document(pair, 'assembly')['version'] == '0.11' and d._has_unsaved()
+    warnings = []
+    monkeypatch.setattr(QMessageBox, 'warning', lambda *args: warnings.append(args))
+    target = tmp_path / 'race.kima'
+    def change(*args):
+        with QSignalBlocker(d._pair_mode):
+            d._pair_mode.setCurrentIndex(d._pair_mode.findData('mirror'))
+        return str(target), ''
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', change)
+    d._save_pair_copy()
+    assert warnings and not target.exists()
+    monkeypatch.setattr(QMessageBox, 'question', lambda *args: QMessageBox.StandardButton.Yes)
+    d._new_draft()
+    assert not d._has_unsaved() and d.shutdown()
+    d.close()
