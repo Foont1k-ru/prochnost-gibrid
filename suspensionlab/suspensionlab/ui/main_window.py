@@ -316,7 +316,7 @@ class MainWindow(QMainWindow):
         self.action_rear_tube = QAction(tr("rear_tube.menu"), self)
         self.action_rear_tube.triggered.connect(self._open_rear_tube)
 
-        self.action_sketch_draft = QAction("Пробный плоский эскиз (без сохранения)", self)
+        self.action_sketch_draft = QAction("Плоский эскиз (отдельный документ)", self)
         self.action_sketch_draft.triggered.connect(self._open_sketch_draft)
 
         self.action_niva_arms = QAction(tr("niva_arms.menu"), self)

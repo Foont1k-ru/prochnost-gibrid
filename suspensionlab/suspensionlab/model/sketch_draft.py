@@ -1,4 +1,4 @@
-"""Временный плоский эскиз: аналитическая геометрия без связи с проектом."""
+"""Изолированная аналитическая геометрия плоского эскиза, координаты в мм."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ Kind = Literal["line", "circle"]
 LIMIT_MM = 1_000_000.0
 MIN_SIZE_MM = 1e-6
 MAX_ENTITIES = 5000
+MAX_HISTORY = 100
 
 
 @dataclass(frozen=True)
@@ -37,22 +38,48 @@ def make_entity(kind: Kind, start: Point, end: Point) -> Entity:
 
 
 class SketchDraft:
-    """История команд изолирована от проекта и его отмены."""
+    """Независимая ограниченная история добавлений, удаления и редактирования."""
 
-    def __init__(self) -> None:
-        self.entities: list[Entity] = []
-        self._redo: list[Entity] = []
+    def __init__(self, entities: tuple[Entity, ...] = ()) -> None:
+        if len(entities) > MAX_ENTITIES:
+            raise ValueError("Достигнут предел элементов эскиза")
+        self.entities: list[Entity] = [make_entity(e.kind, e.start, e.end) for e in entities]
+        self._undo: list[tuple[Entity, ...]] = []
+        self._redo: list[tuple[Entity, ...]] = []
+
+    def _checkpoint(self) -> None:
+        self._undo.append(tuple(self.entities))
+        if len(self._undo) > MAX_HISTORY:
+            del self._undo[0]
+        self._redo.clear()
 
     def add(self, kind: Kind, start: Point, end: Point) -> None:
         if len(self.entities) >= MAX_ENTITIES:
             raise ValueError("Достигнут предел элементов эскиза")
-        self.entities.append(make_entity(kind, start, end))
-        self._redo.clear()
+        entity = make_entity(kind, start, end)
+        self._checkpoint()
+        self.entities.append(entity)
+
+    def replace(self, index: int, kind: Kind, start: Point, end: Point) -> None:
+        entity = make_entity(kind, start, end)
+        if index < 0 or index >= len(self.entities):
+            raise IndexError("Элемент не найден")
+        if self.entities[index] != entity:
+            self._checkpoint()
+            self.entities[index] = entity
+
+    def delete(self, index: int) -> None:
+        if index < 0 or index >= len(self.entities):
+            raise IndexError("Элемент не найден")
+        self._checkpoint()
+        del self.entities[index]
 
     def undo(self) -> None:
-        if self.entities:
-            self._redo.append(self.entities.pop())
+        if self._undo:
+            self._redo.append(tuple(self.entities))
+            self.entities = list(self._undo.pop())
 
     def redo(self) -> None:
         if self._redo:
-            self.entities.append(self._redo.pop())
+            self._undo.append(tuple(self.entities))
+            self.entities = list(self._redo.pop())
