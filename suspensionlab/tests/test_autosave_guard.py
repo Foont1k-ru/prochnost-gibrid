@@ -118,3 +118,16 @@ def test_autosave_path_does_not_create_settings_directory(tmp_path, monkeypatch)
     monkeypatch.setattr(config, '_base_dir', lambda: directory)
     assert config.autosave_path() == directory / 'autosave.susp.json'
     assert not directory.exists()
+
+
+def test_reading_may_update_access_time_without_becoming_an_external_change(tmp_path):
+    import os
+    import time
+
+    path = tmp_path / 'autosave.susp.json'
+    path.write_bytes(b'previous-project')
+    before = path.stat()
+    os.utime(path, ns=(int((time.time() - 86400) * 1_000_000_000), before.st_mtime_ns))
+    stamp = inspect_autosave(path)
+    assert stamp is not None and path.read_bytes() == b'previous-project'
+    assert inspect_autosave(path) == stamp

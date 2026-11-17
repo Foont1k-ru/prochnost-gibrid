@@ -20,6 +20,13 @@ class AutosaveStamp:
     digest: bytes
 
 
+def _stable_metadata(value: os.stat_result) -> tuple[int, ...]:
+    # Access time can change solely because this function reads the file.
+    # Compare each stat source with itself (Windows fstat and stat may differ).
+    return (value.st_dev, value.st_ino, value.st_mode, value.st_size,
+            value.st_mtime_ns, value.st_ctime_ns)
+
+
 def inspect_autosave(path: Path) -> AutosaveStamp | None:
     """None только если файла нет; нестабильные и неподходящие файлы — ошибка."""
     target = path.resolve()
@@ -44,7 +51,9 @@ def inspect_autosave(path: Path) -> AutosaveStamp | None:
             digest.update(chunk)
         opened_after = os.fstat(stream.fileno())
     after = target.stat()
-    if opened_before != opened_after or before != after or size != opened_after.st_size or path.resolve() != target:
+    if (_stable_metadata(opened_before) != _stable_metadata(opened_after) or
+            _stable_metadata(before) != _stable_metadata(after) or
+            size != opened_after.st_size or path.resolve() != target):
         raise OSError("autosave changed while reading")
     return AutosaveStamp(target, digest.digest())
 
