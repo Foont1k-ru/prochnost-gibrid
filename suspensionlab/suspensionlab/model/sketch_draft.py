@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from dataclasses import replace as dataclass_replace
 from math import atan2, copysign, cos, degrees, hypot, isfinite, radians, sin
 from typing import Literal
 
@@ -86,9 +87,24 @@ class Dimension:
     entity_index: int
     position: Point
     mode: str = "auto"
+    other_index: int | None = None
 
 
-def dimension_value(dimension: Dimension, entity: Entity) -> float:
+def line_angle_geometry(first: Entity, second: Entity) -> tuple[Point, Point, Point, int]:
+    """Общий конец, два вектора от него и индекс этого конца второго отрезка."""
+    if first.kind != "line" or second.kind != "line":
+        raise ValueError("Для угла выберите два отрезка")
+    matches = [(i, j) for i, a in enumerate((first.start, first.end))
+               for j, b in enumerate((second.start, second.end)) if hypot(a[0] - b[0], a[1] - b[1]) <= 1e-8]
+    if len(matches) != 1:
+        raise ValueError("Отрезки должны иметь ровно один общий конец")
+    i, j = matches[0]
+    corner = (first.start, first.end)[i]
+    end1, end2 = (first.end, first.start)[i], (second.end, second.start)[j]
+    return corner, (end1[0] - corner[0], end1[1] - corner[1]), (end2[0] - corner[0], end2[1] - corner[1]), j
+
+
+def dimension_value(dimension: Dimension, entity: Entity, other: Entity | None = None) -> float:
     mode = dimension.mode
     if mode == "auto":
         mode = "length" if entity.kind == "line" else "radius"
@@ -100,17 +116,22 @@ def dimension_value(dimension: Dimension, entity: Entity) -> float:
         return abs(entity.end[1] - entity.start[1])
     if mode == "inclination":
         return degrees(atan2(entity.end[1] - entity.start[1], entity.end[0] - entity.start[0]))
+    if mode == "between":
+        if other is None:
+            raise ValueError("Отсутствует второй отрезок углового размера")
+        _, a, b, _ = line_angle_geometry(entity, other)
+        return abs(degrees(atan2(a[0] * b[1] - a[1] * b[0], a[0] * b[0] + a[1] * b[1])))
     if mode == "diameter":
         return 2 * entity.size
     assert mode == "angle" and entity.sweep_deg is not None
     return abs(entity.sweep_deg)
 
 
-def dimension_text(dimension: Dimension, entity: Entity) -> str:
+def dimension_text(dimension: Dimension, entity: Entity, other: Entity | None = None) -> str:
     mode = dimension.mode
-    value = dimension_value(dimension, entity)
-    prefix = "R " if mode == "radius" or (mode == "auto" and entity.kind != "line") else "⌀ " if mode == "diameter" else "∠ " if mode in ("angle", "inclination") else ""
-    suffix = "°" if mode in ("angle", "inclination") else " мм"
+    value = dimension_value(dimension, entity, other)
+    prefix = "R " if mode == "radius" or (mode == "auto" and entity.kind != "line") else "⌀ " if mode == "diameter" else "∠ " if mode in ("angle", "inclination", "between") else ""
+    suffix = "°" if mode in ("angle", "inclination", "between") else " мм"
     return f"{prefix}{value:.3f}{suffix}"
 
 
@@ -120,11 +141,18 @@ def validate_dimension(dimension: Dimension, entities: tuple[Entity, ...]) -> Di
         raise ValueError("Размер ссылается на отсутствующий элемент")
     if len(dimension.position) != 2 or not all(isfinite(x) and abs(x) <= LIMIT_MM for x in dimension.position):
         raise ValueError("Позиция размера вне допустимых границ")
-    allowed = {"auto", "length", "horizontal", "vertical", "inclination"} if entities[index].kind == "line" else {"auto", "radius", "diameter"}
+    allowed = {"auto", "length", "horizontal", "vertical", "inclination", "between"} if entities[index].kind == "line" else {"auto", "radius", "diameter"}
     if entities[index].kind == "arc":
         allowed.add("angle")
     if not isinstance(dimension.mode, str) or dimension.mode not in allowed:
         raise ValueError("Вид размера не подходит для выбранного элемента")
+    other = dimension.other_index
+    if dimension.mode == "between":
+        if isinstance(other, bool) or not isinstance(other, int) or other == index or not 0 <= other < len(entities):
+            raise ValueError("Угловой размер требует два разных отрезка")
+        line_angle_geometry(entities[index], entities[other])
+    elif other is not None:
+        raise ValueError("Второй элемент допустим только для угла между отрезками")
     return dimension
 
 
@@ -178,9 +206,14 @@ class SketchDraft:
         entity = make_entity(kind, start, end, sweep_deg)
         if index < 0 or index >= len(self.entities):
             raise IndexError("Элемент не найден")
-        if self.entities[index].kind != entity.kind and any(d.entity_index == index for d in self.dimensions):
-            raise ValueError("Удалите размер перед изменением типа элемента")
         if self.entities[index] != entity:
+            proposed = list(self.entities)
+            proposed[index] = entity
+            for dim in self.dimensions:
+                try:
+                    validate_dimension(dim, tuple(proposed))
+                except ValueError as exc:
+                    raise ValueError("Изменение нарушает существующий размер. Сначала удалите размер.") from exc
             self._checkpoint()
             self.entities[index] = entity
 
@@ -189,29 +222,31 @@ class SketchDraft:
             raise IndexError("Элемент не найден")
         if len(self.entities) - 1 + len(parts) > MAX_ENTITIES:
             raise ValueError("Достигнут предел элементов эскиза")
-        if any(d.entity_index == index for d in self.dimensions):
+        if any(d.entity_index == index or d.other_index == index for d in self.dimensions):
             raise ValueError("Удалите размер этого элемента перед обрезкой")
         validated = [make_entity(e.kind, e.start, e.end, e.sweep_deg) for e in parts]
         self._checkpoint()
         self.entities[index:index + 1] = validated
         delta = len(validated) - 1
-        self.dimensions = [Dimension(d.entity_index + delta if d.entity_index > index else d.entity_index, d.position, d.mode)
+        self.dimensions = [dataclass_replace(d, entity_index=d.entity_index + delta if d.entity_index > index else d.entity_index,
+                           other_index=(d.other_index + delta if d.other_index is not None and d.other_index > index else d.other_index))
                            for d in self.dimensions]
 
     def delete(self, index: int) -> None:
         if index < 0 or index >= len(self.entities):
             raise IndexError("Элемент не найден")
-        if any(d.entity_index == index for d in self.dimensions):
+        if any(d.entity_index == index or d.other_index == index for d in self.dimensions):
             raise ValueError("Удалите размер этого элемента перед удалением")
         self._checkpoint()
         del self.entities[index]
-        self.dimensions = [Dimension(d.entity_index - 1 if d.entity_index > index else d.entity_index, d.position, d.mode)
+        self.dimensions = [dataclass_replace(d, entity_index=d.entity_index - 1 if d.entity_index > index else d.entity_index,
+                           other_index=(d.other_index - 1 if d.other_index is not None and d.other_index > index else d.other_index))
                            for d in self.dimensions]
 
-    def add_dimension(self, index: int, position: Point, mode: str = "auto") -> None:
+    def add_dimension(self, index: int, position: Point, mode: str = "auto", other_index: int | None = None) -> None:
         if len(self.dimensions) >= MAX_DIMENSIONS:
             raise ValueError("Достигнут предел количества размеров")
-        dim = validate_dimension(Dimension(index, position, mode), tuple(self.entities))
+        dim = validate_dimension(Dimension(index, position, mode, other_index), tuple(self.entities))
         self._checkpoint()
         self.dimensions.append(dim)
 
@@ -225,6 +260,17 @@ class SketchDraft:
         entity = self.entities[dim.entity_index]
         mode = dim.mode if dim.mode != "auto" else ("length" if entity.kind == "line" else "radius")
         dx, dy = entity.end[0] - entity.start[0], entity.end[1] - entity.start[1]
+        if mode == "between":
+            if not 1e-6 <= value <= 180:
+                raise ValueError("Угол между отрезками должен быть больше нуля и не более 180 градусов")
+            assert dim.other_index is not None
+            other = self.entities[dim.other_index]
+            corner, a, b, j = line_angle_geometry(entity, other)
+            cross = a[0] * b[1] - a[1] * b[0]
+            theta = atan2(a[1], a[0]) + copysign(radians(value), cross if abs(cross) > 1e-12 else 1.0)
+            far = (corner[0] + other.size * cos(theta), corner[1] + other.size * sin(theta))
+            self.replace(dim.other_index, "line", corner if j == 0 else far, far if j == 0 else corner)
+            return
         if mode == "inclination":
             if not -180 <= value <= 180:
                 raise ValueError("Угол наклона должен быть от −180 до 180 градусов")
@@ -257,13 +303,21 @@ class SketchDraft:
     def apply_fillet(self, first: int, second: int, pieces: tuple[Entity, Entity, Entity]) -> None:
         if first == second or min(first, second) < 0 or max(first, second) >= len(self.entities):
             raise ValueError("Выберите два разных отрезка")
-        if self.entities[first].kind != "line" or self.entities[second].kind != "line":
-            raise ValueError("Для скругления выберите два отрезка")
+        kinds = (self.entities[first].kind, self.entities[second].kind)
+        if kinds not in (("line", "line"), ("line", "arc"), ("arc", "line")):
+            raise ValueError("Выберите два отрезка или отрезок и дугу")
         if len(self.entities) >= MAX_ENTITIES:
             raise ValueError("Достигнут предел элементов эскиза")
         validated = tuple(make_entity(e.kind, e.start, e.end, e.sweep_deg) for e in pieces)
-        if tuple(e.kind for e in validated) != ("line", "line", "arc"):
+        if tuple(e.kind for e in validated) != (*kinds, "arc"):
             raise ValueError("Некорректное сопряжение")
+        proposed = list(self.entities)
+        proposed[first], proposed[second] = validated[0], validated[1]
+        for dim in self.dimensions:
+            try:
+                validate_dimension(dim, tuple(proposed))
+            except ValueError as exc:
+                raise ValueError("Сопряжение нарушает угловой размер; сначала удалите его") from exc
         self._checkpoint()
         self.entities[first], self.entities[second] = validated[0], validated[1]
         self.entities.append(validated[2])

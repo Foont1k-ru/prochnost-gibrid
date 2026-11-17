@@ -214,3 +214,62 @@ def test_fillet_arbitrary_corner_is_tangent(angle):
     assert abs(r1[0] * v1[0] + r1[1] * v1[1]) < 1e-6
     assert abs(r2[0] * v2[0] + r2[1] * v2[1]) < 1e-6
     assert arc_end(arc) == pytest.approx(p2, abs=1e-8)
+
+
+@pytest.mark.parametrize("angle,at_end,reverse_line,inward", [(a, end, rev, inward)
+    for a in (90, -90, 180, -180) for end in (False, True) for rev in (False, True) for inward in (False, True)])
+def test_line_arc_fillet_is_finite_smooth_and_undoable(angle, at_end, reverse_line, inward):
+    from suspensionlab.model.sketch_construction import fillet_line_arc
+    from suspensionlab.model.sketch_curves import distance
+
+    arc = make_entity("arc", (0, 0), (10, 0), angle)
+    corner = arc_end(arc) if at_end else arc.end
+    sign = -1 if inward else 1
+    far = (corner[0] * (1 + sign), corner[1] * (1 + sign))
+    source = line(far, corner) if reverse_line else line(corner, far)
+    options = fillet_line_arc(source, arc, 2)
+    assert options
+    for new_line, new_arc, blend in options:
+        p1, p2 = blend.end, arc_end(blend)
+        assert min(distance(p1, new_line.start), distance(p1, new_line.end)) < 1e-8
+        assert min(distance(p2, new_arc.end), distance(p2, arc_end(new_arc))) < 1e-8
+        assert blend.size == pytest.approx(2)
+        lv = (new_line.end[0] - new_line.start[0], new_line.end[1] - new_line.start[1])
+        r1 = (p1[0] - blend.start[0], p1[1] - blend.start[1])
+        assert r1[0] * lv[0] + r1[1] * lv[1] == pytest.approx(0, abs=1e-7)
+        r2 = (p2[0] - blend.start[0], p2[1] - blend.start[1])
+        ar = (p2[0] - arc.start[0], p2[1] - arc.start[1])
+        assert r2[0] * ar[1] - r2[1] * ar[0] == pytest.approx(0, abs=1e-7)
+        draft = SketchDraft((source, arc))
+        draft.apply_fillet(0, 1, (new_line, new_arc, blend))
+        draft.undo()
+        assert tuple(draft.entities) == (source, arc)
+        draft.redo()
+        assert len(draft.entities) == 3
+
+
+def test_line_arc_fillet_invalid_cases_leave_draft_untouched():
+    from suspensionlab.model.sketch_construction import fillet_line_arc
+
+    arc = make_entity("arc", (0, 0), (10, 0), 90)
+    segment = line((10, 0), (15, 0))
+    for radius in (0, -1, float("nan")):
+        with pytest.raises(ValueError):
+            fillet_line_arc(segment, arc, radius)
+    assert not fillet_line_arc(segment, arc, 100)
+    with pytest.raises(ValueError):
+        fillet_line_arc(line((30, 0), (40, 0)), arc, 2)
+
+
+def test_line_arc_fillet_preserves_closed_sector():
+    from suspensionlab.model.sketch_construction import fillet_line_arc
+    from suspensionlab.model.sketch_contours import check_contours
+
+    segment = line((0, 0), (10, 0))
+    arc = make_entity("arc", (0, 0), (10, 0), 90)
+    third = line((0, 10), (0, 0))
+    draft = SketchDraft((segment, arc, third))
+    pieces = fillet_line_arc(segment, arc, 2)[0]
+    draft.apply_fillet(0, 1, pieces)
+    report = check_contours(tuple(draft.entities))
+    assert report.total_issues == 0 and report.closed_loops == 1

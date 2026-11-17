@@ -396,6 +396,33 @@ def run_packaging_check() -> None:
         sketch._saved = sketch._document()
         sketch.close()
 
+        from .model.sketch_draft import SketchDraft, dimension_value, make_entity
+
+        sketch2 = SketchDraftDialog()
+        line = make_entity("line", (10., 0.), (30., 0.))
+        arc = make_entity("arc", (0., 0.), (10., 0.), 90.)
+        sketch2.canvas.draft = SketchDraft((arc, line))
+        sketch2.fillet_radius.setValue(2.)
+        sketch2._fillet((0, 1))
+        _require(len(sketch2.canvas.draft.entities) == 3 and sketch2.canvas.draft.entities[-1].kind == "arc",
+                 "Сопряжение дуги и отрезка недоступно")
+        sketch2._undo()
+        _require(tuple(sketch2.canvas.draft.entities) == (arc, line), "Отмена сопряжения дуги недоступна")
+        first = make_entity("line", (0., 0.), (50., 0.))
+        second = make_entity("line", (0., 0.), (0., 50.))
+        sketch2.canvas.draft = SketchDraft((first, second))
+        sketch2.canvas.draft.add_dimension(0, (20., 20.), "between", 1)
+        with patch.object(QInputDialog, "getDouble", return_value=(60., True)):
+            sketch2._edit_dimension(0)
+        dim = sketch2.canvas.draft.dimensions[0]
+        _require(abs(dimension_value(dim, *sketch2.canvas.draft.entities) - 60.) < 1e-6,
+                 "Изменение угла между отрезками недоступно")
+        angled = Path(sketch_dir) / "угол.slsketch"
+        write_new_sketch(angled, sketch2._document())
+        _require(read_sketch(angled) == sketch2._document(), "Угол между отрезками не сохранился")
+        sketch2._saved = sketch2._document()
+        sketch2.close()
+
     preview = CadPreview()
     preview.resize(320, 280)
     preview.set_mesh(CadMesh(np.array([[[0, 0, 0], [10, 0, 0], [0, 0, 10]]]), 1),

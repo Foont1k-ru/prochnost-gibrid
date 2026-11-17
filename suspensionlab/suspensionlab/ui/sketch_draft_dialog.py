@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..model.sketch_construction import fillet_lines, tangent_circles, trim_entity
+from ..model.sketch_construction import fillet_line_arc, fillet_lines, tangent_circles, trim_entity
 from ..model.sketch_contours import ContourIssue, check_contours
 from ..model.sketch_draft import (
     LIMIT_MM,
@@ -39,6 +39,7 @@ from ..model.sketch_draft import (
     dimension_text,
     dimension_value,
     drawing_bounds,
+    line_angle_geometry,
     make_entity,
     rectangle_entities,
 )
@@ -101,6 +102,7 @@ class SketchCanvas(QWidget):
         self.selected: int | None = None
         self.construction_indices: list[int] = []
         self.dimension_target: int | None = None
+        self.dimension_other: int | None = None
         self.dimension_mode = "auto"
         self.arc_sweep = 90.0
         self.diagnostic_indices: set[int] = set()
@@ -155,6 +157,7 @@ class SketchCanvas(QWidget):
         self.measure_start = None
         self.construction_indices.clear()
         self.dimension_target = None
+        self.dimension_other = None
         self.hover = None
         self.update()
         self.message.emit("Выберите элемент" if self.kind is None else "Выберите первую точку")
@@ -236,36 +239,63 @@ class SketchCanvas(QWidget):
                     self.message.emit("Размер удалён; отмена вернёт его")
                     self.changed.emit()
                     self.update()
+            elif (self.kind == "dimension" and self.dimension_target is not None and
+                  self.dimension_mode == "between" and self.dimension_other is None):
+                from ..model.sketch_draft import validate_dimension
+
+                point = self.to_world(event.position(), snap=False)
+                matches = [(_distance_to_entity(point, entity), i) for i, entity in enumerate(self.draft.entities)
+                           if entity.kind == "line" and i != self.dimension_target]
+                best = min(matches, default=(float("inf"), -1))
+                if best[0] > 8.0 / self.scale:
+                    self.message.emit("Выберите второй отрезок рядом с курсором")
+                    return
+                try:
+                    validate_dimension(Dimension(self.dimension_target, point, "between", best[1]), tuple(self.draft.entities))
+                except ValueError as exc:
+                    self.message.emit(str(exc))
+                    return
+                self.dimension_other = best[1]
+                self.message.emit("Укажите положение угловой надписи; Esc — отмена")
+                self.update()
             elif self.kind == "dimension" and self.dimension_target is not None:
                 point = self.to_world(event.position(), snap=False)
                 try:
-                    self.draft.add_dimension(self.dimension_target, point, self.dimension_mode)
+                    self.draft.add_dimension(self.dimension_target, point, self.dimension_mode, self.dimension_other)
                 except ValueError as exc:
                     self.message.emit(str(exc))
                     return
                 self.dimension_target = None
+                self.dimension_other = None
                 self.message.emit("Размер добавлен; щёлкните число для изменения элемента")
                 self.changed.emit()
                 self.update()
             elif self.kind in ("trim", "tangent2", "tangent3", "dimension", "fillet"):
                 point = self.to_world(event.position(), snap=False)
                 candidates = [(_distance_to_entity(point, e), i) for i, e in enumerate(self.draft.entities)
-                              if e.kind == "line" or (self.kind in ("trim", "dimension") and e.kind in ("circle", "arc"))]
+                              if (e.kind == "line" or (self.kind in ("trim", "dimension") and e.kind in ("circle", "arc")) or
+                                  (self.kind == "fillet" and e.kind == "arc"))]
                 best = min(candidates, default=(float("inf"), -1))
                 if best[0] > 8.0 / self.scale:
-                    self.message.emit("Выберите отрезок, окружность или дугу" if self.kind == "trim" else "Выберите отрезок рядом с курсором")
+                    self.message.emit("Выберите отрезок, окружность или дугу" if self.kind in ("trim", "dimension") else
+                                      "Выберите отрезок или дугу" if self.kind == "fillet" else "Выберите отрезок рядом с курсором")
                 elif self.kind == "trim":
                     self.trimRequested.emit(best[1], point)
                 elif self.kind == "dimension":
                     try:
                         from ..model.sketch_draft import validate_dimension
 
-                        validate_dimension(Dimension(best[1], point, self.dimension_mode), tuple(self.draft.entities))
+                        if self.dimension_mode == "between":
+                            if self.draft.entities[best[1]].kind != "line":
+                                raise ValueError("Для угла выберите отрезок")
+                        else:
+                            validate_dimension(Dimension(best[1], point, self.dimension_mode), tuple(self.draft.entities))
                     except ValueError as exc:
                         self.message.emit(str(exc))
                         return
                     self.dimension_target = best[1]
-                    self.message.emit("Укажите положение размерной надписи; Esc — отмена")
+                    self.message.emit("Выберите второй отрезок с общим концом; Esc — отмена" if self.dimension_mode == "between" else
+                                      "Укажите положение размерной надписи; Esc — отмена")
                     self.update()
                 elif best[1] in self.construction_indices:
                     self.message.emit("Выберите другой отрезок")
@@ -348,14 +378,15 @@ class SketchCanvas(QWidget):
         p.drawLine(QPointF(origin.x(), 0), QPointF(origin.x(), self.height()))
         p.drawLine(QPointF(0, origin.y()), QPointF(self.width(), origin.y()))
         for i, entity in enumerate(self.draft.entities):
-            selected = i == self.selected or i in self.construction_indices or i == self.dimension_target
+            selected = i == self.selected or i in self.construction_indices or i == self.dimension_target or i == self.dimension_other
             color = "#f7ca72" if selected else ("#ff6e6e" if i in self.diagnostic_indices else "#6ed5f7")
             p.setPen(QPen(QColor(color), 3 if selected or i in self.diagnostic_indices else 2))
             self._draw_entity(p, entity.kind, entity.start, entity.end, entity.sweep_deg)
         for dim in self.draft.dimensions:
             self._draw_dimension(p, dim, False)
-        if self.dimension_target is not None and self.hover is not None:
-            self._draw_dimension(p, Dimension(self.dimension_target, self.hover, self.dimension_mode), True)
+        if (self.dimension_target is not None and self.hover is not None and
+                (self.dimension_mode != "between" or self.dimension_other is not None)):
+            self._draw_dimension(p, Dimension(self.dimension_target, self.hover, self.dimension_mode, self.dimension_other), True)
         p.setPen(QPen(QColor("#ff6e6e"), 2))
         for point in self.diagnostic_points:
             p.drawEllipse(self.to_screen(point), 5, 5)
@@ -382,8 +413,12 @@ class SketchCanvas(QWidget):
             p.drawEllipse(self.to_screen(self.hover), 4, 4)
         p.end()
 
+    def _dimension_text(self, dimension: Dimension) -> str:
+        other = self.draft.entities[dimension.other_index] if dimension.other_index is not None else None
+        return dimension_text(dimension, self.draft.entities[dimension.entity_index], other)
+
     def _dimension_label_rect(self, dimension: Dimension) -> QRectF:
-        label = dimension_text(dimension, self.draft.entities[dimension.entity_index])
+        label = self._dimension_text(dimension)
         baseline = self.to_screen(dimension.position) + QPointF(6, -6)
         bounds = self.fontMetrics().boundingRect(label)
         return QRectF(baseline.x() + bounds.x(), baseline.y() + bounds.y(), bounds.width(), bounds.height())
@@ -392,7 +427,16 @@ class SketchCanvas(QWidget):
         entity = self.draft.entities[dimension.entity_index]
         position = self.to_screen(dimension.position)
         painter.setPen(QPen(QColor("#a6f4bb"), 1, Qt.PenStyle.DashLine if preview else Qt.PenStyle.SolidLine))
-        if entity.kind == "line" and dimension.mode != "inclination":
+        if dimension.mode == "between":
+            assert dimension.other_index is not None
+            corner, a, b, _ = line_angle_geometry(entity, self.draft.entities[dimension.other_index])
+            radius = max(8.0, hypot(position.x() - self.to_screen(corner).x(), position.y() - self.to_screen(corner).y()))
+            center = self.to_screen(corner)
+            start = degrees(atan2(a[1], a[0]))
+            sweep = degrees(atan2(a[0] * b[1] - a[1] * b[0], a[0] * b[0] + a[1] * b[1]))
+            painter.drawArc(QRectF(center.x() - radius, center.y() - radius, radius * 2, radius * 2),
+                            round(start * 16), round(sweep * 16))
+        elif entity.kind == "line" and dimension.mode != "inclination":
             dx, dy = entity.end[0] - entity.start[0], entity.end[1] - entity.start[1]
             nx, ny = -dy / entity.size, dx / entity.size
             offset = ((dimension.position[0] - entity.start[0]) * nx +
@@ -408,7 +452,7 @@ class SketchCanvas(QWidget):
             painter.drawLine(self.to_screen(a), self.to_screen(b))
         else:
             painter.drawLine(self.to_screen(entity.end), position)
-        label = dimension_text(dimension, entity)
+        label = self._dimension_text(dimension)
         painter.drawEllipse(position, 3, 3)  # точка выбора/удаления размера
         painter.drawText(position + QPointF(6, -6), label)
 
@@ -494,6 +538,68 @@ class TangentChoiceDialog(QDialog):
 
     def selected_circle(self) -> Entity:
         return self.circles[self.choice.currentIndex()]
+
+
+class FilletPreview(QWidget):
+    def __init__(self, options: tuple[tuple[Entity, Entity, Entity], ...], parent: QWidget) -> None:
+        super().__init__(parent)
+        self.options = options
+        self.index = 0
+        self.setMinimumSize(440, 300)
+
+    def set_index(self, index: int) -> None:
+        self.index = index
+        self.update()
+
+    def paintEvent(self, _event: object) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.fillRect(self.rect(), QColor("#151e2c"))
+        pieces = self.options[self.index]
+        bounds = drawing_bounds(pieces)
+        assert bounds is not None
+        left, bottom, right, top = bounds
+        scale = min(max(1, self.width() - 60) / max(right - left, 1e-9),
+                    max(1, self.height() - 60) / max(top - bottom, 1e-9), 200.0)
+        cx, cy = (left + right) / 2, (bottom + top) / 2
+
+        def screen(point: Point) -> QPointF:
+            return QPointF(self.width() / 2 + (point[0] - cx) * scale,
+                           self.height() / 2 - (point[1] - cy) * scale)
+        for i, entity in enumerate(pieces):
+            painter.setPen(QPen(QColor("#f7ca72" if i == 2 else "#6ed5f7"), 3 if i == 2 else 2))
+            if entity.kind == "line":
+                painter.drawLine(screen(entity.start), screen(entity.end))
+            else:
+                center, radius = screen(entity.start), entity.size * scale
+                angle = degrees(atan2(entity.end[1] - entity.start[1], entity.end[0] - entity.start[0]))
+                assert entity.sweep_deg is not None
+                painter.drawArc(QRectF(center.x() - radius, center.y() - radius, 2 * radius, 2 * radius),
+                                round(angle * 16), round(entity.sweep_deg * 16))
+        painter.end()
+
+
+class FilletChoiceDialog(QDialog):
+    def __init__(self, options: tuple[tuple[Entity, Entity, Entity], ...], parent: QWidget) -> None:
+        super().__init__(parent)
+        self.options = options
+        self.setWindowTitle("Выбор сопряжения")
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("Выберите вариант; жёлтым показана новая дуга сопряжения."))
+        self.choice = QComboBox()
+        self.choice.addItems([f"Вариант {i + 1}: центр ({p[2].start[0]:.4f}, {p[2].start[1]:.4f})"
+                              for i, p in enumerate(options)])
+        layout.addWidget(self.choice)
+        self.preview = FilletPreview(options, self)
+        layout.addWidget(self.preview)
+        self.choice.currentIndexChanged.connect(self.preview.set_index)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def selected_pieces(self) -> tuple[Entity, Entity, Entity]:
+        return self.options[self.choice.currentIndex()]
 
 
 class EntityEditor(QDialog):
@@ -620,7 +726,7 @@ class SketchDraftDialog(QDialog):
         self.tool.addItems(["Отрезок", "Окружность: центр и точка", "Выбор элемента",
                             "Прямоугольник: два угла", "Цепочка отрезков", "Измерить расстояние",
                             "Дуга: центр, начало, угол", "Обрезать участок", "Окружность по 2 отрезкам",
-                            "Окружность по 3 отрезкам", "Поставить размер", "Удалить размер", "Сопряжение отрезков"])
+                            "Окружность по 3 отрезкам", "Поставить размер", "Удалить размер", "Сопряжение: отрезок / дуга"])
         row.addWidget(self.tool)
         self.snap = QCheckBox("Сетка")
         self.snap.setChecked(True)
@@ -681,7 +787,8 @@ class SketchDraftDialog(QDialog):
         self.dimension_style = QComboBox()
         for label, key in (("Авто: длина / радиус", "auto"), ("Горизонтальный", "horizontal"),
                            ("Вертикальный", "vertical"), ("Радиус", "radius"),
-                           ("Диаметр", "diameter"), ("Угол дуги", "angle"), ("Наклон отрезка", "inclination")):
+                           ("Диаметр", "diameter"), ("Угол дуги", "angle"), ("Наклон отрезка", "inclination"),
+                           ("Угол между отрезками", "between")):
             self.dimension_style.addItem(label, key)
         diagnostics.addWidget(self.dimension_style)
         diagnostics.addWidget(QLabel("Щёлкните число для изменения; точность показа 0,001"), 1)
@@ -796,7 +903,7 @@ class SketchDraftDialog(QDialog):
         elif kinds[index] in ("tangent2", "tangent3"):
             self._message("Выберите мышью разные отрезки; касание строится одноразово без ограничения")
         elif kinds[index] == "fillet":
-            self._message("Укажите два отрезка с общим концом; радиус задаётся сверху")
+            self._message("Укажите два отрезка или отрезок и дугу с общим концом; радиус задаётся сверху")
         elif kinds[index] == "dimension":
             self._message("Выберите элемент, затем место надписи; щелчок по числу меняет только этот элемент")
         elif kinds[index] == "erase_dim":
@@ -806,6 +913,7 @@ class SketchDraftDialog(QDialog):
         self.canvas.dimension_mode = str(self.dimension_style.currentData())
         # Старый выбор может не подходить новому виду размера.
         self.canvas.dimension_target = None
+        self.canvas.dimension_other = None
         self.canvas.update()
 
     def _arc_angle_changed(self, value: float) -> None:
@@ -869,11 +977,14 @@ class SketchDraftDialog(QDialog):
     def _edit_dimension(self, index: int) -> None:
         dimension = self.canvas.draft.dimensions[index]
         entity = self.canvas.draft.entities[dimension.entity_index]
+        other = self.canvas.draft.entities[dimension.other_index] if dimension.other_index is not None else None
+        prompt = ("Первый отрезок и общий конец остаются на месте, второй поворачивается. "
+                  "Другие элементы не связаны; касания могут нарушиться.\nНовый угол:" if dimension.mode == "between" else
+                  "Меняется только этот элемент: соседние элементы и касания не сохраняют связь. "
+                  "Для отрезка закреплена первая точка, для окружности и дуги — центр.\nНовое значение:")
         value, ok = QInputDialog.getDouble(
-            self, "Изменить размер",
-            "Меняется только этот элемент: соседние элементы и касания не сохраняют связь. "
-            "Для отрезка закреплена первая точка, для окружности и дуги — центр.\nНовое значение:",
-            dimension_value(dimension, entity), -4_000_000, 4_000_000, 6)
+            self, "Изменить размер", prompt,
+            dimension_value(dimension, entity, other), -4_000_000, 4_000_000, 6)
         if not ok:
             return
         try:
@@ -886,14 +997,33 @@ class SketchDraftDialog(QDialog):
 
     def _fillet(self, indices: tuple[int, ...]) -> None:
         first, second = indices
+        a, b = self.canvas.draft.entities[first], self.canvas.draft.entities[second]
         try:
-            pieces = fillet_lines(self.canvas.draft.entities[first], self.canvas.draft.entities[second],
-                                  self.fillet_radius.value())
+            if a.kind == b.kind == "line":
+                pieces = fillet_lines(a, b, self.fillet_radius.value())
+            elif {a.kind, b.kind} == {"line", "arc"}:
+                line, arc = (a, b) if a.kind == "line" else (b, a)
+                options = fillet_line_arc(line, arc, self.fillet_radius.value())
+                if not options:
+                    raise ValueError("Нет плавного сопряжения на этих конечных элементах при заданном радиусе")
+                if len(options) > 1:
+                    choice = FilletChoiceDialog(options, self)
+                    result = choice.exec()
+                    selected = choice.selected_pieces() if result == QDialog.DialogCode.Accepted else None
+                    choice.deleteLater()
+                    if selected is None:
+                        self._message("Построение отменено")
+                        return
+                    options = (selected,)
+                line_piece, arc_piece, blend = options[0]
+                pieces = (line_piece, arc_piece, blend) if a.kind == "line" else (arc_piece, line_piece, blend)
+            else:
+                raise ValueError("Выберите два отрезка или отрезок и дугу")
             self.canvas.draft.apply_fillet(first, second, pieces)
         except ValueError as exc:
             self._message(str(exc))
             return
-        self._message("Сопряжение создано; кнопка отмены восстанавливает исходные отрезки")
+        self._message("Сопряжение создано; кнопка отмены восстанавливает исходные элементы")
         self.canvas.update()
 
     def _set_snap(self, enabled: bool) -> None:
@@ -971,7 +1101,11 @@ class SketchDraftDialog(QDialog):
         editor = EntityEditor(self.canvas.draft.entities[index], self)
         if editor.exec() == QDialog.DialogCode.Accepted:
             entity = editor.result_entity()
-            self.canvas.draft.replace(index, entity.kind, entity.start, entity.end, entity.sweep_deg)
+            try:
+                self.canvas.draft.replace(index, entity.kind, entity.start, entity.end, entity.sweep_deg)
+            except ValueError as exc:
+                QMessageBox.warning(self, "Элемент не изменён", str(exc))
+                return
             self._message("Элемент изменён")
             self.canvas.update()
 
@@ -1063,6 +1197,7 @@ class SketchDraftDialog(QDialog):
         self.canvas.selected = None
         self.canvas.construction_indices.clear()
         self.canvas.dimension_target = None
+        self.canvas.dimension_other = None
         self.canvas.plane_locked = bool(doc.entities)
         self.plane.setCurrentText(doc.plane)
         self.plane_offset.setValue(doc.offset_mm)

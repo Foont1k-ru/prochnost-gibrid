@@ -1,5 +1,6 @@
 """Проверки пользовательского пробного холста."""
 
+import pytest
 from PySide6.QtCore import QPointF, Qt
 from PySide6.QtWidgets import QMessageBox
 
@@ -638,3 +639,79 @@ def test_extrusion_opens_preview_and_preserves_sketch(qtbot, monkeypatch):
     assert captured[0] is not None and len(captured[0].triangles) == 12
     assert dialog._document() == original
     dialog._saved = original
+
+
+def test_angular_dimension_placement_edit_and_undo(qtbot, monkeypatch, tmp_path):
+    from PySide6.QtWidgets import QInputDialog
+
+    from suspensionlab.model.sketch_draft import dimension_value
+    from suspensionlab.model.sketch_io import read_sketch, write_new_sketch
+
+    dialog = SketchDraftDialog()
+    qtbot.addWidget(dialog)
+    dialog.show()
+    canvas = dialog.canvas
+    canvas.add_point((0, 0))
+    canvas.add_point((60, 0))
+    canvas.add_point((0, 0))
+    canvas.add_point((0, 60))
+    dialog.tool.setCurrentIndex(10)
+    dialog.dimension_style.setCurrentIndex(7)
+    for point in ((30, 0), (0, 30), (25, 25)):
+        qtbot.mouseClick(canvas, Qt.MouseButton.LeftButton, pos=canvas.to_screen(point).toPoint())
+    assert len(canvas.draft.dimensions) == 1
+    dim = canvas.draft.dimensions[0]
+    assert dim.other_index == 1 and dim.mode == "between"
+    assert not canvas.grab().isNull()
+    monkeypatch.setattr(QInputDialog, "getDouble", lambda *args, **kwargs: (60, True))
+    label = canvas._dimension_label_rect(dim).center().toPoint()
+    qtbot.mouseClick(canvas, Qt.MouseButton.LeftButton, pos=label)
+    assert dimension_value(dim, canvas.draft.entities[0], canvas.draft.entities[1]) == pytest.approx(60)
+    path = tmp_path / "угол.slsketch"
+    write_new_sketch(path, dialog._document())
+    assert read_sketch(path) == dialog._document()
+    dialog._undo()
+    assert dimension_value(dim, canvas.draft.entities[0], canvas.draft.entities[1]) == pytest.approx(90)
+    dialog._redo()
+    assert dimension_value(dim, canvas.draft.entities[0], canvas.draft.entities[1]) == pytest.approx(60)
+    dialog._saved = dialog._document()
+
+
+def test_line_arc_fillet_selected_with_mouse_in_either_order(qtbot):
+    from suspensionlab.model.sketch_draft import SketchDraft, make_entity
+
+    dialog = SketchDraftDialog()
+    qtbot.addWidget(dialog)
+    dialog.show()
+    canvas = dialog.canvas
+    line = make_entity("line", (0, 0), (40, 0))
+    arc = make_entity("arc", (-40, 0), (0, 0), 90)
+    canvas.draft = SketchDraft((arc, line))
+    dialog.tool.setCurrentIndex(12)
+    dialog.fillet_radius.setValue(5)
+    for point in ((-12, 28), (20, 0)):
+        qtbot.mouseClick(canvas, Qt.MouseButton.LeftButton, pos=canvas.to_screen(point).toPoint())
+    assert len(canvas.draft.entities) == 3
+    assert [e.kind for e in canvas.draft.entities] == ["arc", "line", "arc"]
+    dialog._undo()
+    assert tuple(canvas.draft.entities) == (arc, line)
+    dialog._saved = dialog._document()
+
+
+def test_fillet_choice_dialog_draws_and_selects(qtbot):
+    from suspensionlab.model.sketch_construction import fillet_line_arc
+    from suspensionlab.model.sketch_draft import make_entity
+    from suspensionlab.ui.sketch_draft_dialog import FilletChoiceDialog
+
+    line = make_entity("line", (10, 0), (-10.51422901814906, 9.507317259863067))
+    arc = make_entity("arc", (0, 0), (10, 0), 237.97061729307114)
+    options = fillet_line_arc(line, arc, 0.9960534565999501)
+    assert len(options) == 2
+    parent = SketchDraftDialog()
+    qtbot.addWidget(parent)
+    choice = FilletChoiceDialog(options, parent)
+    qtbot.addWidget(choice)
+    choice.show()
+    choice.choice.setCurrentIndex(1)
+    assert choice.selected_pieces() == options[1]
+    assert not choice.preview.grab().isNull()

@@ -198,3 +198,84 @@ def test_edit_zero_projection_and_failed_edit_do_not_destroy_entity():
     with pytest.raises(ValueError):
         draft.set_dimension_value(1, 0)
     assert draft.entities[0].end == (0, 4)
+
+
+@pytest.mark.parametrize("reverse1,reverse2,side", [(False, False, 1), (True, False, -1),
+                                                     (False, True, -1), (True, True, 1)])
+def test_between_lines_dimension_edit_and_history(reverse1, reverse2, side):
+    from suspensionlab.model.sketch_draft import dimension_text, dimension_value
+
+    first = line((0, 0), (10, 0))
+    second = line((0, 0), (0, side * 20))
+    if reverse1:
+        first = line(first.end, first.start)
+    if reverse2:
+        second = line(second.end, second.start)
+    draft = SketchDraft((first, second))
+    draft.add_dimension(0, (5, 5), "between", 1)
+    assert dimension_text(draft.dimensions[0], *draft.entities) == "∠ 90.000°"
+    draft.set_dimension_value(0, 45)
+    assert dimension_value(draft.dimensions[0], *draft.entities) == pytest.approx(45)
+    assert draft.entities[1].size == pytest.approx(20)
+    assert draft.entities[0] == first
+    x, y = draft.entities[1].start if reverse2 else draft.entities[1].end
+    assert x == pytest.approx(20 / 2**0.5) and y == pytest.approx(side * 20 / 2**0.5)
+    draft.undo()
+    assert draft.entities[1] == second
+    draft.redo()
+    assert dimension_value(draft.dimensions[0], *draft.entities) == pytest.approx(45)
+
+
+def test_between_dimensions_validate_refs_while_editing_and_shifting(tmp_path):
+    first, second = line((0, 0), (10, 0)), line((0, 0), (0, 10))
+    draft = SketchDraft((line((50, 50), (60, 50)), first, second))
+    draft.add_dimension(1, (5, 5), "between", 2)
+    for index in (1, 2):
+        with pytest.raises(ValueError, match="размер"):
+            draft.delete(index)
+    with pytest.raises(ValueError, match="размер"):
+        draft.replace(2, "line", (20, 20), (30, 20))
+    draft.delete(0)
+    assert draft.dimensions[0].entity_index == 0 and draft.dimensions[0].other_index == 1
+    path = tmp_path / "angle.slsketch"
+    doc = SketchDocument("XY", 0, tuple(draft.entities), tuple(draft.dimensions))
+    write_new_sketch(path, doc)
+    assert json.loads(path.read_text(encoding="utf-8"))["version"] == "5"
+    assert read_sketch(path) == doc
+    draft.set_dimension_value(0, 60)
+    assert draft.entities[1].end == pytest.approx((5, 5 * 3**0.5))
+    for value in (0, -1, 181, float("nan")):
+        with pytest.raises(ValueError):
+            draft.set_dimension_value(0, value)
+
+
+def test_between_dimension_rejects_wrong_references():
+    draft = SketchDraft((line((0, 0), (10, 0)), line((11, 0), (11, 10)), make_entity("circle", (0, 0), (5, 0))))
+    for index in (None, 0, 1, 2, -1, True):
+        with pytest.raises(ValueError):
+            draft.add_dimension(0, (5, 5), "between", index)
+    assert not draft.dimensions
+
+
+@pytest.mark.parametrize("value", [None, True, 0, 2, "1", [], {}])
+def test_invalid_between_second_reference_in_file(tmp_path, value):
+    draft = SketchDraft((line((0, 0), (10, 0)), line((0, 0), (0, 10))))
+    draft.add_dimension(0, (4, 4), "between", 1)
+    doc = SketchDocument("XY", 0, tuple(draft.entities), tuple(draft.dimensions))
+    path = tmp_path / "invalid-angle.slsketch"
+    write_new_sketch(path, doc)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["dimensions"][0]["other_index"] = value
+    path.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(SketchIOError):
+        read_sketch(path)
+
+
+def test_fillet_rejects_breaking_angle_reference_atomically():
+    first, second = line((0, 0), (100, 0)), line((0, 0), (0, 100))
+    draft = SketchDraft((first, second))
+    draft.add_dimension(0, (10, 10), "between", 1)
+    with pytest.raises(ValueError, match="угловой размер"):
+        draft.apply_fillet(0, 1, fillet_lines(first, second, 10))
+    assert tuple(draft.entities) == (first, second)
+    assert len(draft.dimensions) == 1
