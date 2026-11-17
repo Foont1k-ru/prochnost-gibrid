@@ -47,6 +47,7 @@ from .joint_concept_dialog import JointConceptDialog
 from .niva_arms_dialog import NivaArmsDialog
 from .point_table_dialog import PointTableDialog
 from .rear_tube_dialog import RearTubeDialog
+from .sketch_draft_dialog import SketchDraftDialog
 from .snapshot_compare_dialog import SnapshotCompareDialog
 from .step_inventory_dialog import StepInventoryDialog
 from .theme import THEMES, apply_theme
@@ -135,6 +136,9 @@ class MainWindow(QMainWindow):
     def _show_workspace(self) -> None:
         """Показывает рабочую область вместо стартового экрана."""
         self._stack.setCurrentWidget(self._tabs)
+
+    def _open_sketch_draft(self) -> None:
+        SketchDraftDialog(self).exec()
 
     def _open_step_inventory(self) -> None:
         StepInventoryDialog(self).exec()
@@ -312,6 +316,9 @@ class MainWindow(QMainWindow):
         self.action_rear_tube = QAction(tr("rear_tube.menu"), self)
         self.action_rear_tube.triggered.connect(self._open_rear_tube)
 
+        self.action_sketch_draft = QAction("Пробный плоский эскиз (без сохранения)", self)
+        self.action_sketch_draft.triggered.connect(self._open_sketch_draft)
+
         self.action_niva_arms = QAction(tr("niva_arms.menu"), self)
         self.action_niva_arms.triggered.connect(self._open_niva_arms)
 
@@ -412,6 +419,7 @@ class MainWindow(QMainWindow):
         menu_file.addAction(self.action_step_inventory)
         menu_file.addAction(self.action_cad_preview)
         menu_file.addAction(self.action_cad_registration)
+        menu_file.addAction(self.action_sketch_draft)
         menu_file.addAction(self.action_niva_arms)
         menu_file.addAction(self.action_joint_concept)
         menu_file.addAction(self.action_front_tubes)
