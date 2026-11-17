@@ -92,7 +92,7 @@ def build_part(document: dict[str, Any]) -> Any:
 def build_assembly(document: dict[str, Any]) -> Any:
     """Создаёт соединение перенесённых экземпляров, не связывая их со схемой."""
     _assembly(document)
-    if document["version"] in ("0.2", "0.3", "0.4", "0.5", "0.6", "0.7", "0.8"):
+    if document["version"] in ("0.2", "0.3", "0.4", "0.5", "0.6", "0.7", "0.8", "0.9"):
         raise ValueError("incomplete weldment: use the explicitly partial tube preview")
     from OCP.BRep import BRep_Builder
     from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
@@ -261,4 +261,38 @@ def build_joint_preview(document: dict[str, Any]) -> Any:
         if not BRepCheck_Analyzer(part).IsValid():
             raise RuntimeError('invalid joint geometry')
         builder.Add(compound, part)
+    return compound
+
+
+def build_front_joint_layout_preview(document: dict[str, Any]) -> Any:
+    """Компоновка: 4 трубы и 6 условных корпусов с пальцами, без соединений."""
+    import math
+
+    from OCP.BRep import BRep_Builder
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
+    from OCP.gp import gp_Ax1, gp_Dir, gp_Pnt, gp_Trsf, gp_Vec
+    from OCP.TopoDS import TopoDS_Compound
+
+    from ..model.front_joint_layout import validate_front_joint_layout
+    from ..model.front_pair_snapshot import front_pair_sides
+    from ..model.front_tube_arm import front_tube_arm_points
+
+    validate_front_joint_layout(document)
+    builder, compound = BRep_Builder(), TopoDS_Compound()
+    builder.MakeCompound(compound)
+    builder.Add(compound, build_front_pair_preview(document['pair']))
+    ball, bushing = build_joint_preview(document['ball']), build_joint_preview(document['bushing'])
+    for arm in front_pair_sides(document['pair']):
+        points = front_tube_arm_points(arm)
+        for index, point in enumerate(points):
+            transform = gp_Trsf()
+            if index < 2:
+                # Local joint +Z -> vehicle +Y. Bushing is axially symmetric.
+                transform.SetRotation(gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(1, 0, 0)), -math.pi/2)
+            transform.SetTranslationPart(gp_Vec(*point))
+            shape = bushing if index < 2 else ball
+            placed = BRepBuilderAPI_Transform(shape, transform, True).Shape()
+            if placed.IsNull():
+                raise RuntimeError('joint placement failed')
+            builder.Add(compound, placed)
     return compound

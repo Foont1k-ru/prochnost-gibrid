@@ -469,3 +469,43 @@ def test_joint_editor_3d_rebuild_save_and_open(qtbot, tmp_path, monkeypatch):
     assert d._candidate['parameters']['outer_radius_mm'] == 23
     assert d.shutdown()
     d.close()
+
+
+def test_front_layout_embedded_joints_real_3d_and_copy(qtbot, tmp_path, monkeypatch):
+    from suspensionlab.model.joint_concept import DEFAULTS, make_joint_concept
+    from suspensionlab.model.kim_format import read_document
+    from suspensionlab.ui.front_tubes_dialog import FrontTubesDialog
+
+    c = AppController()
+    paths = {}
+    for kind in ('ball', 'bushing'):
+        paths[kind] = tmp_path / f'{kind}.kima'
+        write_document(paths[kind], 'assembly', make_joint_concept(kind, DEFAULTS[kind]))
+    d = FrontTubesDialog(c)
+    qtbot.addWidget(d)
+    for kind in ('ball', 'bushing'):
+        monkeypatch.setattr(QFileDialog, 'getOpenFileName', lambda *args, k=kind: (str(paths[k]), ''))
+        d._load_joint(kind)
+    d._layout_3d._enable.setChecked(True)
+    assert not d._save_layout.isEnabled()
+    qtbot.waitUntil(lambda: d._layout_3d._view.mesh is not None and d._save_layout.isEnabled(), timeout=45000)
+    d._radius.setText('13')
+    assert d._layout_3d._view.mesh is None and not d._save_layout.isEnabled()
+    qtbot.waitUntil(lambda: d._layout_3d._view.mesh is not None and d._save_layout.isEnabled(), timeout=45000)
+    path = tmp_path / 'layout.kima'
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(path), ''))
+    d._save_layout_copy()
+    assert read_document(path, 'assembly')['version'] == '0.9'
+    assert d.shutdown()
+    d.close()
+    d = FrontTubesDialog(c)
+    qtbot.addWidget(d)
+    monkeypatch.setattr(QFileDialog, 'getOpenFileName', lambda *args: (str(path), ''))
+    d._open_file()
+    d._layout_3d._enable.setChecked(True)
+    qtbot.waitUntil(lambda: d._layout_3d._view.mesh is not None, timeout=45000)
+    assert not d._save_layout.isEnabled()
+    d._start_preview()
+    qtbot.waitUntil(lambda: d._save_layout.isEnabled(), timeout=45000)
+    assert d.shutdown()
+    d.close()

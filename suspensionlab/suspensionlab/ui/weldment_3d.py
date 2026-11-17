@@ -38,12 +38,14 @@ class Weldment3D(QWidget):
 
     def __init__(self, parent: QWidget | None = None, *,
                  is_current: Callable[[dict[str, Any]], bool] | None = None,
-                 single_tube: bool = False, four_tubes: bool = False, joint: bool = False) -> None:
+                 single_tube: bool = False, four_tubes: bool = False, joint: bool = False,
+                 joint_layout: bool = False) -> None:
         super().__init__(parent)
         self._is_current = is_current
         self._single_tube = single_tube
         self._four_tubes = four_tubes
         self._joint = joint
+        self._joint_layout = joint_layout
         self._document: dict[str, Any] | None = None
         self._pending: dict[str, Any] | None = None
         self._worker: _TubeReader | None = None
@@ -55,7 +57,8 @@ class Weldment3D(QWidget):
         self._timer.setInterval(250)
         self._timer.timeout.connect(self._start)
         layout = QVBoxLayout(self)
-        enable_key = ("joint_concept.cad_enable" if joint else "front_pair.cad_enable" if four_tubes else
+        enable_key = ("front_joint_layout.cad_enable" if joint_layout else "joint_concept.cad_enable" if joint else
+                      "front_pair.cad_enable" if four_tubes else
                       "rear_tube.enable" if single_tube else "weldment_3d.enable")
         self._enable = QCheckBox(tr(enable_key), self)
         self._enable.toggled.connect(self._toggle)
@@ -103,7 +106,8 @@ class Weldment3D(QWidget):
             self._status.setText(tr("weldment_3d.no_data"))
         else:
             self._pending = self._document
-            building_key = ("joint_concept.cad_building" if self._joint else
+            building_key = ("front_joint_layout.cad_building" if self._joint_layout else
+                            "joint_concept.cad_building" if self._joint else
                             "front_pair.cad_building" if self._four_tubes else
                             "rear_tube.building" if self._single_tube else "weldment_3d.building")
             self._status.setText(tr(building_key))
@@ -133,7 +137,8 @@ class Weldment3D(QWidget):
         self._view.set_mesh(mesh)
         self._ready = True
         self._retry.setEnabled(True)
-        ready_key = ("joint_concept.cad_ready" if self._joint else
+        ready_key = ("front_joint_layout.cad_ready" if self._joint_layout else
+                     "joint_concept.cad_ready" if self._joint else
                      "front_pair.cad_ready" if self._four_tubes else
                      "rear_tube.cad_ready" if self._single_tube else "weldment_3d.ready")
         self._status.setText(tr(ready_key, triangles=len(mesh.triangles)))
@@ -151,7 +156,8 @@ class Weldment3D(QWidget):
         self._retry.setEnabled(self._document is not None and self._enable.isChecked())
         specific = {"timeout", "memory", "changed"}
         reason = tr(f"weldment_3d.error_{code}") if code in specific else tr(f"cad_preview.error.{code}")
-        self._status.setText(tr("weldment_3d.failed", reason=reason))
+        failed_key = "front_joint_layout.cad_failed" if self._joint_layout else "weldment_3d.failed"
+        self._status.setText(tr(failed_key, reason=reason))
         self.availabilityChanged.emit(self.can_save())
 
     def _finished(self) -> None:

@@ -17,6 +17,8 @@ on:
       - 'suspensionlab/suspensionlab/model/rear_pair_snapshot.py'
       - 'suspensionlab/tests/test_rear_pair_snapshot.py'
       - 'suspensionlab/suspensionlab/model/front_tube_arm.py'
+      - 'suspensionlab/suspensionlab/model/front_joint_layout.py'
+      - 'suspensionlab/tests/test_front_joint_layout_cad.py'
       - 'suspensionlab/suspensionlab/model/front_pair_snapshot.py'
       - 'suspensionlab/tests/test_front_pair_snapshot.py'
       - 'suspensionlab/suspensionlab/ui/front_tubes_dialog.py'
@@ -53,6 +55,8 @@ on:
       - 'suspensionlab/suspensionlab/model/rear_pair_snapshot.py'
       - 'suspensionlab/tests/test_rear_pair_snapshot.py'
       - 'suspensionlab/suspensionlab/model/front_tube_arm.py'
+      - 'suspensionlab/suspensionlab/model/front_joint_layout.py'
+      - 'suspensionlab/tests/test_front_joint_layout_cad.py'
       - 'suspensionlab/suspensionlab/model/front_pair_snapshot.py'
       - 'suspensionlab/tests/test_front_pair_snapshot.py'
       - 'suspensionlab/suspensionlab/ui/front_tubes_dialog.py'
@@ -100,7 +104,7 @@ jobs:
       - name: Убедиться, что CAD-ядро загружается
         run: python -c "from OCP.gp import gp_Ax3, gp_Pnt, gp_Trsf; from PySide6.QtWidgets import QApplication; print('Open CASCADE and Qt ready')"
       - name: Сверить преобразования и искусственную STEP-сборку
-        run: python -m pytest -p pytestqt.plugin -q tests/test_weldment_3d_integration.py tests/test_joint_concept_cad.py tests/test_front_tube_arm_cad.py tests/test_rear_tube_cad.py tests/test_cad_oracle.py tests/test_cad_mesh.py tests/test_cad_measurement.py tests/test_cad_recovery.py tests/test_step_cad_assembly.py tests/test_kim_cad_prototype.py --junitxml=cad-results.xml
+        run: python -m pytest -p pytestqt.plugin -q tests/test_weldment_3d_integration.py tests/test_front_joint_layout_cad.py tests/test_joint_concept_cad.py tests/test_front_tube_arm_cad.py tests/test_rear_tube_cad.py tests/test_cad_oracle.py tests/test_cad_mesh.py tests/test_cad_measurement.py tests/test_cad_recovery.py tests/test_step_cad_assembly.py tests/test_kim_cad_prototype.py --junitxml=cad-results.xml
       - name: Показать ошибки тестов в аннотациях
         if: failure()
         run: python scripts/annotate_pytest.py cad-results.xml

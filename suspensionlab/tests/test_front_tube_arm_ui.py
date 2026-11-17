@@ -297,3 +297,92 @@ def test_single_save_does_not_mark_changed_pair_saved_and_dialog_race(qtbot, tmp
     assert d._saved_pair is None and not d._has_unsaved()
     assert d.shutdown()
     d.close()
+
+
+def test_front_load_joints_save_layout_reopen_and_edit(qtbot, tmp_path, monkeypatch):
+    from suspensionlab.model.joint_concept import DEFAULTS, make_joint_concept
+
+    c = controller()
+    before = c.project.to_dict()
+    ball_path, bush_path = tmp_path / 'ball.kima', tmp_path / 'bush.kima'
+    ball, bush = make_joint_concept('ball', DEFAULTS['ball']), make_joint_concept('bushing', DEFAULTS['bushing'])
+    write_document(ball_path, 'assembly', ball)
+    write_document(bush_path, 'assembly', bush)
+    originals = (ball_path.read_bytes(), bush_path.read_bytes())
+    d = FrontTubesDialog(c)
+    qtbot.addWidget(d)
+    assert not d._save_layout.isEnabled()
+    monkeypatch.setattr(QFileDialog, 'getOpenFileName', lambda *args: (str(ball_path), ''))
+    d._load_joint('ball')
+    assert d._joint_docs['ball'] == ball and d._has_unsaved() and not d._save_layout.isEnabled()
+    warnings = []
+    monkeypatch.setattr(QMessageBox, 'warning', lambda *args: warnings.append(args))
+    d._load_joint('bushing')
+    assert warnings and d._joint_docs['bushing'] is None
+    monkeypatch.setattr(QFileDialog, 'getOpenFileName', lambda *args: (str(bush_path), ''))
+    d._load_joint('bushing')
+    assert d._joint_docs['bushing'] == bush and d._save_layout.isEnabled()
+    layout_path = tmp_path / 'layout.kima'
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(layout_path), ''))
+    d._save_layout_copy()
+    saved = read_document(layout_path, 'assembly')
+    assert saved['version'] == '0.9' and saved['ball'] == ball and saved['bushing'] == bush
+    assert not d._has_unsaved()
+    assert d.shutdown()
+    d.close()
+    d = FrontTubesDialog(c)
+    qtbot.addWidget(d)
+    monkeypatch.setattr(QFileDialog, 'getOpenFileName', lambda *args: (str(layout_path), ''))
+    d._open_file()
+    assert not d._active and d._layout_3d._document == saved and not d._save_layout.isEnabled()
+    assert not d._joint_buttons['ball'].isEnabled() and not d._has_unsaved()
+    d._start_preview()
+    assert d._save_layout.isEnabled() and not d._has_unsaved()
+    d._radius.setText('13')
+    assert d._has_unsaved() and d._layout_3d._document['pair']['source']['radius_mm'] == 13
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(layout_path), ''))
+    d._save_layout_copy()
+    assert len(warnings) == 2 and read_document(layout_path, 'assembly') == saved
+    target = tmp_path / 'layout-copy.kima'
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(target), ''))
+    d._save_layout_copy()
+    edited = read_document(target, 'assembly')
+    assert edited['pair']['source']['radius_mm'] == 13 and edited['ball'] == ball and not d._has_unsaved()
+    assert (ball_path.read_bytes(), bush_path.read_bytes()) == originals and c.project.to_dict() == before
+    assert d.shutdown()
+    d.close()
+
+
+def test_joint_file_races_and_single_pair_save_leave_attachments_unsaved(qtbot, tmp_path, monkeypatch):
+    from suspensionlab.model.joint_concept import DEFAULTS, make_joint_concept
+
+    c = controller()
+    ball_path = tmp_path / 'ball.kima'
+    write_document(ball_path, 'assembly', make_joint_concept('ball', DEFAULTS['ball']))
+    d = FrontTubesDialog(c)
+    qtbot.addWidget(d)
+    warnings = []
+    monkeypatch.setattr(QMessageBox, 'warning', lambda *args: warnings.append(args))
+    def select_with_change(*args):
+        with QSignalBlocker(d._wall):
+            d._wall.setText('3')
+        return str(ball_path), ''
+    monkeypatch.setattr(QFileDialog, 'getOpenFileName', select_with_change)
+    d._load_joint('ball')
+    assert warnings and d._joint_docs['ball'] is None
+    d._refresh()
+    monkeypatch.setattr(QFileDialog, 'getOpenFileName', lambda *args: (str(ball_path), ''))
+    d._load_joint('ball')
+    assert d._joint_docs['ball'] is not None and d._has_unsaved()
+    pair = tmp_path / 'pair.kima'
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(pair), ''))
+    d._save_pair_copy()
+    assert read_document(pair, 'assembly')['version'] == '0.7' and d._has_unsaved()
+    monkeypatch.setattr(QMessageBox, 'question', lambda *args: QMessageBox.StandardButton.No)
+    d._new_draft()
+    assert d._joint_docs['ball'] is not None
+    monkeypatch.setattr(QMessageBox, 'question', lambda *args: QMessageBox.StandardButton.Yes)
+    d._new_draft()
+    assert d._joint_docs['ball'] is None and not d._has_unsaved()
+    assert d.shutdown()
+    d.close()
