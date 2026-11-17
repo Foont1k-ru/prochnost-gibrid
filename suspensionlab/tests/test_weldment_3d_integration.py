@@ -509,3 +509,47 @@ def test_front_layout_embedded_joints_real_3d_and_copy(qtbot, tmp_path, monkeypa
     qtbot.waitUntil(lambda: d._save_layout.isEnabled(), timeout=45000)
     assert d.shutdown()
     d.close()
+
+
+def test_rear_layout_real_3d_rebuild_and_reopen(qtbot, tmp_path, monkeypatch):
+    from suspensionlab.model.joint_concept import DEFAULTS, make_joint_concept
+    from suspensionlab.model.kim_format import read_document
+    from suspensionlab.ui.rear_tube_dialog import RearTubeDialog
+
+    c = AppController()
+    c.set_axle_type('rear', 'live_axle_coil')
+    for code, xyz in {'ll_in_l': (0, 0, 0), 'll_out_l': (100, 100, 0),
+                      'll_in_r': (0, 0, 0), 'll_out_r': (100, -100, 0)}.items():
+        p = c.project.rear.hardpoints[code]
+        p.x, p.y, p.z = xyz
+    bush = tmp_path / 'bush.kima'
+    write_document(bush, 'assembly', make_joint_concept('bushing', DEFAULTS['bushing']))
+    d = RearTubeDialog(c)
+    qtbot.addWidget(d)
+    d._arm.setCurrentIndex(d._arm.findData('rear_lower_left'))
+    d._pair_mode.setCurrentIndex(d._pair_mode.findData('same'))
+    monkeypatch.setattr(QFileDialog, 'getOpenFileName', lambda *args: (str(bush), ''))
+    d._load_joint()
+    d._layout_3d._enable.setChecked(True)
+    assert not d._save_layout.isEnabled()
+    qtbot.waitUntil(lambda: d._layout_3d._view.mesh is not None and d._save_layout.isEnabled(), timeout=45000)
+    d._joint_axis.setCurrentIndex(d._joint_axis.findData('z'))
+    assert d._layout_3d._view.mesh is None and not d._save_layout.isEnabled()
+    qtbot.waitUntil(lambda: d._layout_3d._view.mesh is not None and d._save_layout.isEnabled(), timeout=45000)
+    path = tmp_path / 'rear-layout.kima'
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(path), ''))
+    d._save_layout_copy()
+    assert read_document(path, 'assembly')['axis'] == 'z'
+    assert d.shutdown()
+    d.close()
+    d = RearTubeDialog(c)
+    qtbot.addWidget(d)
+    monkeypatch.setattr(QFileDialog, 'getOpenFileName', lambda *args: (str(path), ''))
+    d._open_file()
+    d._layout_3d._enable.setChecked(True)
+    qtbot.waitUntil(lambda: d._layout_3d._view.mesh is not None, timeout=45000)
+    assert not d._save_layout.isEnabled() and d._joint_axis.currentData() == 'z'
+    d._start_preview()
+    qtbot.waitUntil(lambda: d._save_layout.isEnabled(), timeout=45000)
+    assert d.shutdown()
+    d.close()

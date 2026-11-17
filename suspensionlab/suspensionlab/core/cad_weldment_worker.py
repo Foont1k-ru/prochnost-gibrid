@@ -14,6 +14,7 @@ from .cad_kim_prototype import (
     build_front_joint_layout_preview,
     build_front_pair_preview,
     build_joint_preview,
+    build_rear_joint_layout_preview,
     build_rear_pair_preview,
     build_rear_tube_preview,
     build_weldment_tubes_preview,
@@ -39,7 +40,9 @@ def create_mesh(path: Path, deviation: float) -> tuple[np.ndarray, int]:
     except (ImportError, OSError) as error:
         raise CadWorkerError("missing_cad") from error
     doc = read_document(path, "assembly")
-    if doc["version"] == "0.9":
+    if doc["version"] == "0.10":
+        shape = build_rear_joint_layout_preview(doc)
+    elif doc["version"] == "0.9":
         shape = build_front_joint_layout_preview(doc)
     elif doc["version"] == "0.8":
         shape = build_joint_preview(doc)

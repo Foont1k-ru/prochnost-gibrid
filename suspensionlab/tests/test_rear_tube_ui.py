@@ -502,3 +502,144 @@ def test_replacement_demands_confirmation_for_unsaved_pair_rule(qtbot, tmp_path,
     assert d._source is None and not d._has_unsaved()
     assert d.shutdown()
     d.close()
+
+
+def test_rear_bushings_save_reopen_and_axis_edit(qtbot, tmp_path, monkeypatch):
+    from suspensionlab.model.joint_concept import DEFAULTS, make_joint_concept
+
+    c = controller()
+    for code, xyz in {'ll_in_r': (0, 0, 0), 'll_out_r': (100, -100, 0)}.items():
+        point = c.project.rear.hardpoints[code]
+        point.x, point.y, point.z = xyz
+    before = c.project.to_dict()
+    bush_path = tmp_path / 'bush.kima'
+    bush = make_joint_concept('bushing', DEFAULTS['bushing'], name='Моя условная втулка')
+    from suspensionlab.model.kim_format import write_document
+    write_document(bush_path, 'assembly', bush)
+    original_bush = bush_path.read_bytes()
+    d = RearTubeDialog(c)
+    qtbot.addWidget(d)
+    d._arm.setCurrentIndex(d._arm.findData('rear_lower_left'))
+    d._pair_mode.setCurrentIndex(d._pair_mode.findData('mirror'))
+    assert not d._save_layout.isEnabled()
+    monkeypatch.setattr(QFileDialog, 'getOpenFileName', lambda *args: (str(bush_path), ''))
+    d._load_joint()
+    assert d._joint_doc == bush and d._has_unsaved() and d._save_layout.isEnabled()
+    d._joint_axis.setCurrentIndex(d._joint_axis.findData('x'))
+    assert d._layout_3d._document['axis'] == 'x'
+    path = tmp_path / 'rear-layout.kima'
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(path), ''))
+    d._save_layout_copy()
+    saved = read_document(path, 'assembly')
+    assert saved['version'] == '0.10' and saved['axis'] == 'x' and saved['bushing'] == bush
+    assert not d._has_unsaved()
+    original = path.read_bytes()
+    assert d.shutdown()
+    d.close()
+    d = RearTubeDialog(c)
+    qtbot.addWidget(d)
+    monkeypatch.setattr(QFileDialog, 'getOpenFileName', lambda *args: (str(path), ''))
+    d._open_file()
+    assert d._layout_3d._document == saved and not d._active and not d._save_layout.isEnabled()
+    assert not d._joint_load.isEnabled() and not d._has_unsaved()
+    d._start_preview()
+    assert d._save_layout.isEnabled() and not d._has_unsaved()
+    d._joint_axis.setCurrentIndex(d._joint_axis.findData('z'))
+    assert d._has_unsaved() and d._layout_3d._document['axis'] == 'z'
+    warnings = []
+    monkeypatch.setattr(QMessageBox, 'warning', lambda *args: warnings.append(args))
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(path), ''))
+    d._save_layout_copy()
+    assert warnings and path.read_bytes() == original
+    target = tmp_path / 'edited-layout.kima'
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(target), ''))
+    d._save_layout_copy()
+    assert read_document(target, 'assembly')['axis'] == 'z' and not d._has_unsaved()
+    assert bush_path.read_bytes() == original_bush and c.project.to_dict() == before and not c.dirty
+    assert d.shutdown()
+    d.close()
+
+
+def test_rear_layout_unsaved_rule_and_load_save_races(qtbot, tmp_path, monkeypatch):
+    from suspensionlab.model.joint_concept import DEFAULTS, make_joint_concept
+    from suspensionlab.model.kim_format import write_document
+
+    c = controller()
+    for code, xyz in {'ll_in_r': (0, 0, 0), 'll_out_r': (100, -100, 0)}.items():
+        point = c.project.rear.hardpoints[code]
+        point.x, point.y, point.z = xyz
+    bush, ball = tmp_path / 'bush.kima', tmp_path / 'ball.kima'
+    write_document(bush, 'assembly', make_joint_concept('bushing', DEFAULTS['bushing']))
+    write_document(ball, 'assembly', make_joint_concept('ball', DEFAULTS['ball']))
+    d = RearTubeDialog(c)
+    qtbot.addWidget(d)
+    d._arm.setCurrentIndex(d._arm.findData('rear_lower_left'))
+    d._pair_mode.setCurrentIndex(d._pair_mode.findData('mirror'))
+    warnings = []
+    monkeypatch.setattr(QMessageBox, 'warning', lambda *args: warnings.append(args))
+    monkeypatch.setattr(QFileDialog, 'getOpenFileName', lambda *args: (str(ball), ''))
+    d._load_joint()
+    assert warnings and d._joint_doc is None
+    def select_with_change(*args):
+        with QSignalBlocker(d._wall):
+            d._wall.setText('3')
+        return str(bush), ''
+    monkeypatch.setattr(QFileDialog, 'getOpenFileName', select_with_change)
+    d._load_joint()
+    assert len(warnings) == 2 and d._joint_doc is None
+    d._refresh()
+    monkeypatch.setattr(QFileDialog, 'getOpenFileName', lambda *args: (str(bush), ''))
+    d._load_joint()
+    assert d._joint_doc is not None and d._save_layout.isEnabled()
+    pair = tmp_path / 'pair.kima'
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(pair), ''))
+    d._save_pair_copy()
+    assert read_document(pair, 'assembly')['version'] == '0.6' and d._has_unsaved()
+    layout = tmp_path / 'layout.kima'
+    def save_with_axis_change(*args):
+        with QSignalBlocker(d._joint_axis):
+            d._joint_axis.setCurrentIndex(d._joint_axis.findData('z'))
+        return str(layout), ''
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', save_with_axis_change)
+    d._save_layout_copy()
+    assert len(warnings) == 3 and not layout.exists() and d._has_unsaved()
+    monkeypatch.setattr(QMessageBox, 'question', lambda *args: QMessageBox.StandardButton.No)
+    d._new_draft()
+    assert d._joint_doc is not None and d._joint_axis.currentData() == 'z'
+    monkeypatch.setattr(QMessageBox, 'question', lambda *args: QMessageBox.StandardButton.Yes)
+    d._new_draft()
+    assert d._joint_doc is None and not d._has_unsaved()
+    assert d.shutdown()
+    d.close()
+
+
+def test_rear_saved_layout_changed_pair_stays_unsaved_after_saving_pair(qtbot, tmp_path, monkeypatch):
+    from suspensionlab.model.joint_concept import DEFAULTS, make_joint_concept
+    from suspensionlab.model.kim_format import write_document
+
+    c = controller()
+    for code, xyz in {'ll_in_r': (0, 0, 0), 'll_out_r': (100, -100, 0)}.items():
+        point = c.project.rear.hardpoints[code]
+        point.x, point.y, point.z = xyz
+    bush = tmp_path / 'bush.kima'
+    write_document(bush, 'assembly', make_joint_concept('bushing', DEFAULTS['bushing']))
+    d = RearTubeDialog(c)
+    qtbot.addWidget(d)
+    d._arm.setCurrentIndex(d._arm.findData('rear_lower_left'))
+    d._pair_mode.setCurrentIndex(d._pair_mode.findData('mirror'))
+    monkeypatch.setattr(QFileDialog, 'getOpenFileName', lambda *args: (str(bush), ''))
+    d._load_joint()
+    layout = tmp_path / 'layout.kima'
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(layout), ''))
+    d._save_layout_copy()
+    assert not d._has_unsaved()
+    d._pair_mode.setCurrentIndex(d._pair_mode.findData('same'))
+    pair = tmp_path / 'pair.kima'
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(pair), ''))
+    d._save_pair_copy()
+    assert d._has_unsaved() and read_document(pair, 'assembly')['mode'] == 'same'
+    monkeypatch.setattr(QMessageBox, 'question', lambda *args: QMessageBox.StandardButton.Yes)
+    d._new_draft()
+    assert not d._has_unsaved()
+    assert d.shutdown()
+    d.close()
