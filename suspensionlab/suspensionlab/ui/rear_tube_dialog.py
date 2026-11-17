@@ -60,6 +60,9 @@ class RearTubeDialog(QDialog):
         warning = QLabel(tr('rear_tube.warning'), body)
         warning.setWordWrap(True)
         layout.addWidget(warning)
+        self._new = QPushButton(tr('rear_tube.new_button'), body)
+        self._new.clicked.connect(self._new_draft)
+        layout.addWidget(self._new)
         self._open = QPushButton(tr('rear_tube.open'), body)
         self._open.clicked.connect(self._open_file)
         layout.addWidget(self._open)
@@ -138,6 +141,28 @@ class RearTubeDialog(QDialog):
         field.setMaxLength(64)
         field.setAccessibleName(label)
         return field
+
+    def _new_draft(self) -> None:
+        if not self.confirm_close():
+            return
+        self._source, self._source_paths, self._active = None, (), True
+        self._saved_candidate = None
+        self._pending_project_changes = False
+        widgets = [self._arm, self._radius, self._wall, self._bend, *self._fields]
+        blockers = [QSignalBlocker(widget) for widget in widgets]
+        try:
+            self._arm.setCurrentIndex(0)
+            self._radius.setText('12')
+            self._wall.setText('2')
+            self._bend.setChecked(False)
+            for field in self._fields:
+                field.clear()
+        finally:
+            for blocker in blockers:
+                blocker.unblock()
+        self._source_label.setText(tr('rear_tube.new'))
+        self._baseline = self._input_state()
+        self._refresh()
 
     def _open_file(self) -> None:
         revision, state = self._revision, self._input_state()

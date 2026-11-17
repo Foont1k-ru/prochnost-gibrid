@@ -269,3 +269,26 @@ def test_reopened_source_and_current_project_are_explicitly_distinguished(qtbot,
     d._baseline, d._saved_candidate, d._pending_project_changes = d._input_state(), None, False
     assert d.shutdown()
     d.close()
+
+
+def test_new_draft_confirms_unsaved_changes_and_resets_file(qtbot, tmp_path, monkeypatch):
+    c = controller()
+    source = tmp_path / 'source.kima'
+    doc = rear_snapshot(c, source)
+    original = source.read_bytes()
+    d = RearTubeDialog(c)
+    qtbot.addWidget(d)
+    monkeypatch.setattr(QFileDialog, 'getOpenFileName', lambda *args: (str(source), ''))
+    d._open_file()
+    d._start_preview()
+    d._radius.setText('15')
+    monkeypatch.setattr(QMessageBox, 'question', lambda *args: QMessageBox.StandardButton.No)
+    d._new_draft()
+    assert d._source == doc and d._radius.text() == '15' and d._has_unsaved()
+    monkeypatch.setattr(QMessageBox, 'question', lambda *args: QMessageBox.StandardButton.Yes)
+    d._new_draft()
+    assert d._source is None and d._source_paths == () and d._active
+    assert d._radius.text() == '12' and d._wall.text() == '2' and not d._bend.isChecked()
+    assert d._candidate is not None and not d._has_unsaved() and source.read_bytes() == original
+    assert d.shutdown()
+    d.close()
