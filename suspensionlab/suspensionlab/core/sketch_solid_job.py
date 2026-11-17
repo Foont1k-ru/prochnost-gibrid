@@ -88,7 +88,8 @@ class SketchSolidJob:
                     raise SketchSolidError("CAD-процесс вернул некорректный отчёт")
                 if code != 0 or state.get("status") != "ok":
                     messages = {"missing_cad": "CAD-ядро недоступно в этой сборке",
-                                "invalid_shape": "CAD-ядро не смогло построить корректное тело по этому контуру",
+                                "invalid_shape": "CAD-ядро не смогло построить корректное тело по этим контурам",
+                                "contour_layout": "Нужен один внешний контур с отверстиями внутри; отдельные детали и вложенные острова не поддерживаются",
                                 "unexpected": "Ошибка CAD-ядра при построении тела"}
                     raise SketchSolidError(messages.get(str(state.get("code")), "CAD-процесс завершился с ошибкой"))
                 output = work / "result.step"

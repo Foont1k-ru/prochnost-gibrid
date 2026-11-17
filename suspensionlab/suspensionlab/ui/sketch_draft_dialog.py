@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from math import atan2, degrees, floor, hypot
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Literal
 
 import numpy as np
@@ -984,15 +985,16 @@ class SketchDraftDialog(QDialog):
             return
         try:
             report = check_contours(tuple(self.canvas.draft.entities))
-            if report.total_issues or report.closed_loops != 1:
-                raise ValueError("Нужен один замкнутый контур без разрывов, пересечений и отверстий. "
+            if report.total_issues or not report.closed_loops:
+                raise ValueError("Нужны замкнутые контуры без разрывов, пересечений и касаний. "
                                  "Проверка STEP использует допуск 0,01 мм; используйте «Проверить контуры».")
         except ValueError as exc:
             QMessageBox.warning(self, "Создание 3D STEP", str(exc))
             return
         depth, ok = QInputDialog.getDouble(self, "Выдавливание в STEP",
             "Глубина в мм вдоль положительной оси, перпендикулярной эскизу. "
-            "Один контур без отверстий. Создаётся отдельное CAD-тело, не связанное с эскизом и проектом.",
+            "Один внешний контур; внутренние контуры станут сквозными отверстиями. "
+            "Создаётся отдельное CAD-тело, не связанное с эскизом и проектом.",
             10, 0.001, 1_000_000, 3)
         if not ok:
             return
@@ -1022,11 +1024,22 @@ class SketchDraftDialog(QDialog):
         if self.canvas.pending is not None or self.canvas.construction_indices or self.canvas.dimension_target is not None:
             QMessageBox.warning(self, "3D-предпросмотр", "Завершите действие или нажмите Esc перед просмотром.")
             return
+        try:
+            report = check_contours(tuple(self.canvas.draft.entities))
+            if report.total_issues or not report.closed_loops:
+                raise ValueError("Нужны замкнутые контуры без разрывов, пересечений и касаний. "
+                                 "Используйте «Проверить контуры»; допуск для 3D — 0,01 мм.")
+        except ValueError as exc:
+            QMessageBox.warning(self, "3D-предпросмотр не создан", str(exc))
+            return
         depth, ok = QInputDialog.getDouble(self, "Выдавливание: 3D-предпросмотр",
             "Глубина в мм вдоль положительной оси, перпендикулярной эскизу. "
-            "Нужен один замкнутый контур без отверстий; результат только для просмотра.",
+            "Внутренние контуры станут сквозными отверстиями; результат только для просмотра.",
             10, 0.001, 1_000_000, 3)
         if not ok:
+            return
+        if report.closed_loops > 1:
+            self._preview_solid_with_holes(depth)
             return
         try:
             triangles = extrusion_mesh(self._document(), depth)
@@ -1036,6 +1049,30 @@ class SketchDraftDialog(QDialog):
         preview = SketchExtrusionPreview(triangles, self)
         preview.exec()
         preview.deleteLater()
+
+    def _preview_solid_with_holes(self, depth: float) -> None:
+        from .cad_preview_dialog import CadPreviewDialog
+        from .sketch_solid_dialog import SketchSolidDialog
+
+        try:
+            with TemporaryDirectory(prefix="sketch-preview-") as directory:
+                progress = SketchSolidDialog(self._document(), depth, Path(directory) / "preview.step", self)
+                progress.start()
+                progress.exec()
+                progress.worker.wait()
+                result, error, cancelled = progress.output, progress.error, progress.cancel_requested
+                progress.deleteLater()
+                if result is not None:
+                    preview = CadPreviewDialog(self)
+                    preview.load_file(result)
+                    preview.exec()
+                    preview.deleteLater()
+                elif error and not (cancelled and error == "Построение отменено"):
+                    QMessageBox.warning(self, "3D-предпросмотр не создан", error)
+                else:
+                    self._message("Построение предпросмотра отменено")
+        except OSError as exc:
+            QMessageBox.warning(self, "3D-предпросмотр не создан", f"Не удалось создать временный файл: {exc}")
 
     def _edit_dimension(self, index: int) -> None:
         dimension = self.canvas.draft.dimensions[index]

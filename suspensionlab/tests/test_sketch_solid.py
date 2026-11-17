@@ -231,3 +231,92 @@ def test_destination_race_does_not_overwrite(tmp_path, monkeypatch):
         SketchSolidJob().run(doc(rectangle_entities((0, 0), (10, 10))), 5, target)
     assert target.read_bytes() == b"other user data"
     assert not list(tmp_path.glob(".sketch-solid-*"))
+
+
+@pytest.mark.parametrize("plane", ["XY", "XZ", "YZ"])
+@pytest.mark.parametrize("reversed_order", [False, True])
+def test_plate_two_analytic_holes_step_roundtrip_and_material(tmp_path, cad, plane, reversed_order):
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.BRepClass3d import BRepClass3d_SolidClassifier
+    from OCP.GeomAbs import GeomAbs_SurfaceType
+    from OCP.gp import gp_Pnt
+    from OCP.TopAbs import TopAbs_ShapeEnum, TopAbs_State
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    outer = list(rectangle_entities((0, 0), (100, 60)))
+    circle = make_entity("circle", (25, 30), (35, 30))
+    hole = list(rectangle_entities((60, 20), (80, 40)))
+    if reversed_order:
+        outer = [make_entity("line", e.end, e.start) for e in reversed(outer)]
+        hole = [make_entity("line", e.end, e.start) for e in reversed(hole)]
+    entities = [circle, *hole, *outer] if reversed_order else [*outer, circle, *hole]
+    target = tmp_path / "holes.step"
+    SketchSolidJob().run(doc(entities, plane, 12), 5, target)
+    shape, volume, _ = cad(target)
+    assert volume == pytest.approx((6000 - math.pi * 100 - 400) * 5, rel=1e-9)
+    xyz = lambda x, y: ((x, y, 14) if plane == "XY" else (x, 14, y) if plane == "XZ" else (14, x, y))  # noqa: E731
+    for pt, state in [((25, 30), TopAbs_State.TopAbs_OUT), ((70, 30), TopAbs_State.TopAbs_OUT),
+                      ((50, 30), TopAbs_State.TopAbs_IN)]:
+        assert BRepClass3d_SolidClassifier(shape, gp_Pnt(*xyz(*pt)), 1e-7).State() == state
+    explorer = TopExp_Explorer(shape, TopAbs_ShapeEnum.TopAbs_FACE)
+    types = []
+    while explorer.More():
+        types.append(BRepAdaptor_Surface(TopoDS.Face(explorer.Current())).GetType())
+        explorer.Next()
+    assert GeomAbs_SurfaceType.GeomAbs_Cylinder in types
+
+
+def test_ring_and_arc_hole_roundtrip(tmp_path, cad):
+    outer = make_entity("circle", (0, 0), (50, 0))
+    inner = make_entity("circle", (0, 0), (10, 0))
+    target = tmp_path / "ring.step"
+    SketchSolidJob().run(doc((inner, outer)), 3, target)
+    assert cad(target)[1] == pytest.approx(math.pi * (2500 - 100) * 3, rel=1e-9)
+    arc = make_entity("arc", (0, 0), (10, 0), 270)
+    chord = make_entity("line", (0, -10), (10, 0))
+    target2 = tmp_path / "arc-hole.step"
+    SketchSolidJob().run(doc((outer, arc, chord)), 3, target2)
+    assert cad(target2)[1] == pytest.approx((2500 * math.pi - (75 * math.pi + 50)) * 3, rel=1e-9)
+
+
+@pytest.mark.parametrize("case", ["separate", "nested", "touch", "cross", "outside-concave"])
+def test_invalid_holes_never_publish(tmp_path, cad, case):
+    outer = rectangle_entities((0, 0), (100, 100))
+    circle = lambda p, r: make_entity("circle", p, (p[0] + r, p[1]))  # noqa: E731
+    if case == "separate":
+        entities = (*outer, circle((150, 50), 10))
+    elif case == "nested":
+        entities = (*outer, circle((50, 50), 20), circle((50, 50), 5))
+    elif case == "touch":
+        entities = (*outer, circle((10, 50), 10))
+    elif case == "cross":
+        entities = (*outer, circle((5, 50), 10))
+    else:
+        points = [(0, 0), (100, 0), (100, 30), (30, 30), (30, 100), (0, 100)]
+        lines = [make_entity("line", points[i], points[(i+1) % len(points)]) for i in range(len(points))]
+        entities = (*lines, circle((70, 70), 5))
+    target = tmp_path / "bad.step"
+    with pytest.raises(SketchSolidError):
+        SketchSolidJob().run(doc(entities), 5, target)
+    assert not target.exists() and not list(tmp_path.glob(".sketch-solid-*"))
+
+
+def test_mesh_reader_for_hole_step(tmp_path, cad):
+    from suspensionlab.core.cad_transport import CadJob
+
+    circle = make_entity("circle", (25, 25), (35, 25))
+    target = tmp_path / "деталь с отверстием.step"
+    SketchSolidJob().run(doc((*rectangle_entities((0, 0), (100, 50)), circle), "XZ", 12), 5, target)
+    mesh = CadJob().run(target, 0.2)
+    assert mesh.face_count == 7 and mesh.skipped_faces == 0
+    assert len(mesh.triangles) > 12
+    assert cad(target)[1] == pytest.approx((5000 - 100 * math.pi) * 5)
+
+
+def test_nested_and_disjoint_report_clear_reason(tmp_path, cad):
+    outer = make_entity("circle", (0, 0), (50, 0))
+    inner = make_entity("circle", (0, 0), (20, 0))
+    island = make_entity("circle", (0, 0), (5, 0))
+    with pytest.raises(SketchSolidError, match="вложенные острова"):
+        SketchSolidJob().run(doc((outer, inner, island)), 2, tmp_path / "invalid.step")

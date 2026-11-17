@@ -816,7 +816,7 @@ def test_create_step_rejects_open_contour_before_file_dialog(qtbot, monkeypatch)
     monkeypatch.setattr(QMessageBox, "warning", lambda *args: warnings.append(args))
     monkeypatch.setattr(QInputDialog, "getDouble", lambda *args, **kwargs: pytest.fail("unexpected input dialog"))
     dialog._export_solid_step()
-    assert warnings and "замкнутый" in str(warnings[0])
+    assert warnings and "замкнут" in str(warnings[0])
     dialog._saved = dialog._document()
 
 
@@ -841,3 +841,62 @@ def test_solid_dialog_cancel_waits_for_worker_before_closing(qtbot, monkeypatch,
     dialog.worker.wait()
     assert dialog.cancel_requested and dialog.output is None and dialog.error == "Построение отменено"
     assert not (tmp_path / "cancel.step").exists()
+
+
+def test_hole_preview_uses_temporary_cad_and_preserves_sketch(qtbot, monkeypatch):
+    from PySide6.QtWidgets import QInputDialog
+
+    from suspensionlab.core.sketch_solid_job import SketchSolidJob
+    from suspensionlab.ui.cad_preview_dialog import CadPreviewDialog
+
+    dialog = SketchDraftDialog()
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog.tool.setCurrentIndex(3)
+    dialog.canvas.add_point((0, 0))
+    dialog.canvas.add_point((100, 50))
+    dialog.canvas.draft.add("circle", (30, 25), (40, 25))
+    original = dialog._document()
+    monkeypatch.setattr(QInputDialog, "getDouble", lambda *args, **kwargs: (8, True))
+    seen = []
+    def create(_self, document, depth, path):
+        assert document == original and depth == 8
+        path.write_text("fixture", encoding="ascii")
+        return path
+    def load(_self, path):
+        assert path.exists()
+        seen.append(path)
+    monkeypatch.setattr(SketchSolidJob, "run", create)
+    monkeypatch.setattr(CadPreviewDialog, "load_file", load)
+    monkeypatch.setattr(CadPreviewDialog, "exec", lambda _self: 0)
+    dialog._extrude_preview()
+    assert len(seen) == 1 and not seen[0].exists()
+    assert dialog._document() == original
+    dialog._saved = original
+
+
+def test_hole_step_export_accepts_multiple_loops(qtbot, monkeypatch, tmp_path):
+    from PySide6.QtWidgets import QFileDialog, QInputDialog
+
+    from suspensionlab.core.sketch_solid_job import SketchSolidJob
+
+    dialog = SketchDraftDialog()
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog.tool.setCurrentIndex(3)
+    dialog.canvas.add_point((0, 0))
+    dialog.canvas.add_point((100, 50))
+    dialog.canvas.draft.add("circle", (30, 25), (40, 25))
+    original = dialog._document()
+    target = tmp_path / "holes.step"
+    def create(_self, document, depth, path):
+        assert document == original and depth == 8
+        path.write_text("fixture", encoding="ascii")
+        return path
+    monkeypatch.setattr(SketchSolidJob, "run", create)
+    monkeypatch.setattr(QInputDialog, "getDouble", lambda *args, **kwargs: (8, True))
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *args, **kwargs: (str(target), ""))
+    monkeypatch.setattr(QMessageBox, "information", lambda *args: None)
+    dialog._export_solid_step()
+    assert target.exists() and dialog._document() == original
+    dialog._saved = original

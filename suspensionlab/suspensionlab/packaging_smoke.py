@@ -126,7 +126,7 @@ def run_cad_check() -> None:
         # Замороженный exe должен запускать отдельный CAD-процесс и создавать
         # аналитическое STEP-тело, которое затем читается существующим CAD worker.
         from .core.sketch_solid_job import SketchSolidJob
-        from .model.sketch_draft import rectangle_entities
+        from .model.sketch_draft import make_entity, rectangle_entities
         from .model.sketch_io import SketchDocument
 
         solid_path = Path(directory) / "тело из эскиза.step"
@@ -138,6 +138,14 @@ def run_cad_check() -> None:
                  np.allclose(solid_vertices.min(axis=0), (0., 12., 0.), atol=1e-6, rtol=0) and
                  np.allclose(solid_vertices.max(axis=0), (100., 17., 50.), atol=1e-6, rtol=0),
                  "В собранном приложении недоступно точное STEP-тело из эскиза")
+
+        holes_path = Path(directory) / "тело с отверстием.step"
+        hole = make_entity("circle", (25., 25.), (35., 25.))
+        hole_doc = SketchDocument("XZ", 12., (*doc.entities, hole))
+        SketchSolidJob().run(hole_doc, 5., holes_path)
+        holes_mesh = CadJob().run(holes_path, 0.2, timeout=90)
+        _require(holes_mesh.face_count == 7 and holes_mesh.skipped_faces == 0,
+                 "В собранном приложении недоступно STEP-тело со сквозным отверстием")
 
     # 3D труб проверяется именно из собранного приложения, включая повторный
     # запуск замороженного исполняемого файла как CAD-процесса и Qt-отрисовку.
