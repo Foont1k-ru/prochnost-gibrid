@@ -475,7 +475,7 @@ def test_front_pair_mode_race_and_existing_layout_remain_unsaved(qtbot, tmp_path
     d._save_layout_copy()
     assert not d._has_unsaved()
     d._pair_mode.setCurrentIndex(d._pair_mode.findData('same'))
-    assert d._layout_3d._document is None and not d._save_layout.isEnabled()
+    assert d._layout_3d._document['version'] == '0.12' and d._save_layout.isEnabled()
     pair = tmp_path / 'pair.kima'
     monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(pair), ''))
     d._save_pair_copy()
@@ -493,4 +493,51 @@ def test_front_pair_mode_race_and_existing_layout_remain_unsaved(qtbot, tmp_path
     monkeypatch.setattr(QMessageBox, 'question', lambda *args: QMessageBox.StandardButton.Yes)
     d._new_draft()
     assert not d._has_unsaved() and d.shutdown()
+    d.close()
+
+
+def test_same_front_layout_save_open_edit_and_keep_sources(qtbot, tmp_path, monkeypatch):
+    from suspensionlab.model.joint_concept import DEFAULTS, make_joint_concept
+
+    c = controller()
+    before = c.project.to_dict()
+    d = FrontTubesDialog(c)
+    qtbot.addWidget(d)
+    d._pair_mode.setCurrentIndex(d._pair_mode.findData('same'))
+    inputs = []
+    for kind in ('ball', 'bushing'):
+        path = tmp_path / f'{kind}.kima'
+        write_document(path, 'assembly', make_joint_concept(kind, DEFAULTS[kind]))
+        inputs.append((path, path.read_bytes()))
+        monkeypatch.setattr(QFileDialog, 'getOpenFileName', lambda *args, path=path: (str(path), ''))
+        d._load_joint(kind)
+    assert d._layout_3d._document['version'] == '0.12' and d._save_layout.isEnabled()
+    target = tmp_path / 'same-layout.kima'
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(target), ''))
+    d._save_layout_copy()
+    doc = read_document(target, 'assembly')
+    assert doc['version'] == '0.12' and doc['pair']['version'] == '0.11' and not d._has_unsaved()
+    original = target.read_bytes()
+    assert d.shutdown()
+    d.close()
+    d = FrontTubesDialog(c)
+    qtbot.addWidget(d)
+    monkeypatch.setattr(QFileDialog, 'getOpenFileName', lambda *args: (str(target), ''))
+    d._open_file()
+    assert not d._active and d._layout_3d._document == doc and d._pair_mode.currentData() == 'same'
+    assert not d._save_layout.isEnabled() and not d._has_unsaved()
+    d._start_preview()
+    assert d._save_layout.isEnabled() and not d._has_unsaved()
+    d._radius.setText('13')
+    assert d._has_unsaved() and d._layout_3d._document['pair']['source']['radius_mm'] == 13
+    warnings = []
+    monkeypatch.setattr(QMessageBox, 'warning', lambda *args: warnings.append(args))
+    d._save_layout_copy()
+    assert warnings and target.read_bytes() == original
+    updated = tmp_path / 'new-layout.kima'
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(updated), ''))
+    d._save_layout_copy()
+    assert read_document(updated, 'assembly')['pair']['source']['radius_mm'] == 13 and not d._has_unsaved()
+    assert all(path.read_bytes() == data for path, data in inputs) and c.project.to_dict() == before
+    assert d.shutdown()
     d.close()

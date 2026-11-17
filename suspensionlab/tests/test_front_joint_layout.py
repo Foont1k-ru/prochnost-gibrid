@@ -39,3 +39,26 @@ def test_invalid_embedded_joints_and_schemas_rejected(tmp_path):
         mutate(broken)
         with pytest.raises(KimFormatError):
             write_document(tmp_path / 'invalid.kima', 'assembly', broken, overwrite=False)
+
+
+def test_same_layout_format_and_strict_pair_version(tmp_path):
+    from suspensionlab.model.front_same_pair import make_front_same_pair
+
+    p = Project.create_default()
+    for code, xyz in {'uca_f_in': (0, 0, 0), 'uca_r_in': (0, -100, 0), 'ubj': (100, 100, 0)}.items():
+        point = p.front.hardpoints[code]
+        point.x, point.y, point.z = xyz
+    same = make_front_same_pair(make_front_tube_arm(p, 'front_upper_left', 10, 2))
+    ball, bushing = make_joint_concept('ball', DEFAULTS['ball']), make_joint_concept('bushing', DEFAULTS['bushing'])
+    doc = make_front_joint_layout(same, ball, bushing)
+    path = tmp_path / 'same-layout.kima'
+    write_document(path, 'assembly', doc, overwrite=False)
+    assert doc['version'] == '0.12' and doc['pair']['version'] == '0.11'
+    assert read_document(path, 'assembly') == doc
+    for mutation in (lambda d: d.update(version='0.9'), lambda d: d.update(algorithm='front-joint-layout-v1'),
+                     lambda d: d.update(pair=layout()['pair']), lambda d: d.update(extra='joint.step'),
+                     lambda d: d.update(ball=d['bushing'])):
+        invalid = deepcopy(doc)
+        mutation(invalid)
+        with pytest.raises(KimFormatError):
+            write_document(tmp_path / 'invalid.kima', 'assembly', invalid, overwrite=False)

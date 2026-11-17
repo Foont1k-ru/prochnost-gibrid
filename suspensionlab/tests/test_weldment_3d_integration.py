@@ -587,3 +587,43 @@ def test_same_front_pair_real_3d_rebuild_and_reopen(qtbot, tmp_path, monkeypatch
     qtbot.waitUntil(lambda: d._save_pair.isEnabled(), timeout=45000)
     assert d.shutdown()
     d.close()
+
+
+def test_front_same_layout_3d_save_and_reopen(qtbot, tmp_path, monkeypatch):
+    from suspensionlab.model.joint_concept import DEFAULTS, make_joint_concept
+    from suspensionlab.model.kim_format import read_document
+    from suspensionlab.ui.front_tubes_dialog import FrontTubesDialog
+
+    c = AppController()
+    for code, xyz in {'uca_f_in': (0, 0, 0), 'uca_r_in': (0, -100, 0), 'ubj': (100, 100, 0)}.items():
+        point = c.project.front.hardpoints[code]
+        point.x, point.y, point.z = xyz
+    d = FrontTubesDialog(c)
+    qtbot.addWidget(d)
+    d._arm.setCurrentIndex(d._arm.findData('front_upper_left'))
+    d._pair_mode.setCurrentIndex(d._pair_mode.findData('same'))
+    for kind in ('ball', 'bushing'):
+        path = tmp_path / f'{kind}.kima'
+        write_document(path, 'assembly', make_joint_concept(kind, DEFAULTS[kind]))
+        monkeypatch.setattr(QFileDialog, 'getOpenFileName', lambda *args, path=path: (str(path), ''))
+        d._load_joint(kind)
+    d._layout_3d._enable.setChecked(True)
+    assert not d._save_layout.isEnabled()
+    qtbot.waitUntil(lambda: d._layout_3d._view.mesh is not None and d._save_layout.isEnabled(), timeout=45000)
+    target = tmp_path / 'same-layout.kima'
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(target), ''))
+    d._save_layout_copy()
+    assert read_document(target, 'assembly')['version'] == '0.12'
+    assert d.shutdown()
+    d.close()
+    d = FrontTubesDialog(c)
+    qtbot.addWidget(d)
+    monkeypatch.setattr(QFileDialog, 'getOpenFileName', lambda *args: (str(target), ''))
+    d._open_file()
+    d._layout_3d._enable.setChecked(True)
+    qtbot.waitUntil(lambda: d._layout_3d._view.mesh is not None, timeout=45000)
+    assert not d._save_layout.isEnabled() and d._pair_mode.currentData() == 'same'
+    d._start_preview()
+    qtbot.waitUntil(lambda: d._save_layout.isEnabled(), timeout=45000)
+    assert d.shutdown()
+    d.close()

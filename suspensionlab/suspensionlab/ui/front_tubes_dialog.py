@@ -234,7 +234,7 @@ class FrontTubesDialog(QDialog):
             path = Path(selected).absolute()
             resolved = path.resolve()
             document = read_document(path, 'assembly')
-            layout_document = document if document['version'] == '0.9' else None
+            layout_document = document if document['version'] in ('0.9', '0.12') else None
             if layout_document is not None:
                 validate_front_joint_layout(layout_document)
                 pair_document = layout_document['pair']
@@ -435,8 +435,7 @@ class FrontTubesDialog(QDialog):
         for plan in self._mirror_plans:
             plan.set_view(mirror_view, paths=mirror_paths)
         self._pair_3d.set_document(snapshot)
-        if (snapshot['version'] == '0.7' and self._joint_docs['ball'] is not None and
-                self._joint_docs['bushing'] is not None):
+        if self._joint_docs['ball'] is not None and self._joint_docs['bushing'] is not None:
             try:
                 layout_doc = make_front_joint_layout(snapshot, self._joint_docs['ball'], self._joint_docs['bushing'])
                 self._layout_3d.set_document(layout_doc)

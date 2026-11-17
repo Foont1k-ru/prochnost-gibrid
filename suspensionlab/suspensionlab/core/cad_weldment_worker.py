@@ -42,7 +42,7 @@ def create_mesh(path: Path, deviation: float) -> tuple[np.ndarray, int]:
     doc = read_document(path, "assembly")
     if doc["version"] == "0.10":
         shape = build_rear_joint_layout_preview(doc)
-    elif doc["version"] == "0.9":
+    elif doc["version"] in ("0.9", "0.12"):
         shape = build_front_joint_layout_preview(doc)
     elif doc["version"] == "0.8":
         shape = build_joint_preview(doc)
