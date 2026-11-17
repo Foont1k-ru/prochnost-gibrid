@@ -65,3 +65,56 @@ def test_inspect_fails_if_file_changes_during_read(tmp_path, monkeypatch):
     monkeypatch.setattr(module.os, 'fstat', changed)
     with pytest.raises(OSError):
         module.inspect_autosave(path)
+
+
+def test_same_project_file_path_symlink_and_hardlink(tmp_path):
+    import os
+
+    from suspensionlab.model.autosave_guard import same_project_file
+
+    shared = tmp_path / 'autosave.susp.json'
+    assert same_project_file(shared, tmp_path / '.' / 'autosave.susp.json')
+    assert not same_project_file(shared, tmp_path / 'other.susp.json')
+    shared.write_bytes(b'important')
+    symlink = tmp_path / 'symlink.susp.json'
+    try:
+        symlink.symlink_to(shared)
+    except OSError:
+        pass
+    else:
+        assert same_project_file(shared, symlink)
+    hardlink = tmp_path / 'hardlink.susp.json'
+    try:
+        os.link(shared, hardlink)
+    except OSError:
+        pass
+    else:
+        assert same_project_file(shared, hardlink)
+        assert hardlink.read_bytes() == shared.read_bytes()
+
+
+def test_same_project_file_does_not_hide_stat_errors(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from suspensionlab.model.autosave_guard import same_project_file
+
+    a, b = tmp_path / 'a', tmp_path / 'b'
+    a.write_text('a')
+    b.write_text('b')
+    original = Path.stat
+    def fail(self, *args, **kwargs):
+        if self == b:
+            raise PermissionError('denied')
+        return original(self, *args, **kwargs)
+    monkeypatch.setattr(Path, 'stat', fail)
+    with pytest.raises(PermissionError):
+        same_project_file(a, b)
+
+
+def test_autosave_path_does_not_create_settings_directory(tmp_path, monkeypatch):
+    from suspensionlab import config
+
+    directory = tmp_path / 'not-yet-created'
+    monkeypatch.setattr(config, '_base_dir', lambda: directory)
+    assert config.autosave_path() == directory / 'autosave.susp.json'
+    assert not directory.exists()

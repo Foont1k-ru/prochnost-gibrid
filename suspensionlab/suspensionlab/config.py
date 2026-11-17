@@ -56,8 +56,8 @@ def diagnostic_log_path() -> Path:
 
 
 def autosave_path() -> Path:
-    """Путь к файлу автосохранения текущего проекта."""
-    return app_data_dir() / "autosave.susp.json"
+    """Путь общей копии без создания каталога; запись создаёт его при необходимости."""
+    return _base_dir() / "autosave.susp.json"
 
 
 def settings_path() -> Path:

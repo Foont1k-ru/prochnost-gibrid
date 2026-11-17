@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import os
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -20,7 +19,7 @@ from PySide6.QtCore import QObject, Signal
 
 from ..config import autosave_path
 from ..diagnostic_events import event
-from ..model.autosave_guard import AutosaveGuard, AutosaveStamp, inspect_autosave
+from ..model.autosave_guard import AutosaveGuard, AutosaveStamp, inspect_autosave, same_project_file
 from ..model.commands import (
     ChangeLinkLengthCommand,
     DictFlagCommand,
@@ -133,17 +132,16 @@ class AppController(QObject):
         target = path or self.project.path
         if not target:
             raise ProjectIOError("error.project.write_failed", path="")
-        sources = (self._recovery_source, self._recovery_guard)
-        if any(source is not None for source in sources):
-            try:
-                destination = ensure_suffix(Path(target)).resolve()
-                same_file = any(source is not None and (
-                    destination == source or (destination.exists() and source.exists() and os.path.samefile(destination, source))
-                ) for source in sources)
-            except (OSError, RuntimeError) as error:
-                raise ProjectIOError("error.project.write_failed", path=str(target)) from error
-            if same_file:
-                raise ProjectIOError("autosave.protected", path=str(target))
+        # Manual saves must never target the shared recovery copy, even after
+        # approval of automatic overwrites or opening that file normally.
+        try:
+            destination = ensure_suffix(Path(target))
+            sources = (autosave_path(), self._recovery_source, self._recovery_guard)
+            same_file = any(source is not None and same_project_file(destination, source) for source in sources)
+        except (OSError, ValueError, RuntimeError) as error:
+            raise ProjectIOError("error.project.write_failed", path=str(target)) from error
+        if same_file:
+            raise ProjectIOError("autosave.protected", path=str(target))
         saved_path = save_project(self.project, target)
         self._recovery_source = None
         self._set_dirty(False)

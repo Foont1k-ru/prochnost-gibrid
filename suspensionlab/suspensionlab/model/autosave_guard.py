@@ -49,6 +49,24 @@ def inspect_autosave(path: Path) -> AutosaveStamp | None:
     return AutosaveStamp(target, digest.digest())
 
 
+def same_project_file(first: Path, second: Path) -> bool:
+    """Обнаружить совпадение пути, симлинка или существующей жёсткой ссылки.
+
+    При ошибке доступа (кроме отсутствия файла) вызывающий код должен отказать.
+    Проверка не устраняет гонки изменения путей другими процессами.
+    """
+    first = first.resolve()
+    second = second.resolve()
+    if first == second:
+        return True
+    try:
+        first_stat = first.stat()
+        second_stat = second.stat()
+    except FileNotFoundError:
+        return False
+    return os.path.samestat(first_stat, second_stat)
+
+
 class AutosaveGuard:
     def __init__(self) -> None:
         self._approved: AutosaveStamp | None = None

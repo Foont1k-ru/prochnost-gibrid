@@ -62,3 +62,114 @@ def test_recovered_copy_remains_protected_after_saving_new_file(qtbot, tmp_path,
     assert expected is not None
     c.allow_autosave_overwrite(expected)
     assert c.autosave() and load_project(backup).vehicle.mass_kg == 1800.
+
+
+def test_manual_save_never_targets_shared_autosave_even_if_approved(qtbot, tmp_path, monkeypatch):
+    import os
+
+    import pytest
+
+    from suspensionlab.model.project_io import ProjectIOError
+    from suspensionlab.ui import controller as module
+
+    backup = tmp_path / 'autosave.susp.json'
+    monkeypatch.setattr(module, 'autosave_path', lambda: backup)
+    c = AppController()
+    c.set_value(c.project.vehicle, 'mass_kg', 1777.)
+    # Protection applies even before the shared file exists and before suffix expansion.
+    with pytest.raises(ProjectIOError) as err:
+        c.save_project(tmp_path / 'autosave.json')
+    assert err.value.message_key == 'autosave.protected'
+    assert not backup.exists() and c.dirty and c.project.path is None
+    assert c.autosave()
+    original = backup.read_bytes()
+    candidates = [backup, tmp_path / 'autosave.json']
+    symlink = tmp_path / 'alias.susp.json'
+    try:
+        symlink.symlink_to(backup)
+    except OSError:
+        pass
+    else:
+        candidates.append(symlink)
+    hardlink = tmp_path / 'hard.susp.json'
+    try:
+        os.link(backup, hardlink)
+    except OSError:
+        pass
+    else:
+        candidates.append(hardlink)
+    for candidate in candidates:
+        with pytest.raises(ProjectIOError) as err:
+            c.save_project(candidate)
+        assert err.value.message_key == 'autosave.protected'
+        assert c.dirty and c.project.path is None and backup.read_bytes() == original
+    # Manual save to a separate project works; automatic save keeps working.
+    ordinary = c.save_project(tmp_path / 'real_project')
+    assert load_project(ordinary).vehicle.mass_kg == 1777.
+    c.set_value(c.project.vehicle, 'mass_kg', 1888.)
+    assert c.autosave() and load_project(backup).vehicle.mass_kg == 1888.
+
+
+def test_opening_shared_copy_normally_requires_save_as(qtbot, tmp_path, monkeypatch):
+    import pytest
+
+    from suspensionlab.model.project_io import ProjectIOError
+    from suspensionlab.ui import controller as module
+
+    backup = tmp_path / 'autosave.susp.json'
+    monkeypatch.setattr(module, 'autosave_path', lambda: backup)
+    c = AppController()
+    save_project(c.project, backup)
+    before = backup.read_bytes()
+    c.open_project(backup)
+    c.set_value(c.project.vehicle, 'mass_kg', 1900.)
+    with pytest.raises(ProjectIOError) as err:
+        c.save_project()
+    assert err.value.message_key == 'autosave.protected'
+    assert c.project.path == str(backup) and c.dirty and backup.read_bytes() == before
+    path = c.save_project(tmp_path / 'new_copy')
+    assert load_project(path).vehicle.mass_kg == 1900.
+    assert backup.read_bytes() == before and not c.dirty
+
+
+def test_manual_save_fails_closed_if_autosave_path_cannot_be_checked(qtbot, tmp_path, monkeypatch):
+    import pytest
+
+    from suspensionlab.model.project_io import ProjectIOError
+    from suspensionlab.ui import controller as module
+
+    c = AppController()
+    c.set_value(c.project.vehicle, 'mass_kg', 1800.)
+    monkeypatch.setattr(module, 'autosave_path', lambda: (_ for _ in ()).throw(OSError('inaccessible')))
+    path = tmp_path / 'project.susp.json'
+    with pytest.raises(ProjectIOError):
+        c.save_project(path)
+    assert c.dirty and c.project.path is None and not path.exists()
+
+
+def test_save_as_ui_refuses_autosave_and_accepts_separate_file(qtbot, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QFileDialog
+
+    from suspensionlab.ui import controller as module
+
+    backup = tmp_path / 'autosave.susp.json'
+    monkeypatch.setattr(module, 'autosave_path', lambda: backup)
+    c = AppController()
+    save_project(c.project, backup)
+    before = backup.read_bytes()
+    c.open_project(backup)
+    c.set_value(c.project.vehicle, 'mass_kg', 1910.)
+    window = MainWindow(c, QSettings(str(tmp_path / 'settings.ini'), QSettings.Format.IniFormat))
+    qtbot.addWidget(window)
+    window._confirm_discard_changes = lambda: True
+    errors = []
+    monkeypatch.setattr(window, '_show_error', errors.append)
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(backup), ''))
+    assert not window._save_project_as()
+    assert errors[-1].message_key == 'autosave.protected' and backup.read_bytes() == before
+    assert c.dirty and c.project.path == str(backup)
+    new = tmp_path / 'normal.susp.json'
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(new), ''))
+    assert window._save_project_as()
+    assert load_project(new).vehicle.mass_kg == 1910. and not c.dirty
+    assert backup.read_bytes() == before

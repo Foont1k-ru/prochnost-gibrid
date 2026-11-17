@@ -2496,7 +2496,8 @@ def test_recovery_guard_blocks_saving_current_project_over_candidate(window, tmp
     c = window.controller
     backup = tmp_path / "autosave.susp.json"
     monkeypatch.setattr(module, "autosave_path", lambda: backup)
-    c.save_project(backup)
+    from suspensionlab.model.project_io import save_project
+    save_project(c.project, backup)  # Simulates a file opened normally outside the controller.
     initial = backup.read_bytes()
     recovered, source = c.read_autosave()
     c.set_value(c.project.vehicle, "mass_kg", 1700.0)
