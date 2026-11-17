@@ -159,3 +159,84 @@ def test_export_refuses_hardlinks_to_project_and_autosave(qtbot, tmp_path, monke
     os.link(backup, alias)
     dialog._save_tube_snapshot()
     assert len(warnings) == 2 and backup.read_bytes() == old_backup and alias.read_bytes() == old_backup
+
+
+def test_save_weldment_is_explicit_incomplete_and_does_not_change_project(qtbot, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QFileDialog
+
+    from suspensionlab.model.kim_format import read_document
+    from suspensionlab.model.welded_arm import weldment_source_matches
+
+    c = AppController()
+    dialog = ArmConceptDialog(c)
+    qtbot.addWidget(dialog)
+    before = c.project.to_dict()
+    dialog._damper.setCurrentIndex(1)
+    path = tmp_path / 'нижний рычаг'
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(path), ''))
+    assert dialog._save_assembly.isEnabled()
+    dialog._save_assembly.click()
+    target = path.with_name(path.name + '.kima')
+    doc = read_document(target, 'assembly')
+    assert doc['version'] == '0.2' and doc['damper_mount'] == 'required'
+    assert [p['geometry']['leg'] for p in doc['parts']] == ['front', 'rear']
+    assert any(n['id'] == 'damper_bracket' and n['kind'] == 'unresolved' for n in doc['nodes'])
+    assert weldment_source_matches(doc)
+    assert 'не спроектированы' in dialog._save_status.text()
+    assert not c.dirty and c.project.to_dict() == before and c.project.path is None
+    old = target.read_bytes()
+    point = c.project.front.hardpoints['lbj']
+    c.move_point(point, (point.x, point.y + 10, point.z))
+    assert target.read_bytes() == old and not dialog._save_status.text()
+    dialog._style.setCurrentIndex(1)
+    assert not dialog._save_assembly.isEnabled()
+
+
+def test_weldment_save_rejects_choice_change_during_file_dialog(qtbot, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QFileDialog, QMessageBox
+
+    c = AppController()
+    dialog = ArmConceptDialog(c)
+    qtbot.addWidget(dialog)
+    target = tmp_path / 'arm.kima'
+    def choose(*args):
+        dialog._damper.setCurrentIndex(1)
+        return str(target), ''
+    warnings = []
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', choose)
+    monkeypatch.setattr(QMessageBox, 'warning', lambda *args: warnings.append(args))
+    dialog._save_weldment_snapshot()
+    assert warnings and 'изменились' in warnings[0][2] and not target.exists()
+    assert not c.dirty
+
+
+def test_weldment_save_refuses_hardlinks_to_project_and_autosave(qtbot, tmp_path, monkeypatch):
+    import os
+
+    import pytest
+    from PySide6.QtWidgets import QFileDialog, QMessageBox
+
+    from suspensionlab.ui import controller as module
+
+    backup = tmp_path / 'auto.susp.json'
+    monkeypatch.setattr(module, 'autosave_path', lambda: backup)
+    c = AppController()
+    project_file = c.save_project(tmp_path / 'project')
+    assert c.autosave()
+    old_project, old_backup = project_file.read_bytes(), backup.read_bytes()
+    alias = tmp_path / 'target.kima'
+    try:
+        os.link(project_file, alias)
+    except OSError:
+        pytest.skip('Hard links are unavailable')
+    dialog = ArmConceptDialog(c)
+    qtbot.addWidget(dialog)
+    warnings = []
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(alias), ''))
+    monkeypatch.setattr(QMessageBox, 'warning', lambda *args: warnings.append(args))
+    dialog._save_weldment_snapshot()
+    assert warnings and project_file.read_bytes() == old_project and alias.read_bytes() == old_project
+    alias.unlink()
+    os.link(backup, alias)
+    dialog._save_weldment_snapshot()
+    assert len(warnings) == 2 and backup.read_bytes() == old_backup and alias.read_bytes() == old_backup

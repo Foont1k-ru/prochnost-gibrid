@@ -77,15 +77,19 @@ def _part(data: Any) -> None:
         _keys(shape, {"kind", "radius_mm", "length_mm"})
         _number(shape["radius_mm"], positive=True)
         _number(shape["length_mm"], positive=True)
-    elif shape.get("kind") in ("prototype_lower_arm_rods", "prototype_lower_arm_tubes"):
+    elif shape.get("kind") in ("prototype_lower_arm_rods", "prototype_lower_arm_tubes", "prototype_arm_tube"):
         keys = {"kind", "radius_mm", "source"}
-        if shape["kind"] == "prototype_lower_arm_tubes":
+        if shape["kind"] in ("prototype_lower_arm_tubes", "prototype_arm_tube"):
             keys.add("wall_mm")
+        if shape["kind"] == "prototype_arm_tube":
+            keys.add("leg")
         _keys(shape, keys)
         radius = _number(shape["radius_mm"], positive=True)
         if radius < MIN_PROTOTYPE_LENGTH_MM:
             raise KimFormatError("radius too small for prototype")
-        if shape["kind"] == "prototype_lower_arm_tubes":
+        if shape["kind"] == "prototype_arm_tube" and shape["leg"] not in ("front", "rear"):
+            raise KimFormatError("unsupported tube leg")
+        if shape["kind"] in ("prototype_lower_arm_tubes", "prototype_arm_tube"):
             wall = _number(shape["wall_mm"], positive=True)
             if wall < MIN_PROTOTYPE_LENGTH_MM or radius - wall < MIN_PROTOTYPE_LENGTH_MM:
                 raise KimFormatError("invalid tube wall or inner radius")
@@ -128,6 +132,11 @@ def _scheme(data: Any) -> None:
 
 
 def _assembly(data: Any) -> None:
+    if isinstance(data, dict) and data.get("version") == "0.2":
+        from .welded_arm import validate_welded_arm
+
+        validate_welded_arm(data)
+        return
     doc = _keys(data, {"format", "version", "name", "units", "frame", "scheme", "parts", "instances"})
     if (doc["format"] != "kima-assembly" or doc["version"] != VERSION or doc["units"] != "mm" or
             doc["frame"] != "unregistered"):
@@ -204,6 +213,16 @@ def make_lower_arm_tube_prototype(identifier: str, name: str, project: Project,
     return part
 
 
+def make_arm_tube(identifier: str, name: str, project: Project, leg: str,
+                  radius_mm: float, wall_mm: float) -> dict[str, Any]:
+    """Отдельный неподрезанный трубный элемент с привязкой к снимку схемы."""
+    part = {"format": "kim-part", "version": VERSION, "id": identifier, "name": name, "units": "mm",
+            "geometry": {"kind": "prototype_arm_tube", "leg": leg, "radius_mm": radius_mm,
+                         "wall_mm": wall_mm, "source": _lower_arm_source(project)}}
+    _part(part)
+    return part
+
+
 def rebuild_lower_arm_prototype(part: dict[str, Any], project: Project) -> dict[str, Any]:
     """Новый снимок по тем же параметрам; тип схемы менять не разрешается."""
     _part(part)
@@ -222,7 +241,7 @@ def compare_lower_arm_source(part: dict[str, Any], project: Project) -> bool:
     """Сравнить тип и три точки, не другие параметры, и ничего не обновлять."""
     _part(part)
     geometry = part["geometry"]
-    if geometry["kind"] not in ("prototype_lower_arm_rods", "prototype_lower_arm_tubes"):
+    if geometry["kind"] not in ("prototype_lower_arm_rods", "prototype_lower_arm_tubes", "prototype_arm_tube"):
         raise KimFormatError("not a lower arm prototype")
     try:
         current = _lower_arm_source(project)
@@ -256,7 +275,7 @@ def inspect_assembly_arm_sources(document: dict[str, Any]) -> dict[str, str]:
     scheme = Project.from_dict(document["scheme"]) if document["scheme"] is not None else None
     result: dict[str, str] = {}
     for part in document["parts"]:
-        if part["geometry"]["kind"] not in ("prototype_lower_arm_rods", "prototype_lower_arm_tubes"):
+        if part["geometry"]["kind"] not in ("prototype_lower_arm_rods", "prototype_lower_arm_tubes", "prototype_arm_tube"):
             continue
         if scheme is None:
             result[part["id"]] = "no_scheme"

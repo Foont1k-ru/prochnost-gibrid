@@ -118,3 +118,35 @@ def test_hollow_tubes_have_expected_volume_and_rebuild_from_changed_scheme(tmp_p
     assert BRepCheck_Analyzer(build_part(updated)).IsValid()
     assert volume(build_part(updated)) == pytest.approx(area * (200 + math.sqrt(50000)), rel=1e-7)
     assert read_document(path, 'part') == saved  # no silent file overwrite
+
+
+def test_weldment_preview_contains_only_two_separate_tubes_and_rejects_stale_source(tmp_path):
+    from suspensionlab.core.cad_kim_prototype import build_weldment_tubes_preview
+    from suspensionlab.model.entities import Project
+    from suspensionlab.model.welded_arm import make_welded_arm, rebuild_welded_arm
+
+    project = Project.create_default()
+    for code, position in {
+        'lca_f_in': (0., 0., 0.), 'lca_r_in': (100., 0., 0.), 'lbj': (0., 100., 0.),
+    }.items():
+        point = project.front.hardpoints[code]
+        point.x, point.y, point.z = position
+    doc = make_welded_arm(project, 10., 2., 'required')
+    path = tmp_path / 'рычаг.kima'
+    write_document(path, 'assembly', doc)
+    saved = read_document(path, 'assembly')
+    front, rear = (build_part(part) for part in saved['parts'])
+    section = math.pi * (10**2 - 8**2)
+    assert BRepCheck_Analyzer(front).IsValid() and BRepCheck_Analyzer(rear).IsValid()
+    assert volume(front) == pytest.approx(section * 100, rel=1e-7)
+    assert volume(rear) == pytest.approx(section * math.sqrt(20000), rel=1e-7)
+    assert volume(build_weldment_tubes_preview(saved)) == pytest.approx(volume(front) + volume(rear))
+    with pytest.raises(ValueError):
+        build_assembly(saved)  # a partial preview must never masquerade as the full assembly
+    saved['scheme']['front_axle']['hardpoints']['lbj']['y'] = 200
+    with pytest.raises(ValueError):
+        build_weldment_tubes_preview(saved)
+    project.front.hardpoints['lbj'].y = 200
+    updated = rebuild_welded_arm(saved, project)
+    assert volume(build_weldment_tubes_preview(updated)) == pytest.approx(section * (200 + math.sqrt(50000)), rel=1e-7)
+    assert read_document(path, 'assembly') == doc
