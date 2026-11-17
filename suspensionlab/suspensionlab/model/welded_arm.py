@@ -1,4 +1,4 @@
-"""Исследовательская структура сварного рычага KIMA 0.2, не рабочая документация.
+"""Исследовательская структура сварного рычага KIMA 0.2/0.3, не рабочая документация.
 
 Сборка намеренно неполная: заданы два прототипа труб, остальные изделия и
 кандидаты сварных соединений представлены незаполненными позициями.
@@ -136,15 +136,23 @@ def weldment_source_matches(document: dict[str, Any]) -> bool:
     return all(compare_lower_arm_source(part, project) for part in document["parts"])
 
 
-def rebuild_welded_arm(document: dict[str, Any], project: Project) -> dict[str, Any]:
+def weldment_bends(document: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Возвращает независимую копию явно заданных параметров изгибов."""
+    validate_welded_arm(document)
+    return {part["geometry"]["leg"]: {"vertex_mm": list(part["geometry"]["bend_vertex_mm"]),
+                                       "radius_mm": part["geometry"]["bend_radius_mm"]}
+            for part in document["parts"] if part["geometry"]["kind"] == "prototype_arm_bent_tube"}
+
+
+def rebuild_welded_arm(document: dict[str, Any], project: Project, *,
+                       bends: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
     """Новый снимок на той же схеме и с теми же размерами; исходник не меняется."""
     validate_welded_arm(document)
     geometry = document["parts"][0]["geometry"]
     if _lower_arm_source(project)["suspension_type"] != geometry["source"]["suspension_type"]:
         raise KimFormatError("suspension type changed")
-    bends = {part["geometry"]["leg"]: {"vertex_mm": list(part["geometry"]["bend_vertex_mm"]),
-                                       "radius_mm": part["geometry"]["bend_radius_mm"]}
-             for part in document["parts"] if part["geometry"]["kind"] == "prototype_arm_bent_tube"}
+    if bends is None:
+        bends = weldment_bends(document)
     result = make_welded_arm(project, geometry["radius_mm"], geometry["wall_mm"], document["damper_mount"], bends=bends)
     result["name"] = document["name"]
     for old_part, new_part in zip(document["parts"], result["parts"], strict=True):
@@ -162,7 +170,8 @@ def convert_legacy_tubes(part: dict[str, Any], project: Project, damper: str) ->
     return make_welded_arm(project, geometry["radius_mm"], geometry["wall_mm"], damper)
 
 
-def preview_rebuild_welded_arm(document: dict[str, Any], project: Project) -> tuple[dict[str, Any], bool]:
+def preview_rebuild_welded_arm(document: dict[str, Any], project: Project, *,
+                               bends: dict[str, dict[str, Any]] | None = None) -> tuple[dict[str, Any], bool]:
     """Кандидат без записи; совпадение не доказывает происхождение проекта.
 
     Внутренне устаревший исходник блокируется: перед автоматическим
@@ -171,7 +180,7 @@ def preview_rebuild_welded_arm(document: dict[str, Any], project: Project) -> tu
     if not weldment_source_matches(document):
         raise KimFormatError("assembly source differs from saved scheme")
     matches = all(compare_lower_arm_source(part, project) for part in document["parts"])
-    return rebuild_welded_arm(document, project), matches
+    return rebuild_welded_arm(document, project, bends=bends), matches
 
 
 def weldment_centerlines(document: dict[str, Any]) -> tuple[tuple[tuple[float, float, float], ...], ...]:

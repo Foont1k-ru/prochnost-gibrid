@@ -123,3 +123,43 @@ def test_unknown_and_wrong_versions_never_overwrite_existing_file(tmp_path):
         with pytest.raises(KimFormatError):
             write_document(path, 'assembly', broken)
         assert path.read_bytes() == before
+
+
+def test_explicit_edit_and_remove_bends_preserve_original_and_part_names():
+    from suspensionlab.model.welded_arm import weldment_bends
+
+    p = project()
+    doc = make_welded_arm(p, 10, 2, 'required', bends={
+        'front': {'vertex_mm': [100, 0, 0], 'radius_mm': 20},
+    })
+    doc['name'] = 'Сборка А'
+    doc['parts'][0]['name'] = 'Моя труба'
+    original = deepcopy(doc)
+    edits = weldment_bends(doc)
+    edits['front']['radius_mm'] = 25
+    changed, matches = preview_rebuild_welded_arm(doc, p, bends=edits)
+    assert matches and changed['version'] == '0.3'
+    assert changed['parts'][0]['geometry']['bend_radius_mm'] == 25
+    assert changed['name'] == 'Сборка А' and changed['parts'][0]['name'] == 'Моя труба'
+    assert doc == original
+    removed = rebuild_welded_arm(doc, p, bends={})
+    assert removed['version'] == '0.2' and removed['parts'][0]['version'] == '0.1'
+    assert removed['parts'][0]['name'] == 'Моя труба' and doc == original
+    added = rebuild_welded_arm(removed, p, bends=edits)
+    assert added == changed and removed['version'] == '0.2'
+    edits['front']['radius_mm'] = 1000
+    with pytest.raises(KimFormatError):
+        preview_rebuild_welded_arm(doc, p, bends=edits)
+    assert doc == original
+
+
+def test_weldment_bends_returns_independent_coordinates():
+    from suspensionlab.model.welded_arm import weldment_bends
+
+    p = project()
+    doc = make_welded_arm(p, 10, 2, 'unknown', bends={
+        'front': {'vertex_mm': [100, 0, 0], 'radius_mm': 20},
+    })
+    copied = weldment_bends(doc)
+    copied['front']['vertex_mm'][0] = -999
+    assert doc['parts'][0]['geometry']['bend_vertex_mm'] == [100, 0, 0]

@@ -7,16 +7,13 @@ from typing import Any, cast
 from PySide6.QtCore import QPointF, Qt
 from PySide6.QtGui import QColor, QPainter, QPaintEvent, QPen, QPolygonF
 from PySide6.QtWidgets import (
-    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
-    QHBoxLayout,
     QLabel,
-    QLineEdit,
     QMessageBox,
     QPushButton,
     QScrollArea,
@@ -29,6 +26,7 @@ from ..i18n import tr
 from ..model.arm_concept import ArmConcept, ArmStyle, make_arm_concept
 from ..model.kim_format import KimFormatError, make_lower_arm_tube_prototype, write_document
 from ..model.welded_arm import make_welded_arm, weldment_centerlines
+from .bend_editor import BendEditor
 from .controller import AppController
 from .weldment_3d import Weldment3D
 
@@ -126,27 +124,11 @@ class ArmConceptDialog(QDialog):
         self._damper.addItem(tr("arm_concept.damper_required"), "required")
         self._damper.addItem(tr("arm_concept.damper_not_required"), "not_required")
         form.addRow(tr("arm_concept.damper_mount"), self._damper)
-        self._bend_checks: dict[str, QCheckBox] = {}
-        self._bend_fields: dict[str, list[QLineEdit]] = {}
-        for leg in ("front", "rear"):
-            row = QHBoxLayout()
-            check = QCheckBox(tr(f"arm_concept.bend_{leg}"), self)
-            row.addWidget(check)
-            fields = []
-            for key in ("x", "y", "z", "r"):
-                field = QLineEdit(self)
-                field.setPlaceholderText(tr(f"arm_concept.bend_{key}"))
-                field.setAccessibleName(tr(f"arm_concept.bend_{leg}") + " " + tr(f"arm_concept.bend_{key}"))
-                field.setMaxLength(24)
-                row.addWidget(field)
-                fields.append(field)
-            self._bend_checks[leg] = check
-            self._bend_fields[leg] = fields
-            form.addRow(row)
         layout.addLayout(form)
-        bend_note = QLabel(tr("arm_concept.bend_note"), self)
-        bend_note.setWordWrap(True)
-        layout.addWidget(bend_note)
+        self._bend_editor = BendEditor(self)
+        self._bend_checks = self._bend_editor.checks
+        self._bend_fields = self._bend_editor.fields
+        layout.addWidget(self._bend_editor)
         self._status = QLabel(self)
         self._status.setWordWrap(True)
         self._status.setTextFormat(Qt.TextFormat.PlainText)
@@ -181,11 +163,7 @@ class ArmConceptDialog(QDialog):
         self._damper.currentIndexChanged.connect(self._refresh)
         for spin in (self._radius, self._wall, self._sheet):
             spin.valueChanged.connect(self._refresh)
-        for check in self._bend_checks.values():
-            check.toggled.connect(self._refresh)
-        for fields in self._bend_fields.values():
-            for field in fields:
-                field.textChanged.connect(self._refresh)
+        self._bend_editor.changed.connect(self._refresh)
         controller.modelChanged.connect(self._refresh)
         controller.projectReplaced.connect(self._refresh)
         self._refresh()
@@ -210,11 +188,8 @@ class ArmConceptDialog(QDialog):
         self._wall.setEnabled(style == "tube")
         self._sheet.setEnabled(style == "sheet")
         self._damper.setEnabled(style == "tube")
-        for leg, check in self._bend_checks.items():
-            check.setEnabled(style == "tube")
-            for field in self._bend_fields[leg]:
-                field.setEnabled(style == "tube" and check.isChecked())
-        has_bend = style == "tube" and any(check.isChecked() for check in self._bend_checks.values())
+        self._bend_editor.set_editable(style == "tube")
+        has_bend = style == "tube" and self._bend_editor.has_bends()
         try:
             concept = make_arm_concept(self.controller.project, style, self._radius.value(),
                                        self._wall.value(), self._sheet.value())
@@ -244,16 +219,7 @@ class ArmConceptDialog(QDialog):
                                  b=f"{concept.lengths_mm[1]:.2f}", area=f"{concept.triangle_area_mm2:.2f}"))
 
     def _read_bends(self) -> dict[str, dict[str, Any]]:
-        result: dict[str, dict[str, Any]] = {}
-        for leg, check in self._bend_checks.items():
-            if not check.isChecked():
-                continue
-            try:
-                numbers = [float(field.text().strip().replace(",", ".")) for field in self._bend_fields[leg]]
-            except ValueError as error:
-                raise KimFormatError("all bend inputs are required") from error
-            result[leg] = {"vertex_mm": numbers[:3], "radius_mm": numbers[3]}
-        return result
+        return self._bend_editor.values()
 
     def _candidate_is_current(self, candidate: dict[str, Any]) -> bool:
         if self._candidate is None or candidate != self._candidate or self._style.currentData() != "tube":
@@ -294,7 +260,7 @@ class ArmConceptDialog(QDialog):
     def _save_snapshot(self, kind: str) -> None:
         if self.concept is None or self.concept.style != "tube":
             return
-        if kind == "part" and any(check.isChecked() for check in self._bend_checks.values()):
+        if kind == "part" and self._bend_editor.has_bends():
             return  # old two-straight-tube format cannot represent bends
         is_assembly = kind == "assembly"
         candidate = self._candidate if is_assembly else None

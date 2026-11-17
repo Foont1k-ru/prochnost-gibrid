@@ -917,6 +917,9 @@ class MainWindow(QMainWindow):
         if not self._confirm_discard_changes():
             event.ignore()
             return
+        if self._weldment_dialog is not None and not self._weldment_dialog.confirm_close():
+            event.ignore()
+            return
         arm_stopped = self._arm_concept_dialog is None or self._arm_concept_dialog.shutdown()
         weldment_stopped = self._weldment_dialog is None or self._weldment_dialog.shutdown()
         if not arm_stopped or not weldment_stopped:

@@ -130,3 +130,41 @@ def test_bent_tube_editor_and_reopened_assembly_use_actual_cad(qtbot, tmp_path, 
     assert not d._save_assembly.isEnabled() and not viewer._save.isEnabled()
     d.close()
     viewer.close()
+
+
+def test_reopened_bend_edits_rebuild_real_cad_and_clear_invalid(qtbot, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    c = AppController()
+    for code, xyz in {'lca_f_in': (0., 0., 0.), 'lca_r_in': (0., -100., 0.), 'lbj': (100., 100., 0.)}.items():
+        point = c.project.front.hardpoints[code]
+        point.x, point.y, point.z = xyz
+    source = tmp_path / 'source.kima'
+    write_document(source, 'assembly', make_welded_arm(c.project, 10, 2, 'unknown', bends={
+        'front': {'vertex_mm': [100, 0, 0], 'radius_mm': 20},
+    }))
+    original = source.read_bytes()
+    d = WeldmentDialog(c)
+    qtbot.addWidget(d)
+    d.show()
+    monkeypatch.setattr(QFileDialog, 'getOpenFileName', lambda *args: (str(source), ''))
+    d._open_file()
+    d._start_preview()
+    d._three_d._enable.setChecked(True)
+    qtbot.waitUntil(lambda: d._three_d._view.mesh is not None, timeout=45000)
+    d._bend_editor.fields['front'][3].setText('25')
+    assert d._three_d._view.mesh is None and not d._save.isEnabled()
+    qtbot.waitUntil(lambda: d._three_d._view.mesh is not None, timeout=45000)
+    assert d._save.isEnabled()
+    d._bend_editor.fields['front'][3].setText('1000')
+    assert d._three_d._view.mesh is None and d._canvas.concept is None and not d._save.isEnabled()
+    d._bend_editor.fields['front'][3].setText('25')
+    qtbot.waitUntil(lambda: d._three_d._view.mesh is not None, timeout=45000)
+    target = tmp_path / 'copy.kima'
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(target), ''))
+    d._save_copy()
+    from suspensionlab.model.kim_format import read_document
+    assert read_document(target, 'assembly')['parts'][0]['geometry']['bend_radius_mm'] == 25
+    assert source.read_bytes() == original
+    monkeypatch.setattr(QMessageBox, 'question', lambda *args: QMessageBox.StandardButton.Yes)
+    d.close()
