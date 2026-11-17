@@ -308,6 +308,7 @@ def test_rear_pair_rebuilds_real_cad_before_save(qtbot, tmp_path, monkeypatch):
     monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(path), ''))
     d._save_copy()
     assert read_document(path, 'assembly')['arm'] == 'rear_lower_right'
+    d._pair_baseline = d._pair_state()
     d.close()
 
 
@@ -337,5 +338,55 @@ def test_rear_live_pair_3d_invalidates_and_rebuilds_on_edits(qtbot):
     d._pair_roll.setText('invalid')
     assert d._pair_three_d._view.mesh is None and d._pair_three_d._document is None
     d._baseline, d._saved_candidate = d._input_state(), None
+    d._pair_baseline = d._pair_state()
+    assert d.shutdown()
+    d.close()
+
+
+def test_saved_rear_pair_reopens_and_rebuilds_both_cad_views(qtbot, tmp_path, monkeypatch):
+    from suspensionlab.model.kim_format import read_document
+    from suspensionlab.ui.rear_tube_dialog import RearTubeDialog
+
+    c = AppController()
+    c.set_axle_type('rear', 'live_axle_coil')
+    for code, xyz in {'ll_in_l': (0, 0, 0), 'll_out_l': (100, 100, 0),
+                      'll_in_r': (0, 0, 0), 'll_out_r': (100, -100, 0)}.items():
+        point = c.project.rear.hardpoints[code]
+        point.x, point.y, point.z = xyz
+    d = RearTubeDialog(c)
+    qtbot.addWidget(d)
+    d._arm.setCurrentIndex(d._arm.findData('rear_lower_left'))
+    d._bend.setChecked(True)
+    for field, text in zip(d._fields, ('100', '0', '0', '20'), strict=True):
+        field.setText(text)
+    d._pair_mode.setCurrentIndex(d._pair_mode.findData('same'))
+    d._three_d._enable.setChecked(True)
+    d._pair_three_d._enable.setChecked(True)
+    assert not d._save_pair.isEnabled()
+    qtbot.waitUntil(lambda: d._save_pair.isEnabled(), timeout=45000)
+    assert d._three_d._view.mesh is not None and d._pair_three_d._view.mesh is not None
+    path = tmp_path / 'paired.kima'
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(path), ''))
+    d._save_pair_copy()
+    assert read_document(path, 'assembly')['version'] == '0.6'
+    assert d.shutdown()
+    d.close()
+    d = RearTubeDialog(c)
+    qtbot.addWidget(d)
+    monkeypatch.setattr(QFileDialog, 'getOpenFileName', lambda *args: (str(path), ''))
+    d._open_file()
+    d._three_d._enable.setChecked(True)
+    d._pair_three_d._enable.setChecked(True)
+    qtbot.waitUntil(lambda: d._three_d._view.mesh is not None and d._pair_three_d._view.mesh is not None,
+                    timeout=45000)
+    d._start_preview()
+    qtbot.waitUntil(lambda: d._save_pair.isEnabled(), timeout=45000)
+    d._fields[3].setText('30')
+    assert not d._save_pair.isEnabled()
+    qtbot.waitUntil(lambda: d._save_pair.isEnabled(), timeout=45000)
+    target = tmp_path / 'paired-edit.kima'
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(target), ''))
+    d._save_pair_copy()
+    assert read_document(target, 'assembly')['source']['bend']['radius_mm'] == 30
     assert d.shutdown()
     d.close()

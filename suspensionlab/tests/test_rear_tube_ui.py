@@ -47,6 +47,7 @@ def test_rear_editor_live_bend_and_new_copy(qtbot, tmp_path, monkeypatch):
     c.move_point(p, (100, 10, 0))
     assert d._candidate is None and path.read_bytes() == original
     d._baseline, d._saved_candidate = d._input_state(), None
+    d._pair_baseline = d._pair_state()
     assert d.shutdown()
     d.close()
 
@@ -72,6 +73,7 @@ def test_input_changed_during_save_even_without_signal(qtbot, tmp_path, monkeypa
     c.set_axle_type('rear', 'multilink_rear')
     assert d._candidate is None and d._three_d._document is None and not d._save.isEnabled()
     d._baseline, d._saved_candidate = d._input_state(), None
+    d._pair_baseline = d._pair_state()
     assert d.shutdown()
     d.close()
 
@@ -160,6 +162,7 @@ def test_open_cancel_and_failed_file_do_not_discard_current_work(qtbot, tmp_path
     d._open_file()
     assert len(warnings) == 2 and d._source is None and d._radius.text() == '16'
     d._baseline, d._saved_candidate = d._input_state(), None
+    d._pair_baseline = d._pair_state()
     assert d.shutdown()
     d.close()
 
@@ -195,6 +198,7 @@ def test_original_paths_and_deleted_source_are_protected(qtbot, tmp_path, monkey
     d._save_copy()
     assert not source.exists() and len(warnings) == (3 if alias is not None else 2)
     d._baseline, d._saved_candidate = d._input_state(), None
+    d._pair_baseline = d._pair_state()
     assert d.shutdown()
     d.close()
 
@@ -239,6 +243,7 @@ def test_loaded_incomplete_and_invalid_fields_clear_preview_and_block_save(qtbot
     d._bend.setChecked(False)
     assert d._candidate is not None and d._candidate['bend'] is None
     d._baseline, d._saved_candidate = d._input_state(), None
+    d._pair_baseline = d._pair_state()
     assert d.shutdown()
     d.close()
 
@@ -335,6 +340,7 @@ def test_pair_modes_keep_tube_identity_or_mirror_and_preserve_source(qtbot, tmp_
     d._arm.setCurrentIndex(d._arm.findData('panhard'))
     assert not d._pair.isEnabled() and not d._pair_mode.isEnabled()
     d._baseline, d._saved_candidate = d._input_state(), None
+    d._pair_baseline = d._pair_state()
     assert d.shutdown()
     d.close()
 
@@ -372,5 +378,127 @@ def test_pair_preview_tracks_edits_and_invalidity_without_modifying_project(qtbo
     assert all(plan.view is None for plan in d._pair_plans)
     assert c.project.to_dict() == before
     d._baseline, d._saved_candidate = d._input_state(), None
+    d._pair_baseline = d._pair_state()
+    assert d.shutdown()
+    d.close()
+
+
+def test_save_open_and_edit_linked_pair_with_protected_source(qtbot, tmp_path, monkeypatch):
+    from suspensionlab.model.rear_pair_snapshot import rear_pair_sides
+
+    c = controller()
+    for code, xyz in {'ll_in_r': (0, 0, 0), 'll_out_r': (100, -100, 0)}.items():
+        point = c.project.rear.hardpoints[code]
+        point.x, point.y, point.z = xyz
+    original_project = c.project.to_dict()
+    d = RearTubeDialog(c)
+    qtbot.addWidget(d)
+    d._arm.setCurrentIndex(d._arm.findData('rear_lower_left'))
+    d._bend.setChecked(True)
+    for field, value in zip(d._fields, ('100', '0', '0', '20'), strict=True):
+        field.setText(value)
+    d._pair_mode.setCurrentIndex(d._pair_mode.findData('same'))
+    d._pair_roll.setText('45')
+    assert d._has_unsaved() and d._save_pair.isEnabled()
+    path = tmp_path / 'pair.kima'
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(path), ''))
+    d._save_pair_copy()
+    saved = read_document(path, 'assembly')
+    assert saved['version'] == '0.6' and saved['mode'] == 'same' and saved['roll_degrees'] == 45
+    assert not d._has_unsaved()
+    original = path.read_bytes()
+    assert d.shutdown()
+    d.close()
+    d = RearTubeDialog(c)
+    qtbot.addWidget(d)
+    monkeypatch.setattr(QFileDialog, 'getOpenFileName', lambda *args: (str(path), ''))
+    d._open_file()
+    assert d._source_pair == saved and d._candidate == saved['source'] and not d._active
+    assert d._pair_mode.currentData() == 'same' and d._pair_roll.text() == '45.0'
+    assert d._pair_three_d._document == rear_pair_sides(saved)[1] and not d._save_pair.isEnabled()
+    d._start_preview()
+    assert d._save_pair.isEnabled() and not d._has_unsaved()
+    d._fields[3].setText('30')
+    assert d._pair_three_d._document['bend']['radius_mm'] == 30 and d._has_unsaved()
+    warnings = []
+    monkeypatch.setattr(QMessageBox, 'warning', lambda *args: warnings.append(args))
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(path), ''))
+    d._save_pair_copy()
+    assert warnings and path.read_bytes() == original
+    copy = tmp_path / 'new-pair.kima'
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(copy), ''))
+    d._save_pair_copy()
+    updated = read_document(copy, 'assembly')
+    assert rear_pair_sides(updated)[1]['bend']['radius_mm'] == 30
+    assert updated['mode'] == 'same' and updated['roll_degrees'] == 45 and not d._has_unsaved()
+    assert path.read_bytes() == original and c.project.to_dict() == original_project and not c.dirty
+    assert d.shutdown()
+    d.close()
+
+
+def test_pair_changes_cannot_be_discarded_by_saving_single_or_nested_dialog(qtbot, tmp_path, monkeypatch):
+    c = controller()
+    for code, xyz in {'ll_in_r': (0, 0, 0), 'll_out_r': (100, -100, 0)}.items():
+        point = c.project.rear.hardpoints[code]
+        point.x, point.y, point.z = xyz
+    d = RearTubeDialog(c)
+    qtbot.addWidget(d)
+    d._arm.setCurrentIndex(d._arm.findData('rear_lower_left'))
+    d._pair_mode.setCurrentIndex(d._pair_mode.findData('same'))
+    d._pair_roll.setText('45')
+    pair = tmp_path / 'pair.kima'
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(pair), ''))
+    d._save_pair_copy()
+    assert not d._has_unsaved()
+    d._pair_roll.setText('30')
+    assert d._has_unsaved()
+    single = tmp_path / 'single.kima'
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(single), ''))
+    d._save_copy()
+    assert read_document(single, 'assembly')['version'] == '0.4' and d._has_unsaved()
+    target = tmp_path / 'not-created.kima'
+    warnings = []
+    monkeypatch.setattr(QMessageBox, 'warning', lambda *args: warnings.append(args))
+    def change_during_save(*args):
+        with QSignalBlocker(d._pair_roll):
+            d._pair_roll.setText('60')
+        return str(target), ''
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', change_during_save)
+    d._save_pair_copy()
+    assert warnings and not target.exists() and d._has_unsaved()
+    monkeypatch.setattr(QMessageBox, 'question', lambda *args: QMessageBox.StandardButton.No)
+    d._new_draft()
+    assert d._arm.currentData() == 'rear_lower_left' and d._pair_roll.text() == '60'
+    monkeypatch.setattr(QMessageBox, 'question', lambda *args: QMessageBox.StandardButton.Yes)
+    d._new_draft()
+    assert not d._has_unsaved() and d._pair_mode.currentData() == ''
+    assert d.shutdown()
+    d.close()
+
+
+def test_replacement_demands_confirmation_for_unsaved_pair_rule(qtbot, tmp_path, monkeypatch):
+    c = controller()
+    for code, xyz in {'ll_in_r': (0, 0, 0), 'll_out_r': (100, -100, 0)}.items():
+        point = c.project.rear.hardpoints[code]
+        point.x, point.y, point.z = xyz
+    d = RearTubeDialog(c)
+    qtbot.addWidget(d)
+    d._arm.setCurrentIndex(d._arm.findData('rear_lower_left'))
+    d._pair_mode.setCurrentIndex(d._pair_mode.findData('mirror'))
+    path = tmp_path / 'pair.kima'
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(path), ''))
+    d._save_pair_copy()
+    monkeypatch.setattr(QFileDialog, 'getOpenFileName', lambda *args: (str(path), ''))
+    d._open_file()
+    d._start_preview()
+    d._pair_mode.setCurrentIndex(d._pair_mode.findData('same'))
+    c.set_axle_type('rear', 'multilink_rear')
+    assert not d._active and d._has_unsaved() and d._pair_mode.currentData() == 'same'
+    monkeypatch.setattr(QMessageBox, 'question', lambda *args: QMessageBox.StandardButton.No)
+    d._new_draft()
+    assert d._source_pair is not None and d._has_unsaved()
+    monkeypatch.setattr(QMessageBox, 'question', lambda *args: QMessageBox.StandardButton.Yes)
+    d._new_draft()
+    assert d._source is None and not d._has_unsaved()
     assert d.shutdown()
     d.close()

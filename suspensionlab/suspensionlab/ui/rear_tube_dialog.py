@@ -28,6 +28,7 @@ from ..model.autosave_guard import same_project_file
 from ..model.entities import Project
 from ..model.kim_format import KimFormatError, read_document, write_document
 from ..model.niva_arm_views import REAR, make_niva_arm_view
+from ..model.rear_pair_snapshot import make_rear_pair_snapshot, rear_pair_sides
 from ..model.rear_tube import make_rear_tube, rear_tube_centerline, rear_tube_points, validate_rear_tube
 from ..model.rear_tube_pair import PAIRS, make_paired_rear_tube
 from .controller import AppController
@@ -41,6 +42,9 @@ class RearTubeDialog(QDialog):
         self.controller = controller
         self._candidate: dict[str, Any] | None = None
         self._source: dict[str, Any] | None = None
+        self._source_pair: dict[str, Any] | None = None
+        self._saved_pair: dict[str, Any] | None = None
+        self._pair_baseline: tuple[Any, ...] | None = None
         self._source_paths: tuple[Path, ...] = ()
         self._active = True
         self._pending_project_changes = False
@@ -140,6 +144,9 @@ class RearTubeDialog(QDialog):
         self._save = QPushButton(tr('rear_tube.save'), body)
         self._save.clicked.connect(self._save_copy)
         layout.addWidget(self._save)
+        self._save_pair = QPushButton(tr('rear_pair.save'), body)
+        self._save_pair.clicked.connect(self._save_pair_copy)
+        layout.addWidget(self._save_pair)
         self._saved = QLabel(body)
         self._saved.setWordWrap(True)
         self._saved.setTextFormat(Qt.TextFormat.PlainText)
@@ -156,10 +163,12 @@ class RearTubeDialog(QDialog):
         for field in self._fields:
             field.textChanged.connect(self._refresh)
         self._three_d.availabilityChanged.connect(self._update_save)
+        self._pair_three_d.availabilityChanged.connect(self._update_save)
         controller.modelChanged.connect(self._refresh)
         controller.projectReplaced.connect(self._project_replaced)
         self._refresh()
         self._baseline = self._input_state()
+        self._pair_baseline = self._pair_state()
         self._update_edit_status()
 
     @staticmethod
@@ -173,15 +182,18 @@ class RearTubeDialog(QDialog):
         if not self.confirm_close():
             return
         self._source, self._source_paths, self._active = None, (), True
+        self._source_pair, self._saved_pair, self._pair_baseline = None, None, None
         self._saved_candidate = None
         self._pending_project_changes = False
-        widgets = [self._arm, self._radius, self._wall, self._bend, *self._fields]
+        widgets = [self._arm, self._radius, self._wall, self._bend, self._pair_mode, self._pair_roll, *self._fields]
         blockers = [QSignalBlocker(widget) for widget in widgets]
         try:
             self._arm.setCurrentIndex(0)
             self._radius.setText('12')
             self._wall.setText('2')
             self._bend.setChecked(False)
+            self._pair_mode.setCurrentIndex(0)
+            self._pair_roll.setText('0')
             for field in self._fields:
                 field.clear()
         finally:
@@ -189,38 +201,46 @@ class RearTubeDialog(QDialog):
                 blocker.unblock()
         self._source_label.setText(tr('rear_tube.new'))
         self._baseline = self._input_state()
+        self._pair_baseline = self._pair_state()
         self._refresh()
 
     def _open_file(self) -> None:
-        revision, state = self._revision, self._input_state()
+        revision, state, pair_state = self._revision, self._input_state(), self._pair_state()
         selected, _ = QFileDialog.getOpenFileName(self, tr('rear_tube.open'), '', tr('arm_concept.assembly_filter'))
         if not selected:
             return
-        if revision != self._revision or state != self._input_state():
+        if revision != self._revision or state != self._input_state() or pair_state != self._pair_state():
             QMessageBox.warning(self, tr('rear_tube.title'), tr('weldment.changed'))
             return
         try:
             path = Path(selected).absolute()
             resolved = path.resolve()
             document = read_document(path, 'assembly')
-            validate_rear_tube(document)
+            pair_document = document if document['version'] == '0.6' else None
+            if pair_document is not None:
+                document, _ = rear_pair_sides(pair_document)
+            else:
+                validate_rear_tube(document)
         except (KimFormatError, OSError, ValueError, RuntimeError):
             QMessageBox.warning(self, tr('rear_tube.title'), tr('rear_tube.open_failed'))
             return
         if not self.confirm_close():
             return
         # Do not let changes made in a nested confirmation replace new work.
-        if revision != self._revision or state != self._input_state():
+        if revision != self._revision or state != self._input_state() or pair_state != self._pair_state():
             QMessageBox.warning(self, tr('rear_tube.title'), tr('weldment.changed'))
             return
         self._source, self._source_paths, self._active = document, (path, resolved), False
+        self._source_pair, self._saved_pair = pair_document, pair_document
         self._pending_project_changes = False
-        widgets = [self._arm, self._radius, self._wall, self._bend, *self._fields]
+        widgets = [self._arm, self._radius, self._wall, self._bend, self._pair_mode, self._pair_roll, *self._fields]
         blockers = [QSignalBlocker(widget) for widget in widgets]
         try:
             self._arm.setCurrentIndex(self._arm.findData(document['arm']))
             self._radius.setText(str(document['radius_mm']))
             self._wall.setText(str(document['wall_mm']))
+            self._pair_mode.setCurrentIndex(self._pair_mode.findData(pair_document['mode']) if pair_document else 0)
+            self._pair_roll.setText(str(pair_document['roll_degrees']) if pair_document else '0')
             bend = document['bend']
             self._bend.setChecked(bend is not None)
             values = [*bend['vertex_mm'], bend['radius_mm']] if bend is not None else ['', '', '', '']
@@ -231,6 +251,7 @@ class RearTubeDialog(QDialog):
                 blocker.unblock()
         self._source_label.setText(tr('rear_tube.source', path=str(path), name=document['name']))
         self._baseline = self._input_state()
+        self._pair_baseline = self._pair_state()
         self._saved_candidate = document
         self._refresh()
 
@@ -242,8 +263,7 @@ class RearTubeDialog(QDialog):
 
     def _project_replaced(self) -> None:
         if self._source is not None:
-            self._pending_project_changes = self._pending_project_changes or (
-                self._active and self._saved_candidate is not None and self._saved_candidate != self._candidate)
+            self._pending_project_changes = self._pending_project_changes or self._has_unsaved()
             self._active = False
         self._refresh()
 
@@ -292,6 +312,8 @@ class RearTubeDialog(QDialog):
         for plan in self._pair_plans:
             plan.set_view(None)
         self._pair_three_d.set_document(None)
+        self._update_save()
+        self._update_edit_status()
         candidate = self._candidate
         mode = self._pair_mode.currentData()
         if (candidate is None or candidate['arm'] not in PAIRS or mode not in ('same', 'mirror') or
@@ -309,6 +331,7 @@ class RearTubeDialog(QDialog):
             plan.set_view(view, path)
         self._pair_three_d.set_document(paired)
         self._pair_status.setText(tr('rear_pair.preview_ready'))
+        self._update_save()
 
     def _apply_pair(self) -> None:
         candidate = self._candidate
@@ -365,11 +388,22 @@ class RearTubeDialog(QDialog):
             plan.set_view(view, path)
         self._three_d.set_document(candidate)
         if self._source is not None and not self._active:
-            self._status.setText(tr('rear_tube.snapshot'))
+            key = 'rear_pair.snapshot_modified' if self._pair_state() != self._pair_baseline else 'rear_tube.snapshot'
+            self._status.setText(tr(key))
         elif self._source is not None:
             matches = (self._source['arm'] == candidate['arm'] and
                        rear_tube_points(self._source) == rear_tube_points(candidate))
-            self._status.setText(tr('rear_tube.match' if matches else 'rear_tube.different'))
+            if matches and self._source_pair is not None:
+                try:
+                    other = PAIRS[self._source['arm']]
+                    old_view = make_niva_arm_view(Project.from_dict(self._source['scheme']), other)
+                    new_view = make_niva_arm_view(Project.from_dict(candidate['scheme']), other)
+                    matches = old_view.points == new_view.points
+                except (KeyError, ValueError, TypeError, OverflowError):
+                    matches = False
+                self._status.setText(tr('rear_pair.match' if matches else 'rear_tube.different'))
+            else:
+                self._status.setText(tr('rear_tube.match' if matches else 'rear_tube.different'))
         else:
             self._status.setText(tr('rear_tube.ready'))
         self._update_save()
@@ -379,10 +413,17 @@ class RearTubeDialog(QDialog):
         return (self._arm.currentData(), self._radius.text(), self._wall.text(), self._bend.isChecked(),
                 tuple(field.text() for field in self._fields) if self._bend.isChecked() else ())
 
+    def _pair_state(self) -> tuple[Any, ...]:
+        mode = self._pair_mode.currentData()
+        return (mode, self._pair_roll.text() if mode == 'same' else '')
+
     def _has_unsaved(self) -> bool:
+        pair_changed = (self._pair_state() != self._pair_baseline or
+                        (self._saved_pair is not None and self._active and
+                         self._candidate != self._saved_pair['source']))
         return (self._baseline is not None and (self._input_state() != self._baseline or
-                self._pending_project_changes or (self._active and self._saved_candidate is not None and
-                                                  self._saved_candidate != self._candidate)))
+                self._pending_project_changes or pair_changed or
+                (self._active and self._saved_candidate is not None and self._saved_candidate != self._candidate)))
 
     def _update_edit_status(self) -> None:
         self._edit_status.setText(tr("rear_tube.unsaved") if self._has_unsaved() else "")
@@ -390,12 +431,12 @@ class RearTubeDialog(QDialog):
     def confirm_close(self) -> bool:
         if self._closing_confirmed or not self._has_unsaved():
             return True
-        state, revision = self._input_state(), self._revision
+        state, pair_state, revision = self._input_state(), self._pair_state(), self._revision
         answer = QMessageBox.question(self, tr("weldment.discard_title"), tr("rear_tube.discard"),
                                       QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                                       QMessageBox.StandardButton.No)
         return (answer == QMessageBox.StandardButton.Yes and state == self._input_state() and
-                revision == self._revision)
+                pair_state == self._pair_state() and revision == self._revision)
 
     def _candidate_is_current(self, candidate: dict[str, Any]) -> bool:
         if candidate != self._candidate:
@@ -409,6 +450,9 @@ class RearTubeDialog(QDialog):
 
     def _update_save(self, *_args: object) -> None:
         self._save.setEnabled(self._active and self._candidate is not None and self._three_d.can_save())
+        paired = self._pair_three_d._document
+        self._save_pair.setEnabled(self._active and paired is not None and self._pair_is_current(paired) and
+                                   self._three_d.can_save() and self._pair_three_d.can_save())
 
     def _save_copy(self) -> None:
         candidate = self._candidate
@@ -438,6 +482,50 @@ class RearTubeDialog(QDialog):
             return
         self._baseline = self._input_state()
         self._saved_candidate = candidate
+        self._pending_project_changes = False
+        self._update_edit_status()
+        self._saved.setText(tr('weldment.saved', path=str(path)))
+
+    def _save_pair_copy(self) -> None:
+        candidate = self._candidate
+        paired = self._pair_three_d._document
+        if (not self._active or candidate is None or paired is None or not self._pair_is_current(paired) or
+                not self._three_d.can_save() or not self._pair_three_d.can_save()):
+            return
+        mode = str(self._pair_mode.currentData())
+        try:
+            roll = float(self._pair_roll.text().strip().replace(',', '.')) if mode == 'same' else 0.0
+            snapshot = make_rear_pair_snapshot(candidate, mode, roll)
+        except (KimFormatError, ValueError, TypeError, OverflowError):
+            return
+        revision, state, pair_state = self._revision, self._input_state(), self._pair_state()
+        gens = (self._three_d.generation, self._pair_three_d.generation)
+        selected, _ = QFileDialog.getSaveFileName(self, tr('rear_pair.save'), '', tr('arm_concept.assembly_filter'))
+        if not selected:
+            return
+        path = Path(selected)
+        if path.suffix.lower() != '.kima':
+            path = path.with_name(path.name + '.kima')
+        if (revision != self._revision or state != self._input_state() or pair_state != self._pair_state() or
+                gens != (self._three_d.generation, self._pair_three_d.generation) or
+                not self._three_d.can_save() or not self._pair_three_d.can_save() or
+                not self._pair_is_current(paired)):
+            QMessageBox.warning(self, tr('rear_pair.title'), tr('weldment.changed'))
+            return
+        try:
+            if any(same_project_file(path, source) for source in self._source_paths):
+                raise KimFormatError('original source path')
+            if self.controller.is_protected_export_target(path):
+                raise KimFormatError('protected project')
+            write_document(path, 'assembly', snapshot, overwrite=False)
+        except (KimFormatError, OSError, ValueError, TypeError, RuntimeError):
+            QMessageBox.warning(self, tr('rear_pair.title'), tr('weldment.save_failed'))
+            self._refresh()
+            return
+        self._baseline = self._input_state()
+        self._pair_baseline = self._pair_state()
+        self._saved_candidate = candidate
+        self._saved_pair = snapshot
         self._pending_project_changes = False
         self._update_edit_status()
         self._saved.setText(tr('weldment.saved', path=str(path)))
