@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from math import floor, hypot
 from pathlib import Path
-from typing import cast
+from typing import Literal
 
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QCloseEvent, QColor, QKeyEvent, QMouseEvent, QPainter, QPen, QWheelEvent
@@ -24,8 +24,19 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..model.sketch_draft import LIMIT_MM, Entity, Kind, Point, SketchDraft, make_entity
+from ..model.sketch_draft import (
+    LIMIT_MM,
+    Entity,
+    Kind,
+    Point,
+    SketchDraft,
+    drawing_bounds,
+    make_entity,
+    rectangle_entities,
+)
 from ..model.sketch_io import SUFFIX, SketchDocument, SketchIOError, read_sketch, write_new_sketch
+
+Tool = Literal["line", "circle", "rectangle", "chain", "measure"]
 
 
 def _distance_to_entity(point: Point, entity: Entity) -> float:
@@ -50,8 +61,9 @@ class SketchCanvas(QWidget):
         self.setMinimumSize(450, 320)
         self.setMouseTracking(True)
         self.draft = SketchDraft()
-        self.kind: Kind | None = "line"  # None = selection
+        self.kind: Tool | None = "line"  # None = selection
         self.pending: Point | None = None
+        self.measure_start: Point | None = None
         self.hover: Point | None = None
         self.snap = True
         self.snap_points = True
@@ -81,19 +93,23 @@ class SketchCanvas(QWidget):
             best: Point | None = None
             distance = 10.0 / self.scale
             for entity in self.draft.entities:
-                for point in (entity.start, entity.end):
+                points: list[tuple[Point, str]] = [(entity.start, "точка"), (entity.end, "точка")]
+                if entity.kind == "line":
+                    points.append((((entity.start[0] + entity.end[0]) / 2,
+                                    (entity.start[1] + entity.end[1]) / 2), "середина"))
+                for point, label in points:
                     d = hypot(raw[0] - point[0], raw[1] - point[1])
-                    if d <= distance:
+                    if d < distance:
                         best, distance = point, d
+                        self.snap_label = label
             if best is not None:
-                self.snap_label = "точка"
                 return best
         if self.snap:
             self.snap_label = "сетка"
             return self.to_world(pos)
         return raw
 
-    def set_kind(self, kind: Kind | None) -> None:
+    def set_kind(self, kind: Tool | None) -> None:
         self.kind = kind
         self.cancel()
         self.selected = None
@@ -102,6 +118,7 @@ class SketchCanvas(QWidget):
 
     def cancel(self) -> None:
         self.pending = None
+        self.measure_start = None
         self.hover = None
         self.update()
         self.message.emit("Выберите элемент" if self.kind is None else "Выберите первую точку")
@@ -110,21 +127,44 @@ class SketchCanvas(QWidget):
     def add_point(self, point: Point) -> None:
         if self.kind is None:
             return
+        if self.kind == "measure":
+            if not all(-LIMIT_MM <= value <= LIMIT_MM for value in point):
+                self.message.emit("Точка вне допустимого диапазона")
+                return
+            if self.measure_start is None:
+                self.measure_start = point
+                self.message.emit("Измерение: выберите вторую точку")
+            else:
+                dx = point[0] - self.measure_start[0]
+                dy = point[1] - self.measure_start[1]
+                self.measure_start = None
+                self.message.emit(f"Расстояние: {hypot(dx, dy):.3f} мм; Δ1: {dx:.3f} мм; Δ2: {dy:.3f} мм")
+            self.update()
+            return
         if self.pending is None:
             if not all(-LIMIT_MM <= x <= LIMIT_MM for x in point):
                 self.message.emit("Точка вне допустимого диапазона")
                 return
             self.pending = point
             self.plane_locked = True
-            self.message.emit("Выберите вторую точку" if self.kind == "line" else "Выберите точку окружности")
+            prompt = {"line": "Выберите вторую точку", "chain": "Выберите следующую точку цепочки",
+                      "rectangle": "Выберите противоположный угол", "circle": "Выберите точку окружности"}
+            self.message.emit(prompt[self.kind])
         else:
             try:
-                self.draft.add(self.kind, self.pending, point)
+                if self.kind == "rectangle":
+                    self.draft.add_rectangle(self.pending, point)
+                else:
+                    self.draft.add("line" if self.kind == "chain" else self.kind, self.pending, point)
             except ValueError as exc:
                 self.message.emit(str(exc))
                 return
-            self.pending = None
-            self.message.emit("Элемент добавлен; выберите первую точку")
+            if self.kind == "chain":
+                self.pending = point
+                self.message.emit("Отрезок добавлен; следующая точка или Esc для завершения цепочки")
+            else:
+                self.pending = None
+                self.message.emit("Элемент добавлен; выберите первую точку")
         self.changed.emit()
         self.update()
 
@@ -158,10 +198,23 @@ class SketchCanvas(QWidget):
         if event.button() == Qt.MouseButton.RightButton:
             self._pan = None
 
+    def fit_view(self) -> bool:
+        bounds = drawing_bounds(tuple(self.draft.entities))
+        if bounds is None:
+            self.message.emit("Нет элементов для показа")
+            return False
+        left, bottom, right, top = bounds
+        width, height = max(right - left, 1e-9), max(top - bottom, 1e-9)
+        self.scale = min(40.0, max(0.00001, min(max(1, self.width() - 80) / width,
+                                                    max(1, self.height() - 80) / height)))
+        self.offset = QPointF(-(left + right) / 2 * self.scale, (bottom + top) / 2 * self.scale)
+        self.update()
+        return True
+
     def wheelEvent(self, event: QWheelEvent) -> None:
         before = self.to_world(event.position(), snap=False)
         steps = max(-20.0, min(20.0, event.angleDelta().y() / 120))
-        self.scale = min(40.0, max(0.02, self.scale * (1.2 ** steps)))
+        self.scale = min(40.0, max(0.00001, self.scale * (1.2 ** steps)))
         after = self.to_screen(before)
         self.offset += event.position() - after
         self.update()
@@ -190,14 +243,22 @@ class SketchCanvas(QWidget):
         for i, entity in enumerate(self.draft.entities):
             p.setPen(QPen(QColor("#f7ca72" if i == self.selected else "#6ed5f7"), 3 if i == self.selected else 2))
             self._draw_entity(p, entity.kind, entity.start, entity.end)
-        if self.kind is not None and self.pending is not None and self.hover is not None:
+        if self.kind == "measure" and self.measure_start is not None and self.hover is not None:
+            p.setPen(QPen(QColor("#f7ca72"), 1, Qt.PenStyle.DashLine))
+            p.drawLine(self.to_screen(self.measure_start), self.to_screen(self.hover))
+            p.drawEllipse(self.to_screen(self.measure_start), 4, 4)
+        if self.kind is not None and self.kind != "measure" and self.pending is not None and self.hover is not None:
             try:
-                make_entity(self.kind, self.pending, self.hover)
+                if self.kind == "rectangle":
+                    preview = rectangle_entities(self.pending, self.hover)
+                else:
+                    preview = (make_entity("line" if self.kind == "chain" else self.kind, self.pending, self.hover),)
             except ValueError:
                 pass
             else:
                 p.setPen(QPen(QColor("#f7ca72"), 1, Qt.PenStyle.DashLine))
-                self._draw_entity(p, self.kind, self.pending, self.hover)
+                for item in preview:
+                    self._draw_entity(p, item.kind, item.start, item.end)
         if self.hover is not None and self.snap_label and self.kind is not None:
             p.setPen(QPen(QColor("#f7ca72"), 1))
             p.drawEllipse(self.to_screen(self.hover), 4, 4)
@@ -297,7 +358,8 @@ class SketchDraftDialog(QDialog):
         row.addWidget(QLabel("Смещение:"))
         row.addWidget(self.plane_offset)
         self.tool = QComboBox()
-        self.tool.addItems(["Отрезок", "Окружность: центр и точка", "Выбор элемента"])
+        self.tool.addItems(["Отрезок", "Окружность: центр и точка", "Выбор элемента",
+                            "Прямоугольник: два угла", "Цепочка отрезков", "Измерить расстояние"])
         row.addWidget(self.tool)
         self.snap = QCheckBox("Сетка")
         self.snap.setChecked(True)
@@ -308,14 +370,15 @@ class SketchDraftDialog(QDialog):
         self.grid_step.setValue(10)
         self.grid_step.setSuffix(" мм")
         row.addWidget(self.grid_step)
-        self.points_snap = QCheckBox("Точки")
+        self.points_snap = QCheckBox("Точки и середины")
         self.points_snap.setChecked(True)
         row.addWidget(self.points_snap)
         layout.addLayout(row)
         tools = QHBoxLayout()
-        undo, redo, cancel = QPushButton("Отменить"), QPushButton("Повторить"), QPushButton("Сбросить точку (Esc)")
+        undo, redo, cancel = QPushButton("Отменить"), QPushButton("Повторить"), QPushButton("Завершить / сбросить (Esc)")
         self.edit_button, self.delete_button = QPushButton("Изменить выбранное…"), QPushButton("Удалить выбранное")
-        for button in (undo, redo, cancel, self.edit_button, self.delete_button):
+        fit = QPushButton("Показать весь эскиз")
+        for button in (undo, redo, cancel, self.edit_button, self.delete_button, fit):
             tools.addWidget(button)
         layout.addLayout(tools)
         self.canvas = SketchCanvas(self)
@@ -342,8 +405,8 @@ class SketchDraftDialog(QDialog):
         new.clicked.connect(self._new)
         open_button.clicked.connect(self._open)
         save.clicked.connect(self._save)
-        self.plane.currentIndexChanged.connect(self._refresh)
-        self.plane_offset.valueChanged.connect(self._refresh)
+        self.plane.currentIndexChanged.connect(self._reference_changed)
+        self.plane_offset.valueChanged.connect(self._reference_changed)
         self.tool.currentIndexChanged.connect(self._set_tool)
         self.snap.toggled.connect(self._set_snap)
         self.points_snap.toggled.connect(self._set_points_snap)
@@ -352,11 +415,12 @@ class SketchDraftDialog(QDialog):
         cancel.clicked.connect(self.canvas.cancel)
         undo.clicked.connect(self._undo)
         redo.clicked.connect(self._redo)
+        fit.clicked.connect(self.canvas.fit_view)
         self.edit_button.clicked.connect(self._edit)
         self.delete_button.clicked.connect(self._delete)
         self.canvas.message.connect(self._message)
         self.canvas.changed.connect(self._refresh)
-        self.canvas.selectionChanged.connect(self._refresh)
+        self.canvas.selectionChanged.connect(self._selection_changed)
         self.canvas.position.connect(self._position)
         self._refresh()
 
@@ -376,6 +440,14 @@ class SketchDraftDialog(QDialog):
         name = str(self._path) if self._path else "Новый эскиз"
         self.file_label.setText(name + (" *" if self._dirty() else ""))
 
+    def _reference_changed(self, *_args: object) -> None:
+        if self.canvas.measure_start is not None:
+            self.canvas.measure_start = None
+            self.canvas.update()
+            self._message("Измерение сброшено: плоскость или её положение изменились")
+        else:
+            self._refresh()
+
     def _message(self, text: str) -> None:
         self.status.setText(text)
         self._refresh()
@@ -383,9 +455,20 @@ class SketchDraftDialog(QDialog):
     def _position(self, x: float, y: float) -> None:
         self.coords.setText(f"{self.plane.currentText()}: {x:.3f}, {y:.3f} мм {self.canvas.snap_label}")
 
+    def _selection_changed(self) -> None:
+        index = self.canvas.selected
+        if index is not None:
+            entity = self.canvas.draft.entities[index]
+            if entity.kind == "line":
+                self._message(f"Отрезок: длина {entity.size:.3f} мм")
+            else:
+                self._message(f"Окружность: радиус {entity.size:.3f} мм; диаметр {2 * entity.size:.3f} мм")
+        else:
+            self._refresh()
+
     def _set_tool(self, index: int) -> None:
-        kind = cast(Kind, "line" if index == 0 else "circle") if index != 2 else None
-        self.canvas.set_kind(kind)
+        kinds: tuple[Tool | None, ...] = ("line", "circle", None, "rectangle", "chain", "measure")
+        self.canvas.set_kind(kinds[index])
 
     def _set_snap(self, enabled: bool) -> None:
         self.canvas.snap = enabled
@@ -439,7 +522,7 @@ class SketchDraftDialog(QDialog):
 
     def _save(self) -> bool:
         if self.canvas.pending is not None:
-            QMessageBox.warning(self, "Незавершённый элемент", "Завершите или сбросьте первую точку перед сохранением.")
+            QMessageBox.warning(self, "Незавершённый элемент", "Завершите действие или нажмите Esc, затем сохраните эскиз.")
             return False
         suggested = str(self._path.with_name(self._path.stem + "-новый" + SUFFIX)) if self._path else "эскиз.slsketch"
         path, _ = QFileDialog.getSaveFileName(self, "Сохранить новый эскиз", suggested,
@@ -473,6 +556,7 @@ class SketchDraftDialog(QDialog):
     def _load_document(self, doc: SketchDocument, path: Path | None) -> None:
         self.canvas.draft = SketchDraft(doc.entities)
         self.canvas.pending = None
+        self.canvas.measure_start = None
         self.canvas.hover = None
         self.canvas.selected = None
         self.canvas.plane_locked = bool(doc.entities)
@@ -481,6 +565,8 @@ class SketchDraftDialog(QDialog):
         self._path = path
         self._saved = self._document()
         self._message("Эскиз открыт" if path else "Новый эскиз")
+        if path and doc.entities:
+            self.canvas.fit_view()
         self.canvas.update()
 
     def _new(self) -> None:

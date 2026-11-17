@@ -37,6 +37,32 @@ def make_entity(kind: Kind, start: Point, end: Point) -> Entity:
     return entity
 
 
+def rectangle_entities(first: Point, opposite: Point) -> tuple[Entity, ...]:
+    """Прямоугольник по диагонали; проверка всех сторон до изменения документа."""
+    a = first
+    b = (opposite[0], first[1])
+    c = opposite
+    d = (first[0], opposite[1])
+    return tuple(make_entity("line", start, end) for start, end in ((a, b), (b, c), (c, d), (d, a)))
+
+
+def drawing_bounds(entities: tuple[Entity, ...]) -> tuple[float, float, float, float] | None:
+    """Габариты в плоскости, включая всю аналитическую окружность."""
+    if not entities:
+        return None
+    xs: list[float] = []
+    ys: list[float] = []
+    for entity in entities:
+        if entity.kind == "circle":
+            radius = entity.size
+            xs.extend((entity.start[0] - radius, entity.start[0] + radius))
+            ys.extend((entity.start[1] - radius, entity.start[1] + radius))
+        else:
+            xs.extend((entity.start[0], entity.end[0]))
+            ys.extend((entity.start[1], entity.end[1]))
+    return min(xs), min(ys), max(xs), max(ys)
+
+
 class SketchDraft:
     """Независимая ограниченная история добавлений, удаления и редактирования."""
 
@@ -59,6 +85,13 @@ class SketchDraft:
         entity = make_entity(kind, start, end)
         self._checkpoint()
         self.entities.append(entity)
+
+    def add_rectangle(self, first: Point, opposite: Point) -> None:
+        if len(self.entities) + 4 > MAX_ENTITIES:
+            raise ValueError("Недостаточно места для четырёх сторон прямоугольника")
+        parts = rectangle_entities(first, opposite)
+        self._checkpoint()
+        self.entities.extend(parts)
 
     def replace(self, index: int, kind: Kind, start: Point, end: Point) -> None:
         entity = make_entity(kind, start, end)
