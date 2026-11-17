@@ -16,7 +16,17 @@ from pathlib import Path
 from typing import Any, cast
 
 from .project_io import _unique_object
-from .sketch_draft import LIMIT_MM, MAX_ENTITIES, Entity, Kind, Point, make_entity
+from .sketch_draft import (
+    LIMIT_MM,
+    MAX_DIMENSIONS,
+    MAX_ENTITIES,
+    Dimension,
+    Entity,
+    Kind,
+    Point,
+    make_entity,
+    validate_dimension,
+)
 
 MAX_BYTES = 2 * 1024 * 1024
 SUFFIX = ".slsketch"
@@ -31,6 +41,7 @@ class SketchDocument:
     plane: str
     offset_mm: float
     entities: tuple[Entity, ...]
+    dimensions: tuple[Dimension, ...] = ()
 
 
 def _number(value: Any) -> float:
@@ -52,9 +63,15 @@ def _point(value: Any) -> Point:
 
 
 def _parse(value: Any) -> SketchDocument:
-    if not isinstance(value, dict) or set(value) != {"format", "version", "units", "plane", "offset_mm", "entities"}:
+    if not isinstance(value, dict):
         raise SketchIOError("Некорректная структура эскиза")
-    if value["format"] != "suspensionlab-sketch" or value["version"] not in ("1", "2") or value["units"] != "mm":
+    version = value.get("version")
+    expected = {"format", "version", "units", "plane", "offset_mm", "entities"}
+    if version == "3":
+        expected.add("dimensions")
+    if set(value) != expected:
+        raise SketchIOError("Некорректная структура эскиза")
+    if value["format"] != "suspensionlab-sketch" or version not in ("1", "2", "3") or value["units"] != "mm":
         raise SketchIOError("Неподдерживаемая версия или единицы")
     plane = value["plane"]
     if plane not in ("XY", "XZ", "YZ"):
@@ -73,7 +90,7 @@ def _parse(value: Any) -> SketchDocument:
         if kind not in ("line", "circle", "arc"):
             raise SketchIOError("Неизвестный элемент")
         if kind == "arc":
-            if value["version"] != "2" or set(item) != {"kind", "start", "end", "sweep_deg"}:
+            if version not in ("2", "3") or set(item) != {"kind", "start", "end", "sweep_deg"}:
                 raise SketchIOError("Неподдерживаемая дуга")
             sweep = _number(item["sweep_deg"])
         else:
@@ -81,7 +98,16 @@ def _parse(value: Any) -> SketchDocument:
                 raise SketchIOError("Некорректный элемент")
             sweep = None
         entities.append(make_entity(cast(Kind, kind), _point(item["start"]), _point(item["end"]), sweep))
-    return SketchDocument(plane, offset, tuple(entities))
+    dimensions: list[Dimension] = []
+    if version == "3":
+        items = value["dimensions"]
+        if not isinstance(items, list) or len(items) > MAX_DIMENSIONS:
+            raise SketchIOError("Некорректное количество размеров")
+        for item in items:
+            if not isinstance(item, dict) or set(item) != {"entity_index", "position", "mode"}:
+                raise SketchIOError("Некорректный размер")
+            dimensions.append(validate_dimension(Dimension(item["entity_index"], _point(item["position"]), item["mode"]), tuple(entities)))
+    return SketchDocument(plane, offset, tuple(entities), tuple(dimensions))
 
 
 def _as_data(document: SketchDocument) -> dict[str, Any]:
@@ -92,9 +118,11 @@ def _as_data(document: SketchDocument) -> dict[str, Any]:
             item["sweep_deg"] = entity.sweep_deg
         items.append(item)
     data: dict[str, Any] = {"format": "suspensionlab-sketch",
-                            "version": "2" if any(e.kind == "arc" for e in document.entities) else "1",
+                            "version": "3" if document.dimensions else ("2" if any(e.kind == "arc" for e in document.entities) else "1"),
                             "units": "mm", "plane": document.plane, "offset_mm": document.offset_mm,
                             "entities": items}
+    if document.dimensions:
+        data["dimensions"] = [{"entity_index": d.entity_index, "position": list(d.position), "mode": d.mode} for d in document.dimensions]
     _parse(data)
     return data
 

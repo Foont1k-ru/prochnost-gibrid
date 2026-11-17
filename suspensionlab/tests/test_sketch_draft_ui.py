@@ -490,3 +490,104 @@ def test_tangent_choice_shows_alternate_preview(qtbot):
     choice.choice.setCurrentIndex(1)
     assert choice.selected_circle() == circles[1] and choice.preview.index == 1
     assert not choice.preview.grab().isNull()
+
+
+def test_dimension_placement_edit_delete_undo_and_save(qtbot, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QFileDialog
+
+    from suspensionlab.model.sketch_draft import dimension_text
+    from suspensionlab.model.sketch_io import read_sketch
+
+    dialog = SketchDraftDialog()
+    qtbot.addWidget(dialog)
+    dialog.show()
+    canvas = dialog.canvas
+    canvas.add_point((0, 0))
+    canvas.add_point((60, 20))
+    dialog.tool.setCurrentIndex(10)
+    dialog.dimension_style.setCurrentIndex(1)  # горизонтальный
+    qtbot.mouseClick(canvas, Qt.MouseButton.LeftButton, pos=canvas.to_screen((30, 10)).toPoint())
+    assert canvas.dimension_target == 0
+    qtbot.mouseClick(canvas, Qt.MouseButton.LeftButton, pos=canvas.to_screen((30, 40)).toPoint())
+    assert len(canvas.draft.dimensions) == 1
+    assert dimension_text(canvas.draft.dimensions[0], canvas.draft.entities[0]) == "60.000 мм"
+    assert not canvas.grab().isNull()
+    canvas.draft.replace(0, "line", (0, 0), (80, 20))
+    assert dimension_text(canvas.draft.dimensions[0], canvas.draft.entities[0]) == "80.000 мм"
+    dialog._undo()
+    assert dimension_text(canvas.draft.dimensions[0], canvas.draft.entities[0]) == "60.000 мм"
+    path = tmp_path / "dimensions.slsketch"
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *args, **kwargs: (str(path), ""))
+    assert dialog._save()
+    assert read_sketch(path).dimensions == tuple(canvas.draft.dimensions)
+    dialog.tool.setCurrentIndex(2)
+    canvas.selected = 0
+    dialog._delete()
+    assert len(canvas.draft.entities) == 1 and "размер" in dialog.status.text().lower()
+    dialog.tool.setCurrentIndex(11)
+    dim_pos = canvas.draft.dimensions[0].position
+    qtbot.mouseClick(canvas, Qt.MouseButton.LeftButton, pos=canvas.to_screen(dim_pos).toPoint())
+    assert not canvas.draft.dimensions
+    dialog._undo()
+    assert len(canvas.draft.dimensions) == 1 and not dialog._dirty()
+
+
+def test_fillet_mouse_preserves_reference_and_is_one_undo(qtbot):
+    from suspensionlab.model.sketch_draft import dimension_text
+
+    dialog = SketchDraftDialog()
+    qtbot.addWidget(dialog)
+    dialog.show()
+    canvas = dialog.canvas
+    for first, second in (((0, 0), (100, 0)), ((0, 0), (0, 100))):
+        canvas.add_point(first)
+        canvas.add_point(second)
+    canvas.draft.add_dimension(0, (50, -20))
+    original = tuple(canvas.draft.entities)
+    dialog.tool.setCurrentIndex(12)
+    for point in ((50, 0), (0, 50)):
+        qtbot.mouseClick(canvas, Qt.MouseButton.LeftButton, pos=canvas.to_screen(point).toPoint())
+    assert len(canvas.draft.entities) == 3 and canvas.draft.entities[-1].kind == "arc"
+    assert dimension_text(canvas.draft.dimensions[0], canvas.draft.entities[0]) == "90.000 мм"
+    dialog._undo()
+    assert tuple(canvas.draft.entities) == original and len(canvas.draft.dimensions) == 1
+    dialog._saved = dialog._document()
+
+
+def test_dimension_style_incompatible_selection_is_rejected(qtbot):
+    dialog = SketchDraftDialog()
+    qtbot.addWidget(dialog)
+    dialog.show()
+    canvas = dialog.canvas
+    canvas.add_point((0, 0))
+    canvas.add_point((50, 0))
+    dialog.tool.setCurrentIndex(10)
+    dialog.dimension_style.setCurrentIndex(4)  # диаметр не отрезка
+    qtbot.mouseClick(canvas, Qt.MouseButton.LeftButton, pos=canvas.to_screen((25, 0)).toPoint())
+    assert canvas.dimension_target is None and not canvas.draft.dimensions
+    assert "не подходит" in dialog.status.text()
+    dialog._saved = dialog._document()
+
+
+def test_pending_dimension_undo_and_save_are_safe(qtbot, monkeypatch):
+    dialog = SketchDraftDialog()
+    qtbot.addWidget(dialog)
+    dialog.show()
+    canvas = dialog.canvas
+    canvas.add_point((0, 0))
+    canvas.add_point((50, 0))
+    dialog.tool.setCurrentIndex(10)
+    qtbot.mouseClick(canvas, Qt.MouseButton.LeftButton, pos=canvas.to_screen((25, 0)).toPoint())
+    assert canvas.dimension_target == 0
+    warnings = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda *args: warnings.append(args))
+    assert not dialog._save() and not dialog._export_dxf()
+    dialog._check_contours()
+    assert len(warnings) == 3
+    dialog._undo()
+    assert canvas.dimension_target is None and len(canvas.draft.entities) == 1
+    dialog._undo()
+    assert not canvas.draft.entities
+    dialog._redo()
+    assert len(canvas.draft.entities) == 1
+    dialog._saved = dialog._document()

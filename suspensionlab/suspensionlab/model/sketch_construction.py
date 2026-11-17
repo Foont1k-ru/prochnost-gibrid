@@ -170,3 +170,50 @@ def trim_circle(entities: tuple[Entity, ...], index: int, clicked: Point) -> tup
     if index < 0 or index >= len(entities) or entities[index].kind != "circle":
         raise ValueError("Для обрезки выберите окружность")
     return trim_entity(entities, index, clicked)
+
+
+def fillet_lines(first: Entity, second: Entity, radius: float) -> tuple[Entity, Entity, Entity]:
+    """Скругление двух отрезков, имеющих общий конец. Результат не меняет вход."""
+    from math import acos, atan2, degrees, sin, tan
+
+    from .sketch_curves import NUMERIC_EPS_MM
+
+    if first.kind != "line" or second.kind != "line":
+        raise ValueError("Сопряжение пока доступно только для двух отрезков")
+    if not isfinite(radius) or radius < MIN_SIZE_MM:
+        raise ValueError("Введите положительный радиус")
+    matches = [(i, j) for i, a in enumerate((first.start, first.end)) for j, b in enumerate((second.start, second.end))
+               if distance(a, b) <= NUMERIC_EPS_MM]
+    if len(matches) != 1:
+        raise ValueError("Отрезки должны иметь ровно один общий конец")
+    i, j = matches[0]
+    corner = (first.start, first.end)[i]
+    far1, far2 = (first.end, first.start)[i], (second.end, second.start)[j]
+    length1, length2 = distance(corner, far1), distance(corner, far2)
+    u = ((far1[0] - corner[0]) / length1, (far1[1] - corner[1]) / length1)
+    v = ((far2[0] - corner[0]) / length2, (far2[1] - corner[1]) / length2)
+    dot = max(-1.0, min(1.0, u[0] * v[0] + u[1] * v[1]))
+    theta = acos(dot)
+    cross = u[0] * v[1] - u[1] * v[0]
+    if abs(cross) < 1e-9 or theta < 1e-9:
+        raise ValueError("Параллельные или почти параллельные отрезки не скругляются")
+    setback = radius / tan(theta / 2)
+    if not isfinite(setback) or min(length1, length2) - setback < MIN_SIZE_MM:
+        raise ValueError("Радиус слишком велик для длины отрезков")
+    p1 = (corner[0] + u[0] * setback, corner[1] + u[1] * setback)
+    p2 = (corner[0] + v[0] * setback, corner[1] + v[1] * setback)
+    bisector_length = hypot(u[0] + v[0], u[1] + v[1])
+    center_distance = radius / sin(theta / 2)
+    center = (corner[0] + (u[0] + v[0]) / bisector_length * center_distance,
+              corner[1] + (u[1] + v[1]) / bisector_length * center_distance)
+    angle1 = degrees(atan2(p1[1] - center[1], p1[0] - center[0]))
+    angle2 = degrees(atan2(p2[1] - center[1], p2[0] - center[0]))
+    sweep = (angle2 - angle1 + 180) % 360 - 180
+    new1 = make_entity("line", p1 if i == 0 else first.start, p1 if i == 1 else first.end)
+    new2 = make_entity("line", p2 if j == 0 else second.start, p2 if j == 1 else second.end)
+    arc = make_entity("arc", center, p1, sweep)
+    from .sketch_draft import arc_end
+
+    if distance(arc_end(arc), p2) > max(1e-8, radius * 1e-10):
+        raise ValueError("Не удалось точно построить сопряжение")
+    return new1, new2, arc

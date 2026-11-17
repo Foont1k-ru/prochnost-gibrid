@@ -348,6 +348,17 @@ def run_packaging_check() -> None:
         with patch.object(QMessageBox, "information") as report:
             sketch._check_contours()
         _require(report.called and "Замечаний не найдено" in str(report.call_args), "Проверка контуров недоступна")
+        from .model.sketch_draft import dimension_text
+        from .model.sketch_io import read_sketch, write_new_sketch
+
+        sketch.canvas.draft.add_dimension(0, (50., -15.), "horizontal")
+        sketch._fillet((0, 1))
+        _require(sketch.canvas.draft.entities[-1].kind == "arc" and
+                 dimension_text(sketch.canvas.draft.dimensions[0], sketch.canvas.draft.entities[0]) == "90.000 мм",
+                 "Сопряжение и связанный справочный размер недоступны")
+        saved = Path(sketch_dir) / "размер.slsketch"
+        write_new_sketch(saved, sketch._document())
+        _require(read_sketch(saved) == sketch._document(), "Размер не сохранился в отдельном эскизе")
         sketch.tool.setCurrentIndex(6)  # аналитическая дуга
         sketch.arc_angle.setValue(-90.)
         sketch.canvas.add_point((150., 0.))
@@ -356,9 +367,9 @@ def run_packaging_check() -> None:
         sketch.tool.setCurrentIndex(0)
         sketch.canvas.add_point((155., -20.))
         sketch.canvas.add_point((155., 20.))
-        sketch._trim(4, (157.071, -7.071))
-        _require(sketch.canvas.draft.entities[4].kind == "arc" and
-                 abs(sketch.canvas.draft.entities[4].sweep_deg or 0) < 90., "Обрезка дуги недоступна")
+        sketch._trim(5, (157.071, -7.071))
+        _require(sketch.canvas.draft.entities[5].kind == "arc" and
+                 abs(sketch.canvas.draft.entities[5].sweep_deg or 0) < 90., "Обрезка дуги недоступна")
         with patch.object(QMessageBox, "information") as arc_report:
             sketch._check_contours()
         _require(arc_report.called, "Проверка контуров с дугой недоступна")
@@ -367,8 +378,8 @@ def run_packaging_check() -> None:
                 patch.object(QFileDialog, "getSaveFileName", return_value=(str(destination), "")):
             _require(sketch._export_dxf(), "DXF эскиза не создан")
         dxf = ezdxf.readfile(destination)
-        _require(dxf.header["$INSUNITS"] == 4 and len(dxf.modelspace()) == 6 and
-                 len(dxf.modelspace().query("ARC")) == 1,
+        _require(dxf.header["$INSUNITS"] == 4 and len(dxf.modelspace()) == 7 and
+                 len(dxf.modelspace().query("ARC")) == 2,
                  "DXF эскиза содержит неверные единицы или геометрию")
         sketch._saved = sketch._document()
         sketch.close()

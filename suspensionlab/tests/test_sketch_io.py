@@ -50,7 +50,7 @@ def test_symlink_destination_not_overwritten(tmp_path):
 
 
 @pytest.mark.parametrize("change", [
-    lambda d: d.update(version="3"), lambda d: d.update(units="in"),
+    lambda d: d.update(version="99"), lambda d: d.update(units="in"),
     lambda d: d.update(plane="AA"), lambda d: d.update(offset_mm=True),
     lambda d: d.update(offset_mm=0.00001), lambda d: d.update(extra="unexpected"),
     lambda d: d["entities"][0].update(start=[float("nan"), 1]),

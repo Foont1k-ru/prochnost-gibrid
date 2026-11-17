@@ -168,3 +168,49 @@ def test_arc_trimming_does_not_use_other_arc_extension():
     cutter = make_entity("arc", (10, 0), (20, 0), -90)  # intersection below, outside target
     with pytest.raises(ValueError):
         trim_entity((arc, cutter), 0, (0, 10))
+
+
+def test_fillet_two_lines_is_tangent_and_undoable():
+    from suspensionlab.model.sketch_construction import fillet_lines
+
+    first, second = line((0, 0), (100, 0)), line((0, 100), (0, 0))
+    a, b, arc = fillet_lines(first, second, 10)
+    assert a.start == pytest.approx((10, 0)) and b.end == pytest.approx((0, 10))
+    assert arc.start == pytest.approx((10, 10)) and arc.size == pytest.approx(10)
+    assert arc_end(arc) == pytest.approx((0, 10), abs=1e-12)
+    draft = SketchDraft((first, second))
+    draft.apply_fillet(0, 1, (a, b, arc))
+    assert len(draft.entities) == 3
+    draft.undo()
+    assert tuple(draft.entities) == (first, second)
+    draft.redo()
+    assert tuple(draft.entities) == (a, b, arc)
+
+
+@pytest.mark.parametrize("first,second,radius", [
+    (((0, 0), (10, 0)), ((0, 0), (0, 10)), 11),
+    (((0, 0), (10, 0)), ((1, 0), (1, 10)), 1),
+    (((0, 0), (10, 0)), ((0, 0), (-10, 0)), 1),
+    (((0, 0), (10, 0)), ((0, 0), (0, 10)), 0),
+])
+def test_fillet_invalid_never_changes_input(first, second, radius):
+    from suspensionlab.model.sketch_construction import fillet_lines
+
+    with pytest.raises(ValueError):
+        fillet_lines(line(*first), line(*second), radius)
+
+
+@pytest.mark.parametrize("angle", [15, 45, 90, 120, 165, -45, -120])
+def test_fillet_arbitrary_corner_is_tangent(angle):
+    from suspensionlab.model.sketch_construction import fillet_lines
+
+    theta = math.radians(angle)
+    first = line((0, 0), (1000, 0))
+    second = line((1000 * math.cos(theta), 1000 * math.sin(theta)), (0, 0))
+    a, b, arc = fillet_lines(first, second, 10)
+    p1, p2 = a.start, b.end
+    r1, r2 = (p1[0] - arc.start[0], p1[1] - arc.start[1]), (p2[0] - arc.start[0], p2[1] - arc.start[1])
+    v1, v2 = (a.end[0] - a.start[0], a.end[1] - a.start[1]), (b.end[0] - b.start[0], b.end[1] - b.start[1])
+    assert abs(r1[0] * v1[0] + r1[1] * v1[1]) < 1e-6
+    assert abs(r2[0] * v2[0] + r2[1] * v2[1]) < 1e-6
+    assert arc_end(arc) == pytest.approx(p2, abs=1e-8)

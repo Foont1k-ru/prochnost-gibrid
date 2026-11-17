@@ -12,6 +12,7 @@ LIMIT_MM = 1_000_000.0
 MIN_SIZE_MM = 1e-6
 MAX_ENTITIES = 5000
 MAX_HISTORY = 100
+MAX_DIMENSIONS = 1000
 
 
 @dataclass(frozen=True)
@@ -79,18 +80,67 @@ def drawing_bounds(entities: tuple[Entity, ...]) -> tuple[float, float, float, f
     return min(xs), min(ys), max(xs), max(ys)
 
 
+@dataclass(frozen=True)
+class Dimension:
+    """Справочный размер, привязанный к элементу по индексу документа."""
+    entity_index: int
+    position: Point
+    mode: str = "auto"
+
+
+def dimension_text(dimension: Dimension, entity: Entity) -> str:
+    mode = dimension.mode
+    if mode == "auto":
+        mode = "length" if entity.kind == "line" else "radius"
+    if mode == "length":
+        return f"{entity.size:.3f} мм"
+    if mode == "horizontal":
+        return f"{abs(entity.end[0] - entity.start[0]):.3f} мм"
+    if mode == "vertical":
+        return f"{abs(entity.end[1] - entity.start[1]):.3f} мм"
+    if mode == "radius":
+        return f"R {entity.size:.3f} мм"
+    if mode == "diameter":
+        return f"⌀ {2 * entity.size:.3f} мм"
+    assert mode == "angle" and entity.sweep_deg is not None
+    return f"∠ {abs(entity.sweep_deg):.3f}°"
+
+
+def validate_dimension(dimension: Dimension, entities: tuple[Entity, ...]) -> Dimension:
+    index = dimension.entity_index
+    if isinstance(index, bool) or not isinstance(index, int) or not 0 <= index < len(entities):
+        raise ValueError("Размер ссылается на отсутствующий элемент")
+    if len(dimension.position) != 2 or not all(isfinite(x) and abs(x) <= LIMIT_MM for x in dimension.position):
+        raise ValueError("Позиция размера вне допустимых границ")
+    allowed = {"auto", "length", "horizontal", "vertical"} if entities[index].kind == "line" else {"auto", "radius", "diameter"}
+    if entities[index].kind == "arc":
+        allowed.add("angle")
+    if not isinstance(dimension.mode, str) or dimension.mode not in allowed:
+        raise ValueError("Вид размера не подходит для выбранного элемента")
+    return dimension
+
+
 class SketchDraft:
     """Независимая ограниченная история добавлений, удаления и редактирования."""
 
-    def __init__(self, entities: tuple[Entity, ...] = ()) -> None:
+    def __init__(self, entities: tuple[Entity, ...] = (), dimensions: tuple[Dimension, ...] = ()) -> None:
         if len(entities) > MAX_ENTITIES:
             raise ValueError("Достигнут предел элементов эскиза")
         self.entities: list[Entity] = [make_entity(e.kind, e.start, e.end, e.sweep_deg) for e in entities]
-        self._undo: list[tuple[Entity, ...]] = []
-        self._redo: list[tuple[Entity, ...]] = []
+        if len(dimensions) > MAX_DIMENSIONS:
+            raise ValueError("Слишком много размеров")
+        self.dimensions: list[Dimension] = [validate_dimension(d, tuple(self.entities)) for d in dimensions]
+        self._undo: list[tuple[tuple[Entity, ...], tuple[Dimension, ...]]] = []
+        self._redo: list[tuple[tuple[Entity, ...], tuple[Dimension, ...]]] = []
+
+    def _state(self) -> tuple[tuple[Entity, ...], tuple[Dimension, ...]]:
+        return tuple(self.entities), tuple(self.dimensions)
+
+    def _restore(self, state: tuple[tuple[Entity, ...], tuple[Dimension, ...]]) -> None:
+        self.entities, self.dimensions = list(state[0]), list(state[1])
 
     def _checkpoint(self) -> None:
-        self._undo.append(tuple(self.entities))
+        self._undo.append(self._state())
         if len(self._undo) > MAX_HISTORY:
             del self._undo[0]
         self._redo.clear()
@@ -120,6 +170,8 @@ class SketchDraft:
         entity = make_entity(kind, start, end, sweep_deg)
         if index < 0 or index >= len(self.entities):
             raise IndexError("Элемент не найден")
+        if self.entities[index].kind != entity.kind and any(d.entity_index == index for d in self.dimensions):
+            raise ValueError("Удалите размер перед изменением типа элемента")
         if self.entities[index] != entity:
             self._checkpoint()
             self.entities[index] = entity
@@ -129,22 +181,58 @@ class SketchDraft:
             raise IndexError("Элемент не найден")
         if len(self.entities) - 1 + len(parts) > MAX_ENTITIES:
             raise ValueError("Достигнут предел элементов эскиза")
+        if any(d.entity_index == index for d in self.dimensions):
+            raise ValueError("Удалите размер этого элемента перед обрезкой")
         validated = [make_entity(e.kind, e.start, e.end, e.sweep_deg) for e in parts]
         self._checkpoint()
         self.entities[index:index + 1] = validated
+        delta = len(validated) - 1
+        self.dimensions = [Dimension(d.entity_index + delta if d.entity_index > index else d.entity_index, d.position, d.mode)
+                           for d in self.dimensions]
 
     def delete(self, index: int) -> None:
         if index < 0 or index >= len(self.entities):
             raise IndexError("Элемент не найден")
+        if any(d.entity_index == index for d in self.dimensions):
+            raise ValueError("Удалите размер этого элемента перед удалением")
         self._checkpoint()
         del self.entities[index]
+        self.dimensions = [Dimension(d.entity_index - 1 if d.entity_index > index else d.entity_index, d.position, d.mode)
+                           for d in self.dimensions]
+
+    def add_dimension(self, index: int, position: Point, mode: str = "auto") -> None:
+        if len(self.dimensions) >= MAX_DIMENSIONS:
+            raise ValueError("Достигнут предел количества размеров")
+        dim = validate_dimension(Dimension(index, position, mode), tuple(self.entities))
+        self._checkpoint()
+        self.dimensions.append(dim)
+
+    def delete_dimension(self, index: int) -> None:
+        if index < 0 or index >= len(self.dimensions):
+            raise IndexError("Размер не найден")
+        self._checkpoint()
+        del self.dimensions[index]
+
+    def apply_fillet(self, first: int, second: int, pieces: tuple[Entity, Entity, Entity]) -> None:
+        if first == second or min(first, second) < 0 or max(first, second) >= len(self.entities):
+            raise ValueError("Выберите два разных отрезка")
+        if self.entities[first].kind != "line" or self.entities[second].kind != "line":
+            raise ValueError("Для скругления выберите два отрезка")
+        if len(self.entities) >= MAX_ENTITIES:
+            raise ValueError("Достигнут предел элементов эскиза")
+        validated = tuple(make_entity(e.kind, e.start, e.end, e.sweep_deg) for e in pieces)
+        if tuple(e.kind for e in validated) != ("line", "line", "arc"):
+            raise ValueError("Некорректное сопряжение")
+        self._checkpoint()
+        self.entities[first], self.entities[second] = validated[0], validated[1]
+        self.entities.append(validated[2])
 
     def undo(self) -> None:
         if self._undo:
-            self._redo.append(tuple(self.entities))
-            self.entities = list(self._undo.pop())
+            self._redo.append(self._state())
+            self._restore(self._undo.pop())
 
     def redo(self) -> None:
         if self._redo:
-            self._undo.append(tuple(self.entities))
-            self.entities = list(self._redo.pop())
+            self._undo.append(self._state())
+            self._restore(self._redo.pop())
