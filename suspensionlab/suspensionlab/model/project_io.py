@@ -20,6 +20,7 @@ from typing import Any
 
 from .. import PROJECT_SUFFIX
 from .entities import SCHEMA_VERSION, Project
+from .project_limits import MAX_PROJECT_BYTES
 
 LOG = logging.getLogger(__name__)
 
@@ -138,9 +139,17 @@ def save_project(project: Project, path: str | Path) -> Path:
             text = project_to_json(project)
         except ValueError as error:
             raise ProjectIOError("error.project.invalid_save", path=str(target)) from error
+        if len(text.encode("utf-8")) > MAX_PROJECT_BYTES:
+            raise ProjectIOError("error.project.too_large", path=str(target))
         target.parent.mkdir(parents=True, exist_ok=True)
         destination = target.resolve()
-        mode = stat.S_IMODE(destination.stat().st_mode) if destination.exists() else None
+        try:
+            existing = destination.stat()
+        except FileNotFoundError:
+            existing = None
+        if existing is not None and not stat.S_ISREG(existing.st_mode):
+            raise ProjectIOError("error.project.not_regular", path=str(target))
+        mode = stat.S_IMODE(existing.st_mode) if existing is not None else None
         with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", newline="", dir=destination.parent,
                                          prefix=".suspensionlab-project-", suffix=".tmp", delete=False) as handle:
             temporary = handle.name
@@ -163,11 +172,43 @@ def save_project(project: Project, path: str | Path) -> Path:
     return target
 
 
+def _read_project_bytes(source: Path) -> bytes:
+    """Чтение до лимита + один байт, даже если файл растёт во время чтения."""
+    before = source.stat()
+    if not stat.S_ISREG(before.st_mode):
+        raise ProjectIOError("error.project.not_regular", path=str(source))
+    if before.st_size > MAX_PROJECT_BYTES:
+        raise ProjectIOError("error.project.too_large", path=str(source))
+    # O_NONBLOCK on POSIX avoids waiting for a FIFO if the path is replaced
+    # after stat; fstat validates the actual descriptor. Windows has no FIFO.
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NONBLOCK", 0)
+    fd = os.open(source, flags)
+    try:
+        with os.fdopen(fd, "rb") as stream:
+            fd = -1  # ownership transferred to stream
+            opened = os.fstat(stream.fileno())
+            if not stat.S_ISREG(opened.st_mode):
+                raise ProjectIOError("error.project.not_regular", path=str(source))
+            if opened.st_size > MAX_PROJECT_BYTES:
+                raise ProjectIOError("error.project.too_large", path=str(source))
+            chunks: list[bytes] = []
+            total = 0
+            while chunk := stream.read(min(1024 * 1024, MAX_PROJECT_BYTES + 1 - total)):
+                total += len(chunk)
+                if total > MAX_PROJECT_BYTES:
+                    raise ProjectIOError("error.project.too_large", path=str(source))
+                chunks.append(chunk)
+            return b"".join(chunks)
+    finally:
+        if fd != -1:
+            os.close(fd)
+
+
 def load_project(path: str | Path, *, require_complete: bool = False) -> Project:
     """Загружает проект; для автосохранения можно запретить неявные значения."""
     source = Path(path)
     try:
-        raw = source.read_text(encoding="utf-8")
+        raw = _read_project_bytes(source).decode("utf-8")
     except (OSError, UnicodeError) as error:
         LOG.error("Не удалось прочитать проект %s: %s", source, error)
         raise ProjectIOError("error.project.read_failed", path=str(source)) from error

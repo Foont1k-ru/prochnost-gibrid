@@ -48,3 +48,28 @@ def test_invalid_current_model_never_overwrites_manual_or_automatic_copy(qtbot, 
     c.project.vehicle.mass_kg = 1700.
     assert c.autosave()
     assert window._save_project() and not c.dirty
+
+
+def test_oversize_project_does_not_replace_open_project_or_saved_files(qtbot, tmp_path, monkeypatch):
+    from suspensionlab.model import project_io
+    from suspensionlab.ui import controller as module
+
+    backup = tmp_path / 'autosave.susp.json'
+    monkeypatch.setattr(module, 'autosave_path', lambda: backup)
+    c = AppController()
+    target = c.save_project(tmp_path / 'project')
+    assert c.autosave()
+    manual_before, auto_before = target.read_bytes(), backup.read_bytes()
+    c.set_value(c.project.vehicle, 'mass_kg', 1777.)
+    current_project = c.project
+    monkeypatch.setattr(project_io, 'MAX_PROJECT_BYTES', 50)
+    with pytest.raises(ProjectIOError) as error:
+        c.open_project(target)
+    assert error.value.message_key == 'error.project.too_large'
+    assert c.project is current_project and c.dirty and c.project.vehicle.mass_kg == 1777.
+    with pytest.raises(ProjectIOError) as error:
+        c.save_project()
+    assert error.value.message_key == 'error.project.too_large'
+    assert c.project.path == str(target) and c.dirty
+    assert not c.autosave() and c.autosave_waiting
+    assert target.read_bytes() == manual_before and backup.read_bytes() == auto_before

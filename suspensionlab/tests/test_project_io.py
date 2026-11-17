@@ -298,3 +298,122 @@ def test_duplicate_decoded_unicode_key_is_rejected(tmp_path):
     with pytest.raises(ProjectIOError) as error:
         load_project(path)
     assert error.value.message_key == 'error.project.invalid_json_values'
+
+
+def test_project_size_limit_applies_to_utf8_bytes_before_replacement(tmp_path, project, monkeypatch):
+    from suspensionlab.model import project_io
+
+    project.meta.name = 'тест'
+    target = save_project(project, tmp_path / 'project')
+    before = target.read_bytes()
+    size = len(before)
+    assert size > len(project_to_json(project))
+    monkeypatch.setattr(project_io, 'MAX_PROJECT_BYTES', size)
+    assert load_project(target).meta.name == 'тест'
+    save_project(project, target)  # exact limit is accepted
+    monkeypatch.setattr(project_io, 'MAX_PROJECT_BYTES', size - 1)
+    with pytest.raises(ProjectIOError) as error:
+        load_project(target)
+    assert error.value.message_key == 'error.project.too_large'
+    project.path = 'prior-path'
+    with pytest.raises(ProjectIOError) as error:
+        save_project(project, target)
+    assert error.value.message_key == 'error.project.too_large'
+    assert project.path == 'prior-path' and target.read_bytes() == before
+    assert list(tmp_path.iterdir()) == [target]
+
+
+def test_read_rechecks_size_when_file_grows_after_descriptor_stat(tmp_path, monkeypatch):
+    from suspensionlab.model import project_io
+
+    path = tmp_path / 'growing.susp.json'
+    path.write_bytes(b'{}')
+    monkeypatch.setattr(project_io, 'MAX_PROJECT_BYTES', 3)
+    actual_fstat = project_io.os.fstat
+    def grow(fd):
+        result = actual_fstat(fd)
+        with path.open('ab') as writer:
+            writer.write(b'  ')
+        return result
+    monkeypatch.setattr(project_io.os, 'fstat', grow)
+    with pytest.raises(ProjectIOError) as error:
+        load_project(path)
+    assert error.value.message_key == 'error.project.too_large'
+    assert path.read_bytes() == b'{}  '
+
+
+def test_project_symlink_to_regular_file_still_opens(tmp_path, project):
+    target = save_project(project, tmp_path / 'project')
+    alias = tmp_path / 'alias.susp.json'
+    try:
+        alias.symlink_to(target)
+    except OSError:
+        pytest.skip('Creating symlinks is unavailable')
+    assert load_project(alias).to_dict() == project.to_dict()
+
+
+def test_directory_is_rejected_for_read_and_save(tmp_path, project):
+    target = tmp_path / 'dir.susp.json'
+    target.mkdir()
+    for operation in (lambda: load_project(target), lambda: save_project(project, target)):
+        with pytest.raises(ProjectIOError) as error:
+            operation()
+        assert error.value.message_key == 'error.project.not_regular'
+        assert target.is_dir()
+
+
+def test_posix_fifo_and_fifo_swap_rejected_without_blocking(tmp_path):
+    import os
+    import subprocess
+    import sys
+
+    if not hasattr(os, 'mkfifo'):
+        pytest.skip('FIFO is unavailable')
+    fifo = tmp_path / 'pipe.susp.json'
+    os.mkfifo(fifo)
+    regular = tmp_path / 'swapped.susp.json'
+    regular.write_text('{}', encoding='utf-8')
+    script = '''
+import os, sys
+from pathlib import Path
+from suspensionlab.model import project_io
+from suspensionlab.model.entities import Project
+fifo, regular = map(Path, sys.argv[1:])
+for action in (lambda: project_io.load_project(fifo), lambda: project_io.save_project(Project.create_default(), fifo)):
+    try:
+        action()
+    except project_io.ProjectIOError as e:
+        assert e.message_key == "error.project.not_regular"
+    else:
+        raise AssertionError("FIFO was accepted")
+assert fifo.is_fifo()
+original_open = project_io.os.open
+def swap(path, flags, *args, **kwargs):
+    if Path(path) == regular:
+        regular.rename(regular.with_suffix('.original'))
+        os.mkfifo(regular)
+    return original_open(path, flags, *args, **kwargs)
+project_io.os.open = swap
+try:
+    project_io.load_project(regular)
+except project_io.ProjectIOError as e:
+    assert e.message_key == "error.project.not_regular"
+else:
+    raise AssertionError("swapped FIFO was accepted")
+assert regular.is_fifo()
+'''
+    subprocess.run([sys.executable, '-c', script, str(fifo), str(regular)],
+                   timeout=15, check=True, capture_output=True, text=True)
+    assert regular.with_suffix('.original').read_text(encoding='utf-8') == '{}'
+
+
+def test_actual_64_mib_limit_rejects_large_file_without_changing_it(tmp_path):
+    from suspensionlab.model.project_limits import MAX_PROJECT_BYTES
+
+    path = tmp_path / 'large.susp.json'
+    with path.open('wb') as stream:
+        stream.truncate(MAX_PROJECT_BYTES + 1)
+    with pytest.raises(ProjectIOError) as error:
+        load_project(path)
+    assert error.value.message_key == 'error.project.too_large'
+    assert path.stat().st_size == MAX_PROJECT_BYTES + 1

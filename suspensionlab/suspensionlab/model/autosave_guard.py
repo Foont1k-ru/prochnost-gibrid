@@ -15,7 +15,9 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-MAX_AUTOSAVE_BYTES = 64 * 1024 * 1024
+from .project_limits import MAX_PROJECT_BYTES
+
+MAX_AUTOSAVE_BYTES = MAX_PROJECT_BYTES
 
 
 @dataclass(frozen=True, slots=True)
