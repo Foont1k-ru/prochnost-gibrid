@@ -240,6 +240,71 @@ def run_cad_check() -> None:
                 app.processEvents()
 
 
+    # Компоновки новых форматов проверяем во вложенном CAD-процессе frozen exe,
+    # а не только через импорт в обычном Python. Оси узлов условны.
+    from .model.front_joint_layout import make_front_joint_layout
+    from .model.front_pair_snapshot import make_front_pair_snapshot
+    from .model.front_same_pair import make_front_same_pair
+    from .model.front_tube_arm import make_front_tube_arm
+    from .model.joint_concept import DEFAULTS, make_joint_concept
+    from .model.rear_joint_layout import make_rear_joint_layout
+    from .model.rear_pair_snapshot import make_rear_pair_snapshot
+    from .ui.front_tubes_dialog import FrontTubesDialog
+
+    controller = AppController()
+    for code, xyz in {"uca_f_in": (0., 0., 0.), "uca_r_in": (0., -100., 0.),
+                      "ubj": (100., 100., 0.)}.items():
+        point = controller.project.front.hardpoints[code]
+        point.x, point.y, point.z = xyz
+    arm = make_front_tube_arm(controller.project, "front_upper_left", 10., 2.)
+    ball = make_joint_concept("ball", DEFAULTS["ball"])
+    bushing = make_joint_concept("bushing", DEFAULTS["bushing"])
+    layouts = [make_front_joint_layout(make_front_pair_snapshot(arm), ball, bushing),
+               make_front_joint_layout(make_front_same_pair(arm), ball, bushing)]
+    rear = Project.create_default()
+    rear.rear.type_code, rear.rear.layout = "live_axle_coil", "4link_panhard"
+    rear.rear.ensure_points(overwrite=True)
+    for code, xyz in {"ll_in_l": (0., 0., 0.), "ll_out_l": (100., 100., 0.),
+                      "ll_in_r": (0., 0., 0.), "ll_out_r": (100., -100., 0.)}.items():
+        point = rear.rear.hardpoints[code]
+        point.x, point.y, point.z = xyz
+    rear_pair = make_rear_pair_snapshot(make_rear_tube(rear, "rear_lower_left", 10., 2.), "mirror")
+    layouts.append(make_rear_joint_layout(rear_pair, bushing, "x"))
+    for layout in layouts:
+        result = WeldmentCadJob().run(layout)
+        _require(len(result.triangles) > 0 and result.skipped_faces == result.recovered_faces == 0,
+                 f"Не построена компоновка {layout['version']} в собранном приложении")
+    with TemporaryDirectory(prefix="suspensionlab-front-layout-reopen-") as directory:
+        source, target = Path(directory) / "source.kima", Path(directory) / "copy.kima"
+        write_document(source, "assembly", layouts[1], overwrite=False)
+        original = source.read_bytes()
+        front_dialog = FrontTubesDialog(controller)
+        front_dialog.show()
+        panel = front_dialog._layout_3d
+        try:
+            with patch.object(QFileDialog, "getOpenFileName", return_value=(str(source), "")), \
+                    patch.object(QMessageBox, "warning", return_value=QMessageBox.StandardButton.No):
+                front_dialog._open_file()
+            _require(not front_dialog._active and front_dialog._pair_mode.currentData() == "same" and
+                     front_dialog._layout_3d._document == layouts[1], "Компоновка 0.12 не открылась")
+            front_dialog._start_preview()
+            panel._enable.setChecked(True)
+            wait_for_mesh()
+            front_dialog._radius.setText("11")
+            _require(panel._view.mesh is None and not front_dialog._save_layout.isEnabled(),
+                     "Старая компоновка не очищена")
+            wait_for_mesh()
+            with patch.object(QFileDialog, "getSaveFileName", return_value=(str(target), "")), \
+                    patch.object(QMessageBox, "warning", return_value=QMessageBox.StandardButton.No):
+                front_dialog._save_layout_copy()
+            _require(target.exists() and read_document(target, "assembly")["pair"]["source"]["radius_mm"] == 11 and
+                     source.read_bytes() == original, "Копия компоновки не сохранена или исходник изменён")
+        finally:
+            with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes):
+                front_dialog.close()
+                app.processEvents()
+
+
 def run_packaging_check() -> None:
     """Проверяет ресурсы, окно, один расчёт и проект во временном каталоге.
 
