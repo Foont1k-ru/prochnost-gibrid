@@ -147,7 +147,7 @@ jobs:
             $report = Join-Path $isolated "$check.txt"
             Remove-Item $report -ErrorAction SilentlyContinue
             $process = Start-Process -FilePath $exe -ArgumentList @($check, "`"$report`"") -WorkingDirectory $isolated -PassThru
-            if (-not $process.WaitForExit(90000)) {
+            if (-not $process.WaitForExit(150000)) {
               $process.Kill()
               throw "Превышено время проверки $check"
             }

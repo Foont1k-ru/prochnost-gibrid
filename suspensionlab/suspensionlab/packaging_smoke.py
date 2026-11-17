@@ -123,6 +123,50 @@ def run_cad_check() -> None:
                  len(mesh.isolated_instance(int(mesh.triangle_instances[0])).triangles) == len(mesh.triangles),
                  "Неверные экземпляры тестового STEP")
 
+    # 3D труб проверяется именно из собранного приложения, включая повторный
+    # запуск замороженного исполняемого файла как CAD-процесса и Qt-отрисовку.
+    from time import monotonic, sleep
+
+    from .ui.arm_concept_dialog import ArmConceptDialog
+    from .ui.controller import AppController
+
+    app = create_application([])
+    controller = AppController()
+    for code, xyz in {
+        "lca_f_in": (0., 0., 0.), "lca_r_in": (100., 0., 0.), "lbj": (0., 100., 0.),
+    }.items():
+        point = controller.project.front.hardpoints[code]
+        point.x, point.y, point.z = xyz
+    dialog = ArmConceptDialog(controller)
+    dialog.show()
+    dialog._tabs.setCurrentIndex(1)
+    panel = dialog._three_d
+
+    def wait_for_mesh():
+        deadline = monotonic() + 45
+        while panel._view.mesh is None and monotonic() < deadline:
+            app.processEvents()
+            sleep(0.02)
+        _require(panel._view.mesh is not None, "3D труб в собранном приложении не построен: " + panel._status.text())
+        return panel._view.mesh
+
+    try:
+        panel._enable.setChecked(True)
+        first = wait_for_mesh()
+        assert first is not None
+        _require(dialog._save_assembly.isEnabled() and not panel._view.grab().isNull(),
+                 "3D труб в собранном приложении не отображается")
+        dialog._radius.setValue(20.)
+        _require(panel._view.mesh is None and not dialog._save_assembly.isEnabled(),
+                 "Старая 3D-модель не очищена после изменения размера")
+        second = wait_for_mesh()
+        assert second is not None
+        _require(np.ptp(second.triangles[:, :, 2]) > np.ptp(first.triangles[:, :, 2]) + 10,
+                 "3D труб не перестроен по новому размеру")
+    finally:
+        dialog.close()
+        app.processEvents()
+
 
 def run_packaging_check() -> None:
     """Проверяет ресурсы, окно, один расчёт и проект во временном каталоге.
