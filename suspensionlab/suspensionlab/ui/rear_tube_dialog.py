@@ -116,6 +116,9 @@ class RearTubeDialog(QDialog):
         self._pair.clicked.connect(self._apply_pair)
         layout.addWidget(self._pair)
         self._pair_mode.currentIndexChanged.connect(self._update_pair)
+        self._pair_status = QLabel(body)
+        self._pair_status.setWordWrap(True)
+        layout.addWidget(self._pair_status)
         self._status = QLabel(body)
         self._status.setWordWrap(True)
         layout.addWidget(self._status)
@@ -128,6 +131,11 @@ class RearTubeDialog(QDialog):
             tabs.addTab(plan, label)
         self._three_d = Weldment3D(tabs, is_current=self._candidate_is_current, single_tube=True)
         tabs.addTab(self._three_d, tr('rear_tube.tab_3d'))
+        self._pair_plans = [ArmPlan(axes, tabs) for axes in ((0, 1), (0, 2), (1, 2))]
+        for plan, label in zip(self._pair_plans, ('XY', 'XZ', 'YZ'), strict=True):
+            tabs.addTab(plan, tr('rear_pair.tab', axes=label))
+        self._pair_three_d = Weldment3D(tabs, is_current=self._pair_is_current, single_tube=True)
+        tabs.addTab(self._pair_three_d, tr('rear_pair.tab_3d'))
         layout.addWidget(tabs, 1)
         self._save = QPushButton(tr('rear_tube.save'), body)
         self._save.clicked.connect(self._save_copy)
@@ -141,6 +149,8 @@ class RearTubeDialog(QDialog):
         layout.addWidget(buttons)
         self._arm.currentIndexChanged.connect(self._refresh)
         self._radius.textChanged.connect(self._refresh)
+        self._pair_mode.currentIndexChanged.connect(self._refresh_pair)
+        self._pair_roll.textChanged.connect(self._refresh_pair)
         self._wall.textChanged.connect(self._refresh)
         self._bend.toggled.connect(self._refresh)
         for field in self._fields:
@@ -262,15 +272,51 @@ class RearTubeDialog(QDialog):
         self._pair.setEnabled(self._active and self._candidate is not None and
                               self._arm.currentData() in PAIRS and mode in ('same', 'mirror'))
 
+    def _make_pair(self, candidate: dict[str, Any]) -> dict[str, Any]:
+        mode = str(self._pair_mode.currentData())
+        try:
+            roll = float(self._pair_roll.text().strip().replace(',', '.')) if mode == 'same' else 0.0
+        except ValueError as error:
+            raise KimFormatError('invalid pair roll') from error
+        return make_paired_rear_tube(candidate, mode, roll)
+
+    def _pair_is_current(self, paired: dict[str, Any]) -> bool:
+        if self._candidate is None or not self._candidate_is_current(self._candidate):
+            return False
+        try:
+            return self._make_pair(self._candidate) == paired
+        except (KimFormatError, ValueError, TypeError, OverflowError):
+            return False
+
+    def _refresh_pair(self, *_args: object) -> None:
+        for plan in self._pair_plans:
+            plan.set_view(None)
+        self._pair_three_d.set_document(None)
+        candidate = self._candidate
+        mode = self._pair_mode.currentData()
+        if (candidate is None or candidate['arm'] not in PAIRS or mode not in ('same', 'mirror') or
+                not self._candidate_is_current(candidate)):
+            self._pair_status.setText(tr('rear_pair.preview_off'))
+            return
+        try:
+            paired = self._make_pair(candidate)
+            path = rear_tube_centerline(paired)
+            view = make_niva_arm_view(Project.from_dict(paired['scheme']), paired['arm'])
+        except (KimFormatError, ValueError, TypeError, OverflowError):
+            self._pair_status.setText(tr('rear_pair.preview_invalid'))
+            return
+        for plan in self._pair_plans:
+            plan.set_view(view, path)
+        self._pair_three_d.set_document(paired)
+        self._pair_status.setText(tr('rear_pair.preview_ready'))
+
     def _apply_pair(self) -> None:
         candidate = self._candidate
         if candidate is None or not self._active or not self._candidate_is_current(candidate):
             self._refresh()
             return
         try:
-            mode = str(self._pair_mode.currentData())
-            roll = float(self._pair_roll.text().strip().replace(',', '.')) if mode == 'same' else 0.0
-            paired = make_paired_rear_tube(candidate, mode, roll)
+            paired = self._make_pair(candidate)
         except (KimFormatError, ValueError, TypeError, OverflowError):
             QMessageBox.warning(self, tr('rear_pair.title'), tr('rear_pair.failed'))
             return
@@ -292,6 +338,7 @@ class RearTubeDialog(QDialog):
         self._revision += 1
         self._saved.clear()
         self._candidate = None
+        self._refresh_pair()
         self._update_pair()
         for widget in (self._arm, self._radius, self._wall, self._bend):
             widget.setEnabled(self._active)
@@ -313,6 +360,7 @@ class RearTubeDialog(QDialog):
             return
         self._candidate = candidate
         self._update_pair()
+        self._refresh_pair()
         for plan in self._plans:
             plan.set_view(view, path)
         self._three_d.set_document(candidate)
@@ -395,7 +443,9 @@ class RearTubeDialog(QDialog):
         self._saved.setText(tr('weldment.saved', path=str(path)))
 
     def shutdown(self) -> bool:
-        return self._three_d.shutdown()
+        first = self._three_d.shutdown()
+        second = self._pair_three_d.shutdown()
+        return first and second
 
     def reject(self) -> None:
         if self.confirm_close() and self.shutdown():

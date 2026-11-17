@@ -1,11 +1,13 @@
 """Передний трубчатый рычаг: две незавершённые трубы по текущей схеме."""
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import QSignalBlocker, Qt
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -90,6 +92,10 @@ class FrontTubesDialog(QDialog):
         layout.addLayout(form)
         self._bend_editor = BendEditor(body)
         layout.addWidget(self._bend_editor)
+        self._auto_mirror = QCheckBox(tr('front_pair.auto'), body)
+        self._auto_mirror.setChecked(True)
+        layout.addWidget(self._auto_mirror)
+        self._last_arm = str(self._arm.currentData())
         self._mirror = QPushButton(tr('front_pair.apply'), body)
         self._mirror.clicked.connect(self._apply_mirror)
         layout.addWidget(self._mirror)
@@ -119,7 +125,7 @@ class FrontTubesDialog(QDialog):
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close, body)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
-        self._arm.currentIndexChanged.connect(self._refresh)
+        self._arm.currentIndexChanged.connect(self._arm_changed)
         self._radius.textChanged.connect(self._refresh)
         self._wall.textChanged.connect(self._refresh)
         self._bend_editor.changed.connect(self._refresh)
@@ -221,6 +227,34 @@ class FrontTubesDialog(QDialog):
             result['name'] = self._source['name']
         return result
 
+    def _arm_changed(self, *_args: object) -> None:
+        old, new = self._last_arm, str(self._arm.currentData())
+        opposite = old.removesuffix('_left') + '_right' if old.endswith('_left') else old.removesuffix('_right') + '_left'
+        if self._auto_mirror.isChecked() and new == opposite:
+            changes: list[tuple[QLineEdit, str]] = []
+            try:
+                for leg, check in self._bend_editor.checks.items():
+                    if check.isChecked():
+                        field = self._bend_editor.fields[leg][1]
+                        text = field.text().strip()
+                        number = float(text.replace(',', '.'))
+                        if not math.isfinite(number):
+                            raise ValueError('nonfinite')
+                        reflected = text[1:] if text.startswith('-') else '-' + text.lstrip('+')
+                        if len(reflected) > field.maxLength():
+                            raise ValueError('too long')
+                        changes.append((field, reflected))
+            except ValueError:
+                with QSignalBlocker(self._arm):
+                    self._arm.setCurrentIndex(self._arm.findData(old))
+                QMessageBox.warning(self, tr('front_tubes.title'), tr('front_pair.auto_failed'))
+                return
+            for field, text in changes:
+                with QSignalBlocker(field):
+                    field.setText(text)
+        self._last_arm = new
+        self._refresh()
+
     def _apply_mirror(self) -> None:
         candidate = self._candidate
         if not self._active or candidate is None or not self._candidate_is_current(candidate):
@@ -242,6 +276,7 @@ class FrontTubesDialog(QDialog):
         self._refresh()
 
     def _refresh(self, *_args: object) -> None:
+        self._last_arm = str(self._arm.currentData())
         self._revision += 1
         self._saved.clear()
         self._candidate = None

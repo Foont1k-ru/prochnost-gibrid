@@ -171,3 +171,47 @@ def test_pair_mirror_reflects_both_bends_and_keeps_project(qtbot):
     d._bend_editor.fields['front'][1].setText('not yet')
     assert not d._mirror.isEnabled() and d._candidate is None
     clean_close(d)
+
+
+def test_auto_mirror_selection_preserves_precision_and_incomplete_input(qtbot, monkeypatch):
+    c = controller()
+    d = FrontTubesDialog(c)
+    qtbot.addWidget(d)
+    d._arm.setCurrentIndex(d._arm.findData('front_upper_left'))
+    editor = d._bend_editor
+    for leg, values in [('front', ('100', '0', '0', '20')), ('rear', ('100', '-100', '0', '25'))]:
+        editor.checks[leg].setChecked(True)
+        for field, value in zip(editor.fields[leg], values, strict=True):
+            field.setText(value)
+    assert d._candidate is not None and d._auto_mirror.isChecked()
+    d._arm.setCurrentIndex(d._arm.findData('front_upper_right'))
+    assert d._candidate is not None and d._candidate['bends']['rear']['vertex_mm'][1] == 100
+    d._arm.setCurrentIndex(d._arm.findData('front_upper_left'))
+    assert d._candidate is not None and d._candidate['bends']['rear']['vertex_mm'][1] == -100
+    editor.fields['rear'][1].setText('не готово')
+    state = d._input_state()
+    warnings = []
+    monkeypatch.setattr(QMessageBox, 'warning', lambda *args: warnings.append(args))
+    d._arm.setCurrentIndex(d._arm.findData('front_upper_right'))
+    assert warnings and d._input_state() == state and d._candidate is None
+    d._auto_mirror.setChecked(False)
+    d._arm.setCurrentIndex(d._arm.findData('front_upper_right'))
+    assert d._arm.currentData() == 'front_upper_right' and editor.fields['rear'][1].text() == 'не готово'
+    clean_close(d)
+
+
+def test_auto_mirror_is_not_applied_when_loading_a_snapshot(qtbot, tmp_path, monkeypatch):
+    c = controller()
+    doc = make_front_tube_arm(c.project, 'front_upper_right', 10, 2,
+                              {'rear': {'vertex_mm': [100, 100, 0], 'radius_mm': 25}})
+    source = tmp_path / 'right.kima'
+    write_document(source, 'assembly', doc)
+    d = FrontTubesDialog(c)
+    qtbot.addWidget(d)
+    monkeypatch.setattr(QFileDialog, 'getOpenFileName', lambda *args: (str(source), ''))
+    d._open_file()
+    assert d._candidate == doc and d._bend_editor.fields['rear'][1].text() == '100'
+    d._start_preview()
+    d._arm.setCurrentIndex(d._arm.findData('front_upper_left'))
+    assert d._candidate is not None and d._candidate['bends']['rear']['vertex_mm'][1] == -100
+    clean_close(d)

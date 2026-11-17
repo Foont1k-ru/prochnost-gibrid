@@ -337,3 +337,40 @@ def test_pair_modes_keep_tube_identity_or_mirror_and_preserve_source(qtbot, tmp_
     d._baseline, d._saved_candidate = d._input_state(), None
     assert d.shutdown()
     d.close()
+
+
+def test_pair_preview_tracks_edits_and_invalidity_without_modifying_project(qtbot):
+    c = controller()
+    for code, xyz in {'ll_in_r': (0, 0, 0), 'll_out_r': (100, -100, 0)}.items():
+        point = c.project.rear.hardpoints[code]
+        point.x, point.y, point.z = xyz
+    before = c.project.to_dict()
+    d = RearTubeDialog(c)
+    qtbot.addWidget(d)
+    d._arm.setCurrentIndex(d._arm.findData('rear_lower_left'))
+    d._bend.setChecked(True)
+    for field, text in zip(d._fields, ('100', '0', '0', '20'), strict=True):
+        field.setText(text)
+    d._pair_mode.setCurrentIndex(d._pair_mode.findData('mirror'))
+    assert all(plan.view is not None and plan.view.key == 'rear_lower_right' for plan in d._pair_plans)
+    mirrored = d._pair_three_d._document
+    assert mirrored['bend']['vertex_mm'] == [100, 0, 0]
+    d._fields[3].setText('30')
+    assert d._pair_three_d._document['bend']['radius_mm'] == 30
+    assert not d._pair_is_current(mirrored)
+    d._pair_mode.setCurrentIndex(d._pair_mode.findData('same'))
+    assert abs(d._pair_three_d._document['bend']['vertex_mm'][0]) < 1e-8
+    d._pair_roll.setText('90')
+    assert d._pair_three_d._document is not None and d._pair_plans[0].view is not None
+    d._pair_roll.setText('invalid')
+    assert d._candidate is not None and d._pair_three_d._document is None
+    assert all(plan.view is None for plan in d._pair_plans)
+    d._pair_roll.setText('0')
+    assert d._pair_three_d._document is not None
+    d._fields[3].setText('invalid')
+    assert d._candidate is None and d._pair_three_d._document is None
+    assert all(plan.view is None for plan in d._pair_plans)
+    assert c.project.to_dict() == before
+    d._baseline, d._saved_candidate = d._input_state(), None
+    assert d.shutdown()
+    d.close()

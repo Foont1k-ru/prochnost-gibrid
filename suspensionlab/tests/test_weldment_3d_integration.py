@@ -309,3 +309,33 @@ def test_rear_pair_rebuilds_real_cad_before_save(qtbot, tmp_path, monkeypatch):
     d._save_copy()
     assert read_document(path, 'assembly')['arm'] == 'rear_lower_right'
     d.close()
+
+
+def test_rear_live_pair_3d_invalidates_and_rebuilds_on_edits(qtbot):
+    from suspensionlab.ui.rear_tube_dialog import RearTubeDialog
+
+    c = AppController()
+    c.set_axle_type('rear', 'live_axle_coil')
+    for code, xyz in {'ll_in_l': (0, 0, 0), 'll_out_l': (100, 100, 0),
+                      'll_in_r': (0, 0, 0), 'll_out_r': (100, -100, 0)}.items():
+        point = c.project.rear.hardpoints[code]
+        point.x, point.y, point.z = xyz
+    d = RearTubeDialog(c)
+    qtbot.addWidget(d)
+    d._arm.setCurrentIndex(d._arm.findData('rear_lower_left'))
+    d._bend.setChecked(True)
+    for field, value in zip(d._fields, ('100', '0', '0', '20'), strict=True):
+        field.setText(value)
+    d._pair_mode.setCurrentIndex(d._pair_mode.findData('same'))
+    d._pair_three_d._enable.setChecked(True)
+    qtbot.waitUntil(lambda: d._pair_three_d._view.mesh is not None, timeout=45000)
+    old = d._pair_three_d._view.mesh
+    d._fields[3].setText('30')
+    assert d._pair_three_d._view.mesh is None
+    qtbot.waitUntil(lambda: d._pair_three_d._view.mesh is not None, timeout=45000)
+    assert d._pair_three_d._view.mesh is not old
+    d._pair_roll.setText('invalid')
+    assert d._pair_three_d._view.mesh is None and d._pair_three_d._document is None
+    d._baseline, d._saved_candidate = d._input_state(), None
+    assert d.shutdown()
+    d.close()
