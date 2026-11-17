@@ -155,3 +155,23 @@ def test_arc_not_treated_as_full_circle():
     arc = make_entity("arc", (0, 0), (10, 0), 90)
     line_on_other_side = line((-20, -5), (0, -5))
     assert "contact" not in codes(check_contours((arc, line_on_other_side)))
+
+
+def test_tangent_shared_arc_endpoint_ignores_unstable_discriminant(monkeypatch):
+    from suspensionlab.model import sketch_contours
+    from suspensionlab.model.sketch_construction import fillet_lines
+    from suspensionlab.model.sketch_curves import AmbiguousIntersectionError
+    from suspensionlab.model.sketch_draft import make_entity
+
+    first = make_entity("line", (0, 0), (100, 0))
+    second = make_entity("line", (100, 0), (100, 100))
+    a, b, arc = fillet_lines(first, second, 10)
+
+    def unstable(*args):
+        raise AmbiguousIntersectionError("floating-point tangent")
+
+    monkeypatch.setattr(sketch_contours, "intersections", unstable)
+    assert not sketch_contours._arc_pair_conflict(a, arc, 0.01)
+    assert not sketch_contours._arc_pair_conflict(b, arc, 0.01)
+    crossing = make_entity("line", (90, 0), (90, 20))
+    assert sketch_contours._arc_pair_conflict(crossing, arc, 0.01)

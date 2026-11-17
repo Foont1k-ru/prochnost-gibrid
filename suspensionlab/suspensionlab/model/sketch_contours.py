@@ -126,11 +126,23 @@ def _distance_to_curve(point: Point, entity: Entity) -> float:
 
 def _arc_pair_conflict(a: Entity, b: Entity, tol: float) -> bool:
     """Проверка конечных дуг; совпадение общих концов допускается."""
+    a_ends, b_ends = endpoints(a), endpoints(b)
+    # At an exactly tangent shared endpoint the quadratic discriminant can
+    # change sign across platforms, producing a false near-tangency or roots
+    # displaced by sqrt(roundoff). Test the tangent directly before solving.
+    if (a.kind == "line" and b.kind == "arc") or (b.kind == "line" and a.kind == "arc"):
+        line, arc = (a, b) if a.kind == "line" else (b, a)
+        ux = (line.end[0] - line.start[0]) / line.size
+        uy = (line.end[1] - line.start[1]) / line.size
+        for p in endpoints(line):
+            for q in endpoints(arc):
+                tangent_offset = abs((q[0] - arc.start[0]) * ux + (q[1] - arc.start[1]) * uy)
+                if distance(p, q) <= NUMERIC_EPS_MM and tangent_offset <= 1e-10:
+                    return False
     try:
         points = intersections(a, b)
     except AmbiguousIntersectionError:
         return True
-    a_ends, b_ends = endpoints(a), endpoints(b)
 
     def shared_endpoint(point: Point) -> bool:
         return (any(distance(point, p) <= NUMERIC_EPS_MM for p in a_ends) and
