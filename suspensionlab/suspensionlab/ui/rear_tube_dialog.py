@@ -179,7 +179,7 @@ class RearTubeDialog(QDialog):
         if self._closing_confirmed or not self._has_unsaved():
             return True
         state, revision = self._input_state(), self._revision
-        answer = QMessageBox.question(self, tr("weldment.discard_title"), tr("weldment.discard_text"),
+        answer = QMessageBox.question(self, tr("weldment.discard_title"), tr("rear_tube.discard"),
                                       QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                                       QMessageBox.StandardButton.No)
         return (answer == QMessageBox.StandardButton.Yes and state == self._input_state() and

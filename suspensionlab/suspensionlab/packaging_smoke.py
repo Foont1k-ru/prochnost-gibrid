@@ -177,6 +177,23 @@ def run_cad_check() -> None:
         dialog.close()
         app.processEvents()
 
+    # Проверка нового снимка 0.4 тем же изолированным процессом собранного exe.
+    from .core.cad_weldment_job import WeldmentCadJob
+    from .model.entities import Project
+    from .model.rear_tube import make_rear_tube
+
+    project = Project.create_default()
+    project.rear.type_code, project.rear.layout = "live_axle_coil", "4link_panhard"
+    project.rear.ensure_points(overwrite=True)
+    for code, xyz in {"ll_in_l": (0., 0., 0.), "ll_out_l": (100., 100., 0.)}.items():
+        point = project.rear.hardpoints[code]
+        point.x, point.y, point.z = xyz
+    for bend in (None, {"vertex_mm": [100., 0., 0.], "radius_mm": 20.}):
+        document = make_rear_tube(project, "rear_lower_left", 10., 2., bend)
+        result = WeldmentCadJob().run(document)
+        _require(len(result.triangles) > 0 and result.skipped_faces == result.recovered_faces == 0,
+                 "В собранном приложении не построена труба задней тяги")
+
 
 def run_packaging_check() -> None:
     """Проверяет ресурсы, окно, один расчёт и проект во временном каталоге.
