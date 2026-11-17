@@ -353,12 +353,21 @@ def run_packaging_check() -> None:
         sketch.canvas.add_point((150., 0.))
         sketch.canvas.add_point((160., 0.))
         _require(sketch.canvas.draft.entities[-1].kind == "arc", "Построение дуги недоступно")
+        sketch.tool.setCurrentIndex(0)
+        sketch.canvas.add_point((155., -20.))
+        sketch.canvas.add_point((155., 20.))
+        sketch._trim(4, (157.071, -7.071))
+        _require(sketch.canvas.draft.entities[4].kind == "arc" and
+                 abs(sketch.canvas.draft.entities[4].sweep_deg or 0) < 90., "Обрезка дуги недоступна")
+        with patch.object(QMessageBox, "information") as arc_report:
+            sketch._check_contours()
+        _require(arc_report.called, "Проверка контуров с дугой недоступна")
         destination = Path(sketch_dir) / "эскиз.dxf"
         with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes), \
                 patch.object(QFileDialog, "getSaveFileName", return_value=(str(destination), "")):
             _require(sketch._export_dxf(), "DXF эскиза не создан")
         dxf = ezdxf.readfile(destination)
-        _require(dxf.header["$INSUNITS"] == 4 and len(dxf.modelspace()) == 5 and
+        _require(dxf.header["$INSUNITS"] == 4 and len(dxf.modelspace()) == 6 and
                  len(dxf.modelspace().query("ARC")) == 1,
                  "DXF эскиза содержит неверные единицы или геометрию")
         sketch._saved = sketch._document()

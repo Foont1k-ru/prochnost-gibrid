@@ -7,6 +7,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from math import hypot, isfinite
 
+from .sketch_curves import (
+    NUMERIC_EPS_MM,
+    AmbiguousIntersectionError,
+    arc_length,
+    distance,
+    endpoints,
+    intersections,
+    parameter,
+)
 from .sketch_draft import Entity, Point, make_entity
 
 MAX_CHECK_ENTITIES = 300
@@ -100,6 +109,66 @@ def _circles_conflict(a: Entity, b: Entity, tol: float) -> bool:
     return d <= a.size + b.size + tol and d + min(a.size, b.size) >= max(a.size, b.size) - tol
 
 
+
+def _distance_to_curve(point: Point, entity: Entity) -> float:
+    if entity.kind == "line":
+        return _point_segment(point, entity)[0]
+    dx, dy = point[0] - entity.start[0], point[1] - entity.start[1]
+    radius = hypot(dx, dy)
+    if entity.kind == "circle":
+        return abs(radius - entity.size)
+    if radius > 0:
+        on_circle = (entity.start[0] + entity.size * dx / radius, entity.start[1] + entity.size * dy / radius)
+        if parameter(entity, on_circle) is not None:
+            return abs(radius - entity.size)
+    return min(distance(point, end) for end in endpoints(entity))
+
+
+def _arc_pair_conflict(a: Entity, b: Entity, tol: float) -> bool:
+    """Проверка конечных дуг; совпадение общих концов допускается."""
+    try:
+        points = intersections(a, b)
+    except AmbiguousIntersectionError:
+        return True
+    a_ends, b_ends = endpoints(a), endpoints(b)
+
+    def shared_endpoint(point: Point) -> bool:
+        return (any(distance(point, p) <= NUMERIC_EPS_MM for p in a_ends) and
+                any(distance(point, p) <= NUMERIC_EPS_MM for p in b_ends))
+
+    if any(not shared_endpoint(point) for point in points):
+        return True
+    # Конец рядом с внутренней частью другой кривой — подозрительное касание.
+    for point, other, other_ends in [(p, b, b_ends) for p in a_ends] + [(p, a, a_ends) for p in b_ends]:
+        # Близкие концы отдельно показываются как разрыв, а не контакт.
+        if _distance_to_curve(point, other) <= tol and not any(distance(point, end) <= tol for end in other_ends):
+            return True
+    # Близкое касание середины отрезка к внутренности дуги.
+    if a.kind == "line" or b.kind == "line":
+        line, curve = (a, b) if a.kind == "line" else (b, a)
+        dx, dy = line.end[0] - line.start[0], line.end[1] - line.start[1]
+        t = ((curve.start[0] - line.start[0]) * dx + (curve.start[1] - line.start[1]) * dy) / line.size ** 2
+        if 0 <= t <= 1:
+            projection = (line.start[0] + t * dx, line.start[1] + t * dy)
+            dx, dy = projection[0] - curve.start[0], projection[1] - curve.start[1]
+            length = hypot(dx, dy)
+            if length > 0:
+                radial = (curve.start[0] + curve.size * dx / length, curve.start[1] + curve.size * dy / length)
+                if parameter(curve, radial) is not None and distance(projection, radial) <= tol and not shared_endpoint(radial):
+                    return True
+    else:
+        # Центры задают направления ближайших точек двух опорных окружностей.
+        dx, dy = b.start[0] - a.start[0], b.start[1] - a.start[1]
+        length = hypot(dx, dy)
+        if length > NUMERIC_EPS_MM:
+            for sign in (-1, 1):
+                for first, second, ux, uy in ((a, b, dx / length, dy / length), (b, a, -dx / length, -dy / length)):
+                    point = (first.start[0] + sign * first.size * ux, first.start[1] + sign * first.size * uy)
+                    if (parameter(first, point) is not None and _distance_to_curve(point, second) <= tol and
+                            not shared_endpoint(point)):
+                        return True
+    return False
+
 def check_contours(entities: tuple[Entity, ...], tolerance: float = 0.01) -> ContourReport:
     """Ищет открытые/близкие концы, ветвления, пересечения и касания.
 
@@ -110,8 +179,6 @@ def check_contours(entities: tuple[Entity, ...], tolerance: float = 0.01) -> Con
         raise ValueError(f"Проверка ограничена {MAX_CHECK_ENTITIES} элементами")
     if not isfinite(tolerance) or not 0.001 <= tolerance <= 1.0:
         raise ValueError("Допуск должен быть от 0,001 до 1 мм")
-    if any(entity.kind == "arc" for entity in entities):
-        raise ValueError("Проверка контуров с дугами пока не поддерживается")
     for entity in entities:
         make_entity(entity.kind, entity.start, entity.end, entity.sweep_deg)
     found: list[ContourIssue] = []
@@ -125,29 +192,40 @@ def check_contours(entities: tuple[Entity, ...], tolerance: float = 0.01) -> Con
 
     if not entities:
         add("empty", "Эскиз не содержит элементов", ())
-    vertices: dict[Point, list[int]] = {}
+    # Лишь машинный шум (не пользовательский допуск) объединяет концы.
+    vertices: list[tuple[list[Point], list[int]]] = []
     for index, entity in enumerate(entities):
-        if entity.size <= tolerance:
+        extent = arc_length(entity) if entity.kind == "arc" else entity.size
+        if entity.size <= tolerance or extent <= tolerance:
             add("small", "Длина или радиус не больше допуска", (index,))
-        if entity.kind == "line":
-            vertices.setdefault(entity.start, []).append(index)
-            vertices.setdefault(entity.end, []).append(index)
-    for point, indices in vertices.items():
+        for point in endpoints(entity):
+            matching = [group for group in vertices if all(distance(point, p) <= NUMERIC_EPS_MM for p in group[0])]
+            if len(matching) > 1:
+                add("branch", "Неоднозначное совпадение точек", (index,), (point,))
+            if matching:
+                matching[0][0].append(point)
+                matching[0][1].append(index)
+            else:
+                vertices.append(([point], [index]))
+    for points, indices in vertices:
+        point = points[0]
         if len(indices) == 1:
-            near = [(other, ids[0]) for other, ids in vertices.items()
-                    if other != point and _distance(point, other) <= tolerance]
+            near = [(other[0][0], other[1][0]) for other in vertices
+                    if other[0] is not points and distance(point, other[0][0]) <= tolerance]
             if near:
-                nearest, other_idx = min(near, key=lambda item: _distance(point, item[0]))
-                add("gap", f"Концы близко, но не совпадают: {_distance(point, nearest):.6f} мм",
+                nearest, other_idx = min(near, key=lambda item: distance(point, item[0]))
+                add("gap", f"Концы близко, но не совпадают: {distance(point, nearest):.6f} мм",
                     (indices[0], other_idx), (point, nearest))
             else:
-                add("open", "Открытый конец отрезка", (indices[0],), (point,))
+                add("open", "Открытый конец элемента", (indices[0],), (point,))
         elif len(indices) != 2 or indices[0] == indices[1]:
             add("branch", "Ветвление или неоднозначное соединение концов", tuple(sorted(set(indices))), (point,))
     for i, a in enumerate(entities):
         for j in range(i + 1, len(entities)):
             b = entities[j]
-            if a.kind == "line" and b.kind == "line":
+            if a.kind == "arc" or b.kind == "arc":
+                conflict = _arc_pair_conflict(a, b, tolerance)
+            elif a.kind == "line" and b.kind == "line":
                 conflict = _line_conflict(a, b, tolerance)
             elif a.kind == "circle" and b.kind == "circle":
                 conflict = _circles_conflict(a, b, tolerance)
@@ -166,9 +244,9 @@ def check_contours(entities: tuple[Entity, ...], tolerance: float = 0.01) -> Con
                 index = parent[index]
             return index
 
-        for indices in vertices.values():
+        for _points, indices in vertices:
             first, second = indices
             parent[root(first)] = root(second)
-        loops = len({root(i) for i, entity in enumerate(entities) if entity.kind == "line"})
+        loops = len({root(i) for i, entity in enumerate(entities) if entity.kind in ("line", "arc")})
         loops += sum(entity.kind == "circle" for entity in entities)
     return ContourReport(tolerance, tuple(found), total, loops)

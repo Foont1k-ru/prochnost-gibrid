@@ -17,7 +17,6 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFormLayout,
     QHBoxLayout,
-    QInputDialog,
     QLabel,
     QMessageBox,
     QPushButton,
@@ -210,10 +209,10 @@ class SketchCanvas(QWidget):
             elif self.kind in ("trim", "tangent2", "tangent3"):
                 point = self.to_world(event.position(), snap=False)
                 candidates = [(_distance_to_entity(point, e), i) for i, e in enumerate(self.draft.entities)
-                              if e.kind == "line" or (self.kind == "trim" and e.kind == "circle")]
+                              if e.kind == "line" or (self.kind == "trim" and e.kind in ("circle", "arc"))]
                 best = min(candidates, default=(float("inf"), -1))
                 if best[0] > 8.0 / self.scale:
-                    self.message.emit("Выберите отрезок или окружность" if self.kind == "trim" else "Выберите отрезок рядом с курсором")
+                    self.message.emit("Выберите отрезок, окружность или дугу" if self.kind == "trim" else "Выберите отрезок рядом с курсором")
                 elif self.kind == "trim":
                     self.trimRequested.emit(best[1], point)
                 elif best[1] in self.construction_indices:
@@ -332,6 +331,75 @@ class SketchCanvas(QWidget):
                 p.drawArc(rect, round(angle * 16), round(sweep * 16))
             else:
                 p.drawEllipse(rect)
+
+
+class TangentPreview(QWidget):
+    """Изолированный неизменяемый предпросмотр вариантов касания."""
+
+    def __init__(self, lines: tuple[Entity, ...], circles: tuple[Entity, ...], parent: QWidget) -> None:
+        super().__init__(parent)
+        self.lines, self.circles = lines, circles
+        self.index = 0
+        self.setMinimumSize(440, 300)
+
+    def set_index(self, index: int) -> None:
+        self.index = index
+        self.update()
+
+    def paintEvent(self, _event: object) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.fillRect(self.rect(), QColor("#151e2c"))
+        circle = self.circles[self.index]
+        bounds = drawing_bounds((*self.lines, circle))
+        assert bounds is not None
+        left, bottom, right, top = bounds
+        scale = min(max(1, self.width() - 60) / max(right - left, 1e-9),
+                    max(1, self.height() - 60) / max(top - bottom, 1e-9), 200.0)
+        cx, cy = (left + right) / 2, (bottom + top) / 2
+
+        def screen(point: Point) -> QPointF:
+            return QPointF(self.width() / 2 + (point[0] - cx) * scale,
+                           self.height() / 2 - (point[1] - cy) * scale)
+
+        painter.setPen(QPen(QColor("#6ed5f7"), 2))
+        for line in self.lines:
+            painter.drawLine(screen(line.start), screen(line.end))
+        painter.setPen(QPen(QColor("#f7ca72"), 2))
+        center = screen(circle.start)
+        radius = circle.size * scale
+        painter.drawEllipse(QRectF(center.x() - radius, center.y() - radius, 2 * radius, 2 * radius))
+        painter.setPen(QPen(QColor("#ff6e6e"), 2))
+        for line in self.lines:
+            dx, dy = line.end[0] - line.start[0], line.end[1] - line.start[1]
+            t = ((circle.start[0] - line.start[0]) * dx + (circle.start[1] - line.start[1]) * dy) / line.size ** 2
+            foot = (line.start[0] + t * dx, line.start[1] + t * dy)
+            painter.drawEllipse(screen(foot), 4, 4)
+        painter.end()
+
+
+class TangentChoiceDialog(QDialog):
+    def __init__(self, lines: tuple[Entity, ...], circles: tuple[Entity, ...], parent: QWidget) -> None:
+        super().__init__(parent)
+        self.circles = circles
+        self.setWindowTitle("Выбор касательной окружности")
+        layout = QVBoxLayout(self)
+        label = QLabel("Выберите вариант. Красные точки — касания. Связь с отрезками не сохраняется.")
+        label.setWordWrap(True)
+        layout.addWidget(label)
+        self.choice = QComboBox()
+        self.choice.addItems([f"Центр ({c.start[0]:.4f}, {c.start[1]:.4f}) мм; R {c.size:.4f} мм" for c in circles])
+        layout.addWidget(self.choice)
+        self.preview = TangentPreview(lines, circles, self)
+        layout.addWidget(self.preview)
+        self.choice.currentIndexChanged.connect(self.preview.set_index)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def selected_circle(self) -> Entity:
+        return self.circles[self.choice.currentIndex()]
 
 
 class EntityEditor(QDialog):
@@ -583,7 +651,7 @@ class SketchDraftDialog(QDialog):
                                                "arc", "trim", "tangent2", "tangent3")
         self.canvas.set_kind(kinds[index])
         if kinds[index] == "trim":
-            self._message("Нажмите на удаляемый участок отрезка или окружности между пересечениями")
+            self._message("Нажмите на удаляемый участок отрезка, дуги или окружности между пересечениями")
         elif kinds[index] in ("tangent2", "tangent3"):
             self._message("Выберите мышью разные отрезки; касание строится одноразово без ограничения")
 
@@ -611,13 +679,13 @@ class SketchDraftDialog(QDialog):
         if not candidates:
             self._message("Нет решения на выбранных конечных отрезках; измените отрезки или радиус")
             return
-        labels = [f"Центр ({item.start[0]:.4f}, {item.start[1]:.4f}) мм; R {item.size:.4f} мм" for item in candidates]
-        choice, ok = QInputDialog.getItem(self, "Выберите решение", "Касание к отрезкам (не постоянное ограничение):",
-                                          labels, 0, False)
-        if not ok:
+        choice = TangentChoiceDialog(lines, candidates, self)
+        result = choice.exec()
+        entity = choice.selected_circle() if result == QDialog.DialogCode.Accepted else None
+        choice.deleteLater()
+        if entity is None:
             self._message("Построение отменено")
             return
-        entity = candidates[labels.index(choice)]
         try:
             self.canvas.draft.add("circle", entity.start, entity.end)
         except ValueError as exc:
@@ -664,8 +732,8 @@ class SketchDraftDialog(QDialog):
         self.canvas.diagnostic_indices = {index for issue in report.issues for index in issue.indices}
         self.canvas.diagnostic_points = tuple(point for issue in report.issues for point in issue.points)
         self.canvas.update()
-        notice = ("Это предварительная проверка отрезков и окружностей, не гарантия пригодности для 3D или производства. "
-                  "Проверка не исправляет разрывы и не меняет эскиз.")
+        notice = ("Предварительная проверка отрезков, окружностей и дуг не гарантирует пригодность для 3D или производства. "
+                  "Разрывы не исправляются. Расхождение до 0,00000001 мм считается вычислительным шумом.")
         if report.total_issues:
             details = "\n".join(self._describe_issue(issue) for issue in report.issues[:12])
             remainder = "\nПоказаны первые 12; подсветка ограничена первыми 100 замечаниями." if report.total_issues > 12 else ""

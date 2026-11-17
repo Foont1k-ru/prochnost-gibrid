@@ -120,3 +120,38 @@ def test_line_line_disjoint_near_contact_and_valid_adjacent_collinear():
     subdivided = (line((0, 0), (5, 0)), line((5, 0), (10, 0)),
                   line((10, 0), (10, 10)), line((10, 10), (0, 10)), line((0, 10), (0, 0)))
     assert check_contours(subdivided).closed_loops == 1
+
+
+def test_semicircle_and_diameter_form_closed_loop():
+    arc = make_entity("arc", (0, 0), (10, 0), 180)
+    diameter = line((-10, 0), (10, 0))
+    report = check_contours((arc, diameter))
+    assert not report.issues and report.closed_loops == 1
+
+
+def test_two_semicircles_close_despite_float_roundoff():
+    a = make_entity("arc", (0, 0), (10, 0), 180)
+    b = make_entity("arc", (0, 0), (-10, 0), 180)
+    report = check_contours((a, b))
+    assert not report.issues and report.closed_loops == 1
+
+
+def test_arc_gap_is_not_silently_closed():
+    arc = make_entity("arc", (0, 0), (10, 0), 180)
+    almost = line((-10, .001), (10, 0))
+    report = check_contours((arc, almost))
+    assert "gap" in codes(report) and report.closed_loops is None
+
+
+def test_arc_intersections_and_overlap_flagged():
+    arc = make_entity("arc", (0, 0), (10, 0), 180)
+    crossing = line((0, -20), (0, 20))
+    assert "contact" in codes(check_contours((arc, crossing)))
+    overlap = make_entity("arc", (0, 0), (0, 10), -60)
+    assert "contact" in codes(check_contours((arc, overlap)))
+
+
+def test_arc_not_treated_as_full_circle():
+    arc = make_entity("arc", (0, 0), (10, 0), 90)
+    line_on_other_side = line((-20, -5), (0, -5))
+    assert "contact" not in codes(check_contours((arc, line_on_other_side)))

@@ -263,7 +263,7 @@ def test_contour_check_blocks_pending_and_clears_on_tolerance_change(qtbot, monk
     dialog.canvas.add_point((10, 10))
     dialog._check_contours()
     assert "Замечаний не найдено" in reports[-1]
-    assert "не гарантия" in reports[-1]
+    assert "не гарантирует" in reports[-1]
     assert dialog.canvas.diagnostic_snapshot is not None
     dialog.contour_tolerance.setValue(0.02)
     assert dialog.canvas.diagnostic_snapshot is None
@@ -325,10 +325,10 @@ def test_arc_creation_edit_roundtrip_and_contour_guard(qtbot, tmp_path, monkeypa
     qtbot.addWidget(editor)
     editor.values[3].setValue(45)
     assert editor.result_entity().sweep_deg == 45
-    warnings = []
-    monkeypatch.setattr(QMessageBox, "warning", lambda *args: warnings.append(args[2]))
+    reports = []
+    monkeypatch.setattr(QMessageBox, "information", lambda *args: reports.append(args[2]))
     dialog._check_contours()
-    assert "дугами" in warnings[-1]
+    assert "Открытый конец" in reports[-1]
     path = tmp_path / "arc.slsketch"
     monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *args, **kwargs: (str(path), ""))
     assert dialog._save() and read_sketch(path).entities == (arc,)
@@ -360,7 +360,9 @@ def test_trim_mouse_and_atomic_undo(qtbot):
 
 
 def test_tangent_two_lines_mouse_cancel_and_apply(qtbot, monkeypatch):
-    from PySide6.QtWidgets import QInputDialog
+    from PySide6.QtWidgets import QDialog
+
+    from suspensionlab.ui.sketch_draft_dialog import TangentChoiceDialog
 
     dialog = SketchDraftDialog()
     qtbot.addWidget(dialog)
@@ -370,11 +372,11 @@ def test_tangent_two_lines_mouse_cancel_and_apply(qtbot, monkeypatch):
         canvas.add_point(start)
         canvas.add_point(end)
     dialog.tool.setCurrentIndex(8)
-    monkeypatch.setattr(QInputDialog, "getItem", lambda *args: ("", False))
+    monkeypatch.setattr(TangentChoiceDialog, "exec", lambda self: QDialog.DialogCode.Rejected)
     for point in ((50, 0), (0, 50)):
         qtbot.mouseClick(canvas, Qt.MouseButton.LeftButton, pos=canvas.to_screen(point).toPoint())
     assert len(canvas.draft.entities) == 2 and not canvas.construction_indices
-    monkeypatch.setattr(QInputDialog, "getItem", lambda *args: (args[3][0], True))
+    monkeypatch.setattr(TangentChoiceDialog, "exec", lambda self: QDialog.DialogCode.Accepted)
     for point in ((50, 0), (0, 50)):
         qtbot.mouseClick(canvas, Qt.MouseButton.LeftButton, pos=canvas.to_screen(point).toPoint())
     assert len(canvas.draft.entities) == 3
@@ -385,7 +387,9 @@ def test_tangent_two_lines_mouse_cancel_and_apply(qtbot, monkeypatch):
 
 
 def test_tangent_three_lines_mouse(qtbot, monkeypatch):
-    from PySide6.QtWidgets import QInputDialog
+    from PySide6.QtWidgets import QDialog
+
+    from suspensionlab.ui.sketch_draft_dialog import TangentChoiceDialog
 
     dialog = SketchDraftDialog()
     qtbot.addWidget(dialog)
@@ -395,7 +399,7 @@ def test_tangent_three_lines_mouse(qtbot, monkeypatch):
         canvas.add_point(start)
         canvas.add_point(end)
     dialog.tool.setCurrentIndex(9)
-    monkeypatch.setattr(QInputDialog, "getItem", lambda *args: (args[3][0], True))
+    monkeypatch.setattr(TangentChoiceDialog, "exec", lambda self: QDialog.DialogCode.Accepted)
     for point in ((50, 0), (50, 50), (0, 50)):
         qtbot.mouseClick(canvas, Qt.MouseButton.LeftButton, pos=canvas.to_screen(point).toPoint())
     assert len(canvas.draft.entities) == 4 and canvas.draft.entities[-1].kind == "circle"
@@ -439,3 +443,50 @@ def test_undo_during_tangent_selection_cancels_selection_first(qtbot):
     dialog._undo()
     assert len(canvas.draft.entities) == 1
     dialog._saved = dialog._document()
+
+
+def test_trim_arc_mouse_and_contour_check(qtbot, monkeypatch):
+    reports = []
+    monkeypatch.setattr(QMessageBox, "information", lambda *args: reports.append(args[2]))
+    dialog = SketchDraftDialog()
+    qtbot.addWidget(dialog)
+    dialog.show()
+    canvas = dialog.canvas
+    dialog.tool.setCurrentIndex(6)
+    dialog.arc_angle.setValue(180)
+    canvas.add_point((0, 0))
+    canvas.add_point((60, 0))
+    dialog.tool.setCurrentIndex(0)
+    canvas.add_point((-60, 0))
+    canvas.add_point((60, 0))
+    dialog._check_contours()
+    assert "Замечаний не найдено" in reports[-1]
+    # A vertical cutting line intersects the interior of the semicircle.
+    canvas.add_point((0, -80))
+    canvas.add_point((0, 80))
+    original = tuple(canvas.draft.entities)
+    dialog.tool.setCurrentIndex(7)
+    qtbot.mouseClick(canvas, Qt.MouseButton.LeftButton, pos=canvas.to_screen((42.426, 42.426)).toPoint())
+    assert canvas.draft.entities[0].kind == "arc"
+    assert abs(canvas.draft.entities[0].sweep_deg - 90) < 1e-8
+    dialog._undo()
+    assert tuple(canvas.draft.entities) == original
+    dialog._saved = dialog._document()
+
+
+def test_tangent_choice_shows_alternate_preview(qtbot):
+    from suspensionlab.model.sketch_construction import tangent_circles
+    from suspensionlab.model.sketch_draft import make_entity
+    from suspensionlab.ui.sketch_draft_dialog import TangentChoiceDialog
+
+    parent = SketchDraftDialog()
+    qtbot.addWidget(parent)
+    lines = (make_entity("line", (-100, 0), (100, 0)), make_entity("line", (0, -100), (0, 100)))
+    circles = tangent_circles(lines, 10)
+    choice = TangentChoiceDialog(lines, circles, parent)
+    qtbot.addWidget(choice)
+    choice.show()
+    assert choice.selected_circle() == circles[0]
+    choice.choice.setCurrentIndex(1)
+    assert choice.selected_circle() == circles[1] and choice.preview.index == 1
+    assert not choice.preview.grab().isNull()
