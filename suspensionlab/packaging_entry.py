@@ -28,6 +28,10 @@ def main() -> int:
         from suspensionlab.core.cad_worker import main as cad_main
 
         return cad_main(sys.argv[2:])
+    if len(sys.argv) == 6 and sys.argv[1] == "--sketch-solid-worker":
+        from suspensionlab.core.sketch_solid_worker import main as sketch_solid_main
+
+        return sketch_solid_main(sys.argv[2:])
     if len(sys.argv) == 6 and sys.argv[1] == "--weldment-preview-worker":
         from suspensionlab.core.cad_weldment_worker import main as weldment_main
 

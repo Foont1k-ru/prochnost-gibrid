@@ -715,15 +715,16 @@ class SketchDraftDialog(QDialog):
         self.setWindowTitle("Плоский эскиз — отдельный документ")
         self.resize(1100, 750)
         layout = QVBoxLayout(self)
-        notice = QLabel("Эскиз отдельно от проекта подвески; 3D-тело и связь с рычагами пока не создаются. "
-                        "Каждое сохранение — в новый .slsketch, существующие файлы не перезаписываются.")
+        notice = QLabel("Эскиз отдельно от проекта подвески; 3D STEP создаётся отдельной копией без связи с рычагами. "
+                        "Сохранение — в новый файл, существующие файлы не перезаписываются.")
         notice.setWordWrap(True)
         layout.addWidget(notice)
         files = QHBoxLayout()
         new, open_button, save = QPushButton("Новый"), QPushButton("Открыть…"), QPushButton("Сохранить как новый…")
         export = QPushButton("Экспорт DXF…")
         preview_3d = QPushButton("Выдавить: 3D-просмотр…")
-        for button in (new, open_button, save, export, preview_3d):
+        solid_step = QPushButton("Создать 3D STEP…")
+        for button in (new, open_button, save, export, preview_3d, solid_step):
             files.addWidget(button)
         self.file_label = QLabel("Новый эскиз")
         self.file_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
@@ -838,6 +839,7 @@ class SketchDraftDialog(QDialog):
         save.clicked.connect(self._save)
         export.clicked.connect(self._export_dxf)
         preview_3d.clicked.connect(self._extrude_preview)
+        solid_step.clicked.connect(self._export_solid_step)
         self.plane.currentIndexChanged.connect(self._reference_changed)
         self.plane_offset.valueChanged.connect(self._reference_changed)
         self.tool.currentIndexChanged.connect(self._set_tool)
@@ -973,6 +975,48 @@ class SketchDraftDialog(QDialog):
             return
         self._message("Окружность добавлена; касание не связано с последующим изменением отрезков")
         self.canvas.update()
+
+    def _export_solid_step(self) -> None:
+        from .sketch_solid_dialog import SketchSolidDialog
+
+        if self.canvas.pending is not None or self.canvas.construction_indices or self.canvas.dimension_target is not None:
+            QMessageBox.warning(self, "Создание 3D STEP", "Завершите действие или нажмите Esc.")
+            return
+        try:
+            report = check_contours(tuple(self.canvas.draft.entities))
+            if report.total_issues or report.closed_loops != 1:
+                raise ValueError("Нужен один замкнутый контур без разрывов, пересечений и отверстий. "
+                                 "Проверка STEP использует допуск 0,01 мм; используйте «Проверить контуры».")
+        except ValueError as exc:
+            QMessageBox.warning(self, "Создание 3D STEP", str(exc))
+            return
+        depth, ok = QInputDialog.getDouble(self, "Выдавливание в STEP",
+            "Глубина в мм вдоль положительной оси, перпендикулярной эскизу. "
+            "Один контур без отверстий. Создаётся отдельное CAD-тело, не связанное с эскизом и проектом.",
+            10, 0.001, 1_000_000, 3)
+        if not ok:
+            return
+        path, _ = QFileDialog.getSaveFileName(self, "Создать новый STEP", "тело.step", "STEP (*.step *.stp)",
+                                              options=QFileDialog.Option.DontConfirmOverwrite)
+        if not path:
+            return
+        destination = Path(path)
+        if not destination.suffix:
+            destination = destination.with_suffix(".step")
+        progress = SketchSolidDialog(self._document(), depth, destination, self)
+        progress.start()
+        progress.exec()
+        progress.worker.wait()  # thread must be fully finished before Qt ownership is released
+        result, error, cancelled = progress.output, progress.error, progress.cancel_requested
+        progress.deleteLater()
+        if result is not None:
+            self._message(f"CAD-тело сохранено в новый STEP: {result}; эскиз не изменён")
+            QMessageBox.information(self, "3D STEP создан", f"Создано отдельное CAD-тело:\n{result}\n\n"
+                "Это не параметрическая связь с эскизом или проектом. STEP можно открыть в CAD-просмотре.")
+        elif error and not (cancelled and error == "Построение отменено"):
+            QMessageBox.warning(self, "3D STEP не создан", error)
+        else:
+            self._message("Построение отменено; файл не создан")
 
     def _extrude_preview(self) -> None:
         if self.canvas.pending is not None or self.canvas.construction_indices or self.canvas.dimension_target is not None:

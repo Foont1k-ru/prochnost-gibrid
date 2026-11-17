@@ -773,3 +773,71 @@ def test_circle_fillet_requires_explicit_confirmation_and_undo(qtbot, monkeypatc
     dialog._redo()
     assert [e.kind for e in canvas.draft.entities] == ["arc", "line", "arc"]
     dialog._saved = dialog._document()
+
+
+def test_create_step_ui_uses_snapshot_and_preserves_sketch(qtbot, monkeypatch, tmp_path):
+    from PySide6.QtWidgets import QFileDialog, QInputDialog
+
+    from suspensionlab.core.sketch_solid_job import SketchSolidJob
+
+    dialog = SketchDraftDialog()
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog.tool.setCurrentIndex(3)
+    dialog.canvas.add_point((0, 0))
+    dialog.canvas.add_point((50, 25))
+    snapshot = dialog._document()
+    target = tmp_path / "тело.step"
+    seen = []
+    def create(_self, document, depth, path):
+        seen.append((document, depth, path))
+        path.write_text("fixture", encoding="ascii")
+        return path
+    monkeypatch.setattr(SketchSolidJob, "run", create)
+    monkeypatch.setattr(QInputDialog, "getDouble", lambda *args, **kwargs: (10, True))
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *args, **kwargs: (str(target), ""))
+    messages = []
+    monkeypatch.setattr(QMessageBox, "information", lambda *args: messages.append(args))
+    dialog._export_solid_step()
+    assert seen == [(snapshot, 10, target)] and target.exists()
+    assert messages and dialog._document() == snapshot
+    dialog._saved = snapshot
+
+
+def test_create_step_rejects_open_contour_before_file_dialog(qtbot, monkeypatch):
+    from PySide6.QtWidgets import QInputDialog
+
+    dialog = SketchDraftDialog()
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog.canvas.add_point((0, 0))
+    dialog.canvas.add_point((50, 0))
+    warnings = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda *args: warnings.append(args))
+    monkeypatch.setattr(QInputDialog, "getDouble", lambda *args, **kwargs: pytest.fail("unexpected input dialog"))
+    dialog._export_solid_step()
+    assert warnings and "замкнутый" in str(warnings[0])
+    dialog._saved = dialog._document()
+
+
+def test_solid_dialog_cancel_waits_for_worker_before_closing(qtbot, monkeypatch, tmp_path):
+    from PySide6.QtCore import QTimer
+
+    from suspensionlab.core.sketch_solid_job import SketchSolidError, SketchSolidJob
+    from suspensionlab.model.sketch_draft import rectangle_entities
+    from suspensionlab.model.sketch_io import SketchDocument
+    from suspensionlab.ui.sketch_solid_dialog import SketchSolidDialog
+
+    def slow(job, document, depth, destination):
+        job._cancelled.wait(5)
+        raise SketchSolidError("Построение отменено")
+    monkeypatch.setattr(SketchSolidJob, "run", slow)
+    document = SketchDocument("XY", 0, rectangle_entities((0, 0), (10, 10)))
+    dialog = SketchSolidDialog(document, 5, tmp_path / "cancel.step")
+    qtbot.addWidget(dialog)
+    dialog.start()
+    QTimer.singleShot(20, dialog.reject)
+    dialog.exec()
+    dialog.worker.wait()
+    assert dialog.cancel_requested and dialog.output is None and dialog.error == "Построение отменено"
+    assert not (tmp_path / "cancel.step").exists()
