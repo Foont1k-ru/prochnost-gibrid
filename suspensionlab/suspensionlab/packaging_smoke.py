@@ -320,10 +320,14 @@ def run_packaging_check() -> None:
 
     app = create_application([])
     # Проверяем именно GUI-отрисовку и наличие растеризатора в упаковке.
+    # Эскиз и DXF проверяются именно в замороженной сборке, а не только в исходниках.
+    from unittest.mock import patch
+
+    import ezdxf
     import numpy as np
     from PySide6.QtCore import QEvent, QPointF, Qt
     from PySide6.QtGui import QMouseEvent
-    from PySide6.QtWidgets import QComboBox, QLineEdit
+    from PySide6.QtWidgets import QComboBox, QFileDialog, QLineEdit, QMessageBox
 
     from .core.cad_measurement import measurement_distance, point_on_projected_triangle
     from .core.cad_mesh import CadMesh
@@ -332,7 +336,27 @@ def run_packaging_check() -> None:
     from .ui.cad_preview_dialog import CadPreviewDialog
     from .ui.cad_preview_settings import CadPreviewSettingsDialog
     from .ui.canvas.cad_preview import CadPreview
+    from .ui.sketch_draft_dialog import SketchDraftDialog
     from .ui.widgets.camera_views import CameraViews
+
+    with TemporaryDirectory(prefix="suspensionlab-sketch-check-") as sketch_dir:
+        sketch = SketchDraftDialog()
+        sketch.show()
+        sketch.tool.setCurrentIndex(3)  # прямоугольник
+        sketch.canvas.add_point((0., 0.))
+        sketch.canvas.add_point((100., 40.))
+        with patch.object(QMessageBox, "information") as report:
+            sketch._check_contours()
+        _require(report.called and "Замечаний не найдено" in str(report.call_args), "Проверка контуров недоступна")
+        destination = Path(sketch_dir) / "эскиз.dxf"
+        with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes), \
+                patch.object(QFileDialog, "getSaveFileName", return_value=(str(destination), "")):
+            _require(sketch._export_dxf(), "DXF эскиза не создан")
+        dxf = ezdxf.readfile(destination)
+        _require(dxf.header["$INSUNITS"] == 4 and len(dxf.modelspace()) == 4,
+                 "DXF эскиза содержит неверные единицы или геометрию")
+        sketch._saved = sketch._document()
+        sketch.close()
 
     preview = CadPreview()
     preview.resize(320, 280)
