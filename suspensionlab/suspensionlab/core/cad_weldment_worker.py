@@ -9,7 +9,12 @@ from pathlib import Path
 import numpy as np
 
 from ..model.kim_format import read_document
-from .cad_kim_prototype import build_front_arm_tubes_preview, build_rear_tube_preview, build_weldment_tubes_preview
+from .cad_kim_prototype import (
+    build_front_arm_tubes_preview,
+    build_rear_pair_preview,
+    build_rear_tube_preview,
+    build_weldment_tubes_preview,
+)
 from .cad_mesh import MAX_COORDINATE
 from .cad_worker import CadWorkerError
 
@@ -31,7 +36,9 @@ def create_mesh(path: Path, deviation: float) -> tuple[np.ndarray, int]:
     except (ImportError, OSError) as error:
         raise CadWorkerError("missing_cad") from error
     doc = read_document(path, "assembly")
-    if doc["version"] == "0.4":
+    if doc["version"] == "0.6":
+        shape = build_rear_pair_preview(doc)
+    elif doc["version"] == "0.4":
         shape = build_rear_tube_preview(doc)
     elif doc["version"] == "0.5":
         shape = build_front_arm_tubes_preview(doc)

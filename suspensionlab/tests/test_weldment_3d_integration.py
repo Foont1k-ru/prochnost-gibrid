@@ -362,9 +362,11 @@ def test_saved_rear_pair_reopens_and_rebuilds_both_cad_views(qtbot, tmp_path, mo
     d._pair_mode.setCurrentIndex(d._pair_mode.findData('same'))
     d._three_d._enable.setChecked(True)
     d._pair_three_d._enable.setChecked(True)
+    d._pair_assembly_3d._enable.setChecked(True)
     assert not d._save_pair.isEnabled()
     qtbot.waitUntil(lambda: d._save_pair.isEnabled(), timeout=45000)
     assert d._three_d._view.mesh is not None and d._pair_three_d._view.mesh is not None
+    assert d._pair_assembly_3d._view.mesh is not None
     path = tmp_path / 'paired.kima'
     monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(path), ''))
     d._save_pair_copy()
@@ -377,12 +379,14 @@ def test_saved_rear_pair_reopens_and_rebuilds_both_cad_views(qtbot, tmp_path, mo
     d._open_file()
     d._three_d._enable.setChecked(True)
     d._pair_three_d._enable.setChecked(True)
-    qtbot.waitUntil(lambda: d._three_d._view.mesh is not None and d._pair_three_d._view.mesh is not None,
+    d._pair_assembly_3d._enable.setChecked(True)
+    qtbot.waitUntil(lambda: d._three_d._view.mesh is not None and d._pair_three_d._view.mesh is not None and
+                    d._pair_assembly_3d._view.mesh is not None,
                     timeout=45000)
     d._start_preview()
     qtbot.waitUntil(lambda: d._save_pair.isEnabled(), timeout=45000)
     d._fields[3].setText('30')
-    assert not d._save_pair.isEnabled()
+    assert d._pair_assembly_3d._view.mesh is None and not d._save_pair.isEnabled()
     qtbot.waitUntil(lambda: d._save_pair.isEnabled(), timeout=45000)
     target = tmp_path / 'paired-edit.kima'
     monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(target), ''))

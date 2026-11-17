@@ -92,7 +92,7 @@ def build_part(document: dict[str, Any]) -> Any:
 def build_assembly(document: dict[str, Any]) -> Any:
     """Создаёт соединение перенесённых экземпляров, не связывая их со схемой."""
     _assembly(document)
-    if document["version"] in ("0.2", "0.3", "0.4", "0.5"):
+    if document["version"] in ("0.2", "0.3", "0.4", "0.5", "0.6"):
         raise ValueError("incomplete weldment: use the explicitly partial tube preview")
     from OCP.BRep import BRep_Builder
     from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
@@ -189,4 +189,18 @@ def build_front_arm_tubes_preview(document: dict[str, Any]) -> Any:
                 raise RuntimeError('could not build front tube')
             shape = cut.Shape()
         builder.Add(compound, shape)
+    return compound
+
+
+def build_rear_pair_preview(document: dict[str, Any]) -> Any:
+    """Две трубы в системе задней оси, без соединений и установки шарниров."""
+    from OCP.BRep import BRep_Builder
+    from OCP.TopoDS import TopoDS_Compound
+
+    from ..model.rear_pair_snapshot import rear_pair_sides
+
+    builder, compound = BRep_Builder(), TopoDS_Compound()
+    builder.MakeCompound(compound)
+    for tube in rear_pair_sides(document):
+        builder.Add(compound, build_rear_tube_preview(tube))
     return compound

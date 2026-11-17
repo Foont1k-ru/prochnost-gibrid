@@ -140,6 +140,8 @@ class RearTubeDialog(QDialog):
             tabs.addTab(plan, tr('rear_pair.tab', axes=label))
         self._pair_three_d = Weldment3D(tabs, is_current=self._pair_is_current, single_tube=True)
         tabs.addTab(self._pair_three_d, tr('rear_pair.tab_3d'))
+        self._pair_assembly_3d = Weldment3D(tabs, is_current=self._pair_snapshot_is_current)
+        tabs.addTab(self._pair_assembly_3d, tr('rear_pair.tab_both'))
         layout.addWidget(tabs, 1)
         self._save = QPushButton(tr('rear_tube.save'), body)
         self._save.clicked.connect(self._save_copy)
@@ -164,6 +166,7 @@ class RearTubeDialog(QDialog):
             field.textChanged.connect(self._refresh)
         self._three_d.availabilityChanged.connect(self._update_save)
         self._pair_three_d.availabilityChanged.connect(self._update_save)
+        self._pair_assembly_3d.availabilityChanged.connect(self._update_save)
         controller.modelChanged.connect(self._refresh)
         controller.projectReplaced.connect(self._project_replaced)
         self._refresh()
@@ -300,6 +303,22 @@ class RearTubeDialog(QDialog):
             raise KimFormatError('invalid pair roll') from error
         return make_paired_rear_tube(candidate, mode, roll)
 
+    def _make_pair_snapshot(self, candidate: dict[str, Any]) -> dict[str, Any]:
+        mode = str(self._pair_mode.currentData())
+        try:
+            roll = float(self._pair_roll.text().strip().replace(',', '.')) if mode == 'same' else 0.0
+        except ValueError as error:
+            raise KimFormatError('invalid pair roll') from error
+        return make_rear_pair_snapshot(candidate, mode, roll)
+
+    def _pair_snapshot_is_current(self, snapshot: dict[str, Any]) -> bool:
+        if self._candidate is None or not self._candidate_is_current(self._candidate):
+            return False
+        try:
+            return self._make_pair_snapshot(self._candidate) == snapshot
+        except (KimFormatError, ValueError, TypeError, OverflowError):
+            return False
+
     def _pair_is_current(self, paired: dict[str, Any]) -> bool:
         if self._candidate is None or not self._candidate_is_current(self._candidate):
             return False
@@ -312,6 +331,7 @@ class RearTubeDialog(QDialog):
         for plan in self._pair_plans:
             plan.set_view(None)
         self._pair_three_d.set_document(None)
+        self._pair_assembly_3d.set_document(None)
         self._update_save()
         self._update_edit_status()
         candidate = self._candidate
@@ -322,6 +342,7 @@ class RearTubeDialog(QDialog):
             return
         try:
             paired = self._make_pair(candidate)
+            snapshot = self._make_pair_snapshot(candidate)
             path = rear_tube_centerline(paired)
             view = make_niva_arm_view(Project.from_dict(paired['scheme']), paired['arm'])
         except (KimFormatError, ValueError, TypeError, OverflowError):
@@ -330,6 +351,7 @@ class RearTubeDialog(QDialog):
         for plan in self._pair_plans:
             plan.set_view(view, path)
         self._pair_three_d.set_document(paired)
+        self._pair_assembly_3d.set_document(snapshot)
         self._pair_status.setText(tr('rear_pair.preview_ready'))
         self._update_save()
 
@@ -452,7 +474,8 @@ class RearTubeDialog(QDialog):
         self._save.setEnabled(self._active and self._candidate is not None and self._three_d.can_save())
         paired = self._pair_three_d._document
         self._save_pair.setEnabled(self._active and paired is not None and self._pair_is_current(paired) and
-                                   self._three_d.can_save() and self._pair_three_d.can_save())
+                                   self._three_d.can_save() and self._pair_three_d.can_save() and
+                                   self._pair_assembly_3d.can_save())
 
     def _save_copy(self) -> None:
         candidate = self._candidate
@@ -490,16 +513,15 @@ class RearTubeDialog(QDialog):
         candidate = self._candidate
         paired = self._pair_three_d._document
         if (not self._active or candidate is None or paired is None or not self._pair_is_current(paired) or
-                not self._three_d.can_save() or not self._pair_three_d.can_save()):
+                not self._three_d.can_save() or not self._pair_three_d.can_save() or
+                not self._pair_assembly_3d.can_save()):
             return
-        mode = str(self._pair_mode.currentData())
         try:
-            roll = float(self._pair_roll.text().strip().replace(',', '.')) if mode == 'same' else 0.0
-            snapshot = make_rear_pair_snapshot(candidate, mode, roll)
+            snapshot = self._make_pair_snapshot(candidate)
         except (KimFormatError, ValueError, TypeError, OverflowError):
             return
         revision, state, pair_state = self._revision, self._input_state(), self._pair_state()
-        gens = (self._three_d.generation, self._pair_three_d.generation)
+        gens = (self._three_d.generation, self._pair_three_d.generation, self._pair_assembly_3d.generation)
         selected, _ = QFileDialog.getSaveFileName(self, tr('rear_pair.save'), '', tr('arm_concept.assembly_filter'))
         if not selected:
             return
@@ -507,8 +529,9 @@ class RearTubeDialog(QDialog):
         if path.suffix.lower() != '.kima':
             path = path.with_name(path.name + '.kima')
         if (revision != self._revision or state != self._input_state() or pair_state != self._pair_state() or
-                gens != (self._three_d.generation, self._pair_three_d.generation) or
+                gens != (self._three_d.generation, self._pair_three_d.generation, self._pair_assembly_3d.generation) or
                 not self._three_d.can_save() or not self._pair_three_d.can_save() or
+                not self._pair_assembly_3d.can_save() or
                 not self._pair_is_current(paired)):
             QMessageBox.warning(self, tr('rear_pair.title'), tr('weldment.changed'))
             return
@@ -533,7 +556,8 @@ class RearTubeDialog(QDialog):
     def shutdown(self) -> bool:
         first = self._three_d.shutdown()
         second = self._pair_three_d.shutdown()
-        return first and second
+        both = self._pair_assembly_3d.shutdown()
+        return first and second and both
 
     def reject(self) -> None:
         if self.confirm_close() and self.shutdown():
