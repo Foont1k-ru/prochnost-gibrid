@@ -111,7 +111,17 @@ def ensure_suffix(path: Path) -> Path:
 
 def project_to_json(project: Project) -> str:
     """Сериализует проект в строку JSON (UTF-8, с отступами)."""
-    return json.dumps(project.to_dict(), ensure_ascii=False, indent=2)
+    return json.dumps(project.to_dict(), ensure_ascii=False, indent=2, allow_nan=False)
+
+
+def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """Повторяющийся ключ неоднозначен, даже внутри сохранённого снимка."""
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON key")
+        result[key] = value
+    return result
 
 
 def save_project(project: Project, path: str | Path) -> Path:
@@ -124,7 +134,10 @@ def save_project(project: Project, path: str | Path) -> Path:
     target = ensure_suffix(Path(path))
     temporary: str | None = None
     try:
-        text = project_to_json(project)
+        try:
+            text = project_to_json(project)
+        except ValueError as error:
+            raise ProjectIOError("error.project.invalid_save", path=str(target)) from error
         target.parent.mkdir(parents=True, exist_ok=True)
         destination = target.resolve()
         mode = stat.S_IMODE(destination.stat().st_mode) if destination.exists() else None
@@ -159,10 +172,16 @@ def load_project(path: str | Path, *, require_complete: bool = False) -> Project
         LOG.error("Не удалось прочитать проект %s: %s", source, error)
         raise ProjectIOError("error.project.read_failed", path=str(source)) from error
     try:
-        data = json.loads(raw)
+        data = json.loads(raw, object_pairs_hook=_unique_object)
+        # Reject NaN, Infinity and float overflow (e.g. 1e999), including
+        # inside unknown fields and snapshots, before migration or defaults.
+        json.dumps(data, allow_nan=False)
     except json.JSONDecodeError as error:
         LOG.error("Повреждённый JSON в %s: %s", source, error)
         raise ProjectIOError("error.project.broken_json", path=str(source), line=error.lineno) from error
+    except (ValueError, RecursionError) as error:
+        LOG.warning("Недопустимое содержимое JSON проекта %s: %s", source, type(error).__name__)
+        raise ProjectIOError("error.project.invalid_json_values", path=str(source)) from error
     if not isinstance(data, dict):
         raise ProjectIOError("error.project.bad_structure", path=str(source))
     if require_complete and data.get("schema_version") != SCHEMA_VERSION:
@@ -170,12 +189,14 @@ def load_project(path: str | Path, *, require_complete: bool = False) -> Project
     migrated = migrate(data)
     try:
         project = Project.from_dict(migrated)
-        if require_complete:
-            # Не считать частичный JSON успешно восстановленным проектом:
-            # from_dict обычно заполняет отсутствующие поля по умолчанию.
-            json.dumps(data, allow_nan=False)
-            if project.to_dict() != data:
-                raise ValueError("Неполное или несовместимое автосохранение")
+        # Legacy files accept numeric strings; conversions such as "NaN" or
+        # "1e999" must not introduce non-finite values into the live model.
+        serialized = project.to_dict()
+        json.dumps(serialized, allow_nan=False)
+        # from_dict normally fills missing fields with defaults; do not accept
+        # partially restored autosaves as complete projects.
+        if require_complete and serialized != data:
+            raise ValueError("Неполное или несовместимое автосохранение")
     except (TypeError, ValueError, KeyError, OverflowError, RecursionError) as error:
         LOG.error("Несовместимая структура проекта %s: %s", source, error)
         raise ProjectIOError("error.project.bad_structure", path=str(source)) from error

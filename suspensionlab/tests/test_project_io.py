@@ -211,3 +211,90 @@ def test_strict_autosave_roundtrip_and_rejects_incomplete_or_nonfinite(tmp_path,
     path.write_text("{}", encoding="utf-8")
     with pytest.raises(ProjectIOError):
         load_project(path, require_complete=True)
+
+
+@pytest.mark.parametrize('value', ['NaN', 'Infinity', '-Infinity', '1e999', '-1e999'])
+@pytest.mark.parametrize('require_complete', [False, True])
+def test_load_rejects_nonfinite_numbers_even_in_unrecognized_fields(tmp_path, value, require_complete):
+    path = tmp_path / 'bad.susp.json'
+    path.write_text('{"schema_version":"1.0","unknown":{"nested":[' + value + ']}}', encoding='utf-8')
+    original = path.read_bytes()
+    with pytest.raises(ProjectIOError) as error:
+        load_project(path, require_complete=require_complete)
+    assert error.value.message_key == 'error.project.invalid_json_values'
+    assert path.read_bytes() == original
+
+
+@pytest.mark.parametrize('value', ['NaN', 'Infinity', '-Infinity', '1e999'])
+def test_load_rejects_numeric_strings_that_convert_to_nonfinite(tmp_path, value):
+    path = tmp_path / 'bad.susp.json'
+    path.write_text(json.dumps({'schema_version': '1.0', 'vehicle': {'mass_kg': value}}), encoding='utf-8')
+    with pytest.raises(ProjectIOError) as error:
+        load_project(path)
+    assert error.value.message_key == 'error.project.bad_structure'
+
+
+@pytest.mark.parametrize('content', [
+    '{"schema_version":"1.0", "schema_version":"0.9"}',
+    '{"schema_version":"1.0", "vehicle":{"mass_kg":1,"mass_kg":2}}',
+    '{"schema_version":"1.0", "snapshots":[{"name":"x","name":"y"}]}',
+])
+def test_load_rejects_duplicate_keys_at_any_depth(tmp_path, content):
+    path = tmp_path / 'duplicate.susp.json'
+    path.write_text(content, encoding='utf-8')
+    with pytest.raises(ProjectIOError) as error:
+        load_project(path)
+    assert error.value.message_key == 'error.project.invalid_json_values'
+    assert path.read_text(encoding='utf-8') == content
+
+
+def test_excessive_json_depth_is_reported_not_raised_raw(tmp_path):
+    path = tmp_path / 'deep.susp.json'
+    path.write_text('{"nested":' + '[' * 3000 + '0' + ']' * 3000 + '}', encoding='utf-8')
+    with pytest.raises(ProjectIOError) as error:
+        load_project(path)
+    assert error.value.message_key == 'error.project.invalid_json_values'
+
+
+@pytest.mark.parametrize('value', [float('nan'), float('inf'), float('-inf')])
+def test_nonfinite_project_does_not_overwrite_existing_file(tmp_path, project, value):
+    path = tmp_path / 'old.susp.json'
+    path.write_bytes(b'precious previous contents')
+    project.path = 'existing-path'
+    project.vehicle.mass_kg = value
+    with pytest.raises(ProjectIOError) as error:
+        save_project(project, path)
+    assert error.value.message_key == 'error.project.invalid_save'
+    assert project.path == 'existing-path'
+    assert path.read_bytes() == b'precious previous contents'
+    assert sorted(p.name for p in tmp_path.iterdir()) == [path.name]
+
+
+def test_nonfinite_nested_snapshot_does_not_overwrite(tmp_path, project):
+    path = save_project(project, tmp_path / 'project')
+    before = path.read_bytes()
+    project.add_snapshot('test')
+    project.snapshots[-1].data['unexpected'] = {'number': float('nan')}
+    with pytest.raises(ProjectIOError) as error:
+        save_project(project, path)
+    assert error.value.message_key == 'error.project.invalid_save'
+    assert path.read_bytes() == before
+
+
+def test_finite_legacy_numeric_strings_and_json_escapes_remain_accepted(tmp_path):
+    path = tmp_path / 'legacy.susp.json'
+    path.write_text('{"schema_version":"0.9","vehicle":{"mass_kg":"1234.5"},'
+                    '"meta":{"name":"NaN и Infinity — текст"}}', encoding='utf-8')
+    result = load_project(path)
+    assert result.vehicle.mass_kg == 1234.5
+    assert result.meta.name == 'NaN и Infinity — текст'
+    saved = save_project(result, tmp_path / 'migrated')
+    assert load_project(saved).vehicle.mass_kg == 1234.5
+
+
+def test_duplicate_decoded_unicode_key_is_rejected(tmp_path):
+    path = tmp_path / 'escaped.susp.json'
+    path.write_text('{"vehicle":{}, "\\u0076ehicle":{}}', encoding='utf-8')
+    with pytest.raises(ProjectIOError) as error:
+        load_project(path)
+    assert error.value.message_key == 'error.project.invalid_json_values'
