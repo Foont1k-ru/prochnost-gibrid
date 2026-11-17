@@ -38,11 +38,12 @@ class Weldment3D(QWidget):
 
     def __init__(self, parent: QWidget | None = None, *,
                  is_current: Callable[[dict[str, Any]], bool] | None = None,
-                 single_tube: bool = False, four_tubes: bool = False) -> None:
+                 single_tube: bool = False, four_tubes: bool = False, joint: bool = False) -> None:
         super().__init__(parent)
         self._is_current = is_current
         self._single_tube = single_tube
         self._four_tubes = four_tubes
+        self._joint = joint
         self._document: dict[str, Any] | None = None
         self._pending: dict[str, Any] | None = None
         self._worker: _TubeReader | None = None
@@ -54,7 +55,8 @@ class Weldment3D(QWidget):
         self._timer.setInterval(250)
         self._timer.timeout.connect(self._start)
         layout = QVBoxLayout(self)
-        enable_key = "front_pair.cad_enable" if four_tubes else "rear_tube.enable" if single_tube else "weldment_3d.enable"
+        enable_key = ("joint_concept.cad_enable" if joint else "front_pair.cad_enable" if four_tubes else
+                      "rear_tube.enable" if single_tube else "weldment_3d.enable")
         self._enable = QCheckBox(tr(enable_key), self)
         self._enable.toggled.connect(self._toggle)
         layout.addWidget(self._enable)
@@ -101,7 +103,8 @@ class Weldment3D(QWidget):
             self._status.setText(tr("weldment_3d.no_data"))
         else:
             self._pending = self._document
-            building_key = ("front_pair.cad_building" if self._four_tubes else
+            building_key = ("joint_concept.cad_building" if self._joint else
+                            "front_pair.cad_building" if self._four_tubes else
                             "rear_tube.building" if self._single_tube else "weldment_3d.building")
             self._status.setText(tr(building_key))
             self._timer.start()
@@ -130,7 +133,8 @@ class Weldment3D(QWidget):
         self._view.set_mesh(mesh)
         self._ready = True
         self._retry.setEnabled(True)
-        ready_key = ("front_pair.cad_ready" if self._four_tubes else
+        ready_key = ("joint_concept.cad_ready" if self._joint else
+                     "front_pair.cad_ready" if self._four_tubes else
                      "rear_tube.cad_ready" if self._single_tube else "weldment_3d.ready")
         self._status.setText(tr(ready_key, triangles=len(mesh.triangles)))
         self.availabilityChanged.emit(self.can_save())

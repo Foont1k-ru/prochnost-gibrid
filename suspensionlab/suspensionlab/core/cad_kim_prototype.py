@@ -92,7 +92,7 @@ def build_part(document: dict[str, Any]) -> Any:
 def build_assembly(document: dict[str, Any]) -> Any:
     """Создаёт соединение перенесённых экземпляров, не связывая их со схемой."""
     _assembly(document)
-    if document["version"] in ("0.2", "0.3", "0.4", "0.5", "0.6", "0.7"):
+    if document["version"] in ("0.2", "0.3", "0.4", "0.5", "0.6", "0.7", "0.8"):
         raise ValueError("incomplete weldment: use the explicitly partial tube preview")
     from OCP.BRep import BRep_Builder
     from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
@@ -217,4 +217,48 @@ def build_front_pair_preview(document: dict[str, Any]) -> Any:
     builder.MakeCompound(compound)
     for arm in front_pair_sides(document):
         builder.Add(compound, build_front_arm_tubes_preview(arm))
+    return compound
+
+
+def build_joint_preview(document: dict[str, Any]) -> Any:
+    """Условный корпус и палец: отдельные твёрдые тела, локальная ось +Z."""
+    from OCP.BRep import BRep_Builder
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut, BRepAlgoAPI_Fuse
+    from OCP.BRepCheck import BRepCheck_Analyzer
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder, BRepPrimAPI_MakeSphere
+    from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt
+    from OCP.TopoDS import TopoDS_Compound
+
+    from ..model.joint_concept import validate_joint_concept
+
+    validate_joint_concept(document)
+    p = document['parameters']
+    def cylinder(radius: float, z: float, length: float) -> Any:
+        return BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(0, 0, z), gp_Dir(0, 0, 1)), radius, length).Shape()
+    def cut(first: Any, second: Any) -> Any:
+        operation = BRepAlgoAPI_Cut(first, second)
+        if not operation.IsDone() or operation.Shape().IsNull():
+            raise RuntimeError('joint cut failed')
+        return operation.Shape()
+    if document['joint_type'] == 'ball':
+        shell = cut(BRepPrimAPI_MakeSphere(float(p['outer_radius_mm'])).Shape(),
+                    BRepPrimAPI_MakeSphere(float(p['cavity_radius_mm'])).Shape())
+        body = cut(shell, cylinder(float(p['opening_radius_mm']), 0, float(p['outer_radius_mm']) + 1))
+        ball = BRepPrimAPI_MakeSphere(float(p['ball_radius_mm'])).Shape()
+        fusion = BRepAlgoAPI_Fuse(ball, cylinder(float(p['pin_radius_mm']), 0, float(p['pin_length_mm'])))
+        if not fusion.IsDone() or fusion.Shape().IsNull():
+            raise RuntimeError('joint pin fusion failed')
+        pin = fusion.Shape()
+    else:
+        length = float(p['body_length_mm'])
+        body = cut(cylinder(float(p['outer_radius_mm']), -length / 2, length),
+                   cylinder(float(p['bore_radius_mm']), -length / 2, length))
+        length = float(p['pin_length_mm'])
+        pin = cylinder(float(p['pin_radius_mm']), -length / 2, length)
+    builder, compound = BRep_Builder(), TopoDS_Compound()
+    builder.MakeCompound(compound)
+    for part in (body, pin):
+        if not BRepCheck_Analyzer(part).IsValid():
+            raise RuntimeError('invalid joint geometry')
+        builder.Add(compound, part)
     return compound

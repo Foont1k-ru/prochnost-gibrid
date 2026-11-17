@@ -439,3 +439,33 @@ def test_front_mirrored_pair_3d_and_persistent_reopen(qtbot, tmp_path, monkeypat
     assert front_pair_sides(read_document(target, 'assembly'))[1]['bends']['rear']['radius_mm'] == 30
     assert d.shutdown()
     d.close()
+
+
+def test_joint_editor_3d_rebuild_save_and_open(qtbot, tmp_path, monkeypatch):
+    from suspensionlab.model.kim_format import read_document
+    from suspensionlab.ui.joint_concept_dialog import JointConceptDialog
+
+    c = AppController()
+    d = JointConceptDialog(c)
+    qtbot.addWidget(d)
+    d._three_d._enable.setChecked(True)
+    assert not d._save.isEnabled()
+    qtbot.waitUntil(lambda: d._three_d._view.mesh is not None and d._save.isEnabled(), timeout=45000)
+    d._fields['ball']['outer_radius_mm'].setText('23')
+    assert d._three_d._view.mesh is None and not d._save.isEnabled()
+    qtbot.waitUntil(lambda: d._three_d._view.mesh is not None and d._save.isEnabled(), timeout=45000)
+    path = tmp_path / 'joint.kima'
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(path), ''))
+    d._save_copy()
+    assert read_document(path, 'assembly')['version'] == '0.8'
+    assert d.shutdown()
+    d.close()
+    d = JointConceptDialog(c)
+    qtbot.addWidget(d)
+    monkeypatch.setattr(QFileDialog, 'getOpenFileName', lambda *args: (str(path), ''))
+    d._open_file()
+    d._three_d._enable.setChecked(True)
+    qtbot.waitUntil(lambda: d._three_d._view.mesh is not None, timeout=45000)
+    assert d._candidate['parameters']['outer_radius_mm'] == 23
+    assert d.shutdown()
+    d.close()

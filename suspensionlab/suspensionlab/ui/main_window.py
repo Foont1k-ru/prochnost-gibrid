@@ -43,6 +43,7 @@ from .docks.inspector import Inspector
 from .docks.project_tree import ProjectTree
 from .equilibrium_dialog import EquilibriumDialog
 from .front_tubes_dialog import FrontTubesDialog
+from .joint_concept_dialog import JointConceptDialog
 from .niva_arms_dialog import NivaArmsDialog
 from .point_table_dialog import PointTableDialog
 from .rear_tube_dialog import RearTubeDialog
@@ -67,6 +68,7 @@ class MainWindow(QMainWindow):
         self._settings = settings or QSettings(str(settings_path()), QSettings.Format.IniFormat)
         self._syncing_view = False
         self._front_tubes_dialog: FrontTubesDialog | None = None
+        self._joint_concept_dialog: JointConceptDialog | None = None
         self._rear_tube_dialog: RearTubeDialog | None = None
         self._niva_arms_dialog: NivaArmsDialog | None = None
         self._arm_concept_dialog: ArmConceptDialog | None = None
@@ -142,6 +144,21 @@ class MainWindow(QMainWindow):
 
     def _open_cad_registration(self) -> None:
         CadRegistrationDialog(self.controller, self).exec()
+
+    def _open_joint_concept(self) -> None:
+        if self._joint_concept_dialog is None:
+            dialog = JointConceptDialog(self.controller, self)
+            self._joint_concept_dialog = dialog
+            dialog.finished.connect(self._close_joint_concept)
+        self._joint_concept_dialog.show()
+        self._joint_concept_dialog.raise_()
+        self._joint_concept_dialog.activateWindow()
+
+    def _close_joint_concept(self, _result: int) -> None:
+        dialog = self._joint_concept_dialog
+        self._joint_concept_dialog = None
+        if dialog is not None:
+            dialog.deleteLater()
 
     def _open_front_tubes(self) -> None:
         if self._front_tubes_dialog is None:
@@ -286,6 +303,9 @@ class MainWindow(QMainWindow):
         self.action_cad_registration = QAction(tr("cad_registration.menu"), self)
         self.action_cad_registration.triggered.connect(self._open_cad_registration)
 
+        self.action_joint_concept = QAction(tr("joint_concept.menu"), self)
+        self.action_joint_concept.triggered.connect(self._open_joint_concept)
+
         self.action_front_tubes = QAction(tr("front_tubes.menu"), self)
         self.action_front_tubes.triggered.connect(self._open_front_tubes)
 
@@ -393,6 +413,7 @@ class MainWindow(QMainWindow):
         menu_file.addAction(self.action_cad_preview)
         menu_file.addAction(self.action_cad_registration)
         menu_file.addAction(self.action_niva_arms)
+        menu_file.addAction(self.action_joint_concept)
         menu_file.addAction(self.action_front_tubes)
         menu_file.addAction(self.action_rear_tube)
         menu_file.addAction(self.action_arm_concept)
@@ -983,6 +1004,9 @@ class MainWindow(QMainWindow):
         if self._weldment_dialog is not None and not self._weldment_dialog.confirm_close():
             event.ignore()
             return
+        if self._joint_concept_dialog is not None and not self._joint_concept_dialog.confirm_close():
+            event.ignore()
+            return
         if self._front_tubes_dialog is not None and not self._front_tubes_dialog.confirm_close():
             event.ignore()
             return
@@ -993,7 +1017,8 @@ class MainWindow(QMainWindow):
         weldment_stopped = self._weldment_dialog is None or self._weldment_dialog.shutdown()
         rear_stopped = self._rear_tube_dialog is None or self._rear_tube_dialog.shutdown()
         front_stopped = self._front_tubes_dialog is None or self._front_tubes_dialog.shutdown()
-        if not arm_stopped or not weldment_stopped or not rear_stopped or not front_stopped:
+        joint_stopped = self._joint_concept_dialog is None or self._joint_concept_dialog.shutdown()
+        if not arm_stopped or not weldment_stopped or not rear_stopped or not front_stopped or not joint_stopped:
             event.ignore()
             return
         self._save_settings()
