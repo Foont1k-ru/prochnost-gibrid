@@ -42,6 +42,7 @@ from .docks.diagnostics import DiagnosticsPanel
 from .docks.inspector import Inspector
 from .docks.project_tree import ProjectTree
 from .equilibrium_dialog import EquilibriumDialog
+from .niva_arms_dialog import NivaArmsDialog
 from .point_table_dialog import PointTableDialog
 from .snapshot_compare_dialog import SnapshotCompareDialog
 from .step_inventory_dialog import StepInventoryDialog
@@ -63,6 +64,7 @@ class MainWindow(QMainWindow):
         self.controller = controller or AppController(self)
         self._settings = settings or QSettings(str(settings_path()), QSettings.Format.IniFormat)
         self._syncing_view = False
+        self._niva_arms_dialog: NivaArmsDialog | None = None
         self._arm_concept_dialog: ArmConceptDialog | None = None
         self._weldment_dialog: WeldmentDialog | None = None
         self._theme = str(self._settings.value("view/theme", self.controller.project.view.theme))
@@ -136,6 +138,21 @@ class MainWindow(QMainWindow):
 
     def _open_cad_registration(self) -> None:
         CadRegistrationDialog(self.controller, self).exec()
+
+    def _open_niva_arms(self) -> None:
+        if self._niva_arms_dialog is None:
+            dialog = NivaArmsDialog(self.controller, self)
+            self._niva_arms_dialog = dialog
+            dialog.finished.connect(self._close_niva_arms)
+        self._niva_arms_dialog.show()
+        self._niva_arms_dialog.raise_()
+        self._niva_arms_dialog.activateWindow()
+
+    def _close_niva_arms(self, _result: int) -> None:
+        dialog = self._niva_arms_dialog
+        self._niva_arms_dialog = None
+        if dialog is not None:
+            dialog.deleteLater()
 
     def _open_arm_concept(self) -> None:
         if self._arm_concept_dialog is None:
@@ -235,6 +252,9 @@ class MainWindow(QMainWindow):
         self.action_cad_registration = QAction(tr("cad_registration.menu"), self)
         self.action_cad_registration.triggered.connect(self._open_cad_registration)
 
+        self.action_niva_arms = QAction(tr("niva_arms.menu"), self)
+        self.action_niva_arms.triggered.connect(self._open_niva_arms)
+
         self.action_arm_concept = QAction(tr("arm_concept.menu"), self)
         self.action_arm_concept.triggered.connect(self._open_arm_concept)
 
@@ -332,6 +352,7 @@ class MainWindow(QMainWindow):
         menu_file.addAction(self.action_step_inventory)
         menu_file.addAction(self.action_cad_preview)
         menu_file.addAction(self.action_cad_registration)
+        menu_file.addAction(self.action_niva_arms)
         menu_file.addAction(self.action_arm_concept)
         menu_file.addAction(self.action_weldment)
         menu_file.addAction(self.action_recover_autosave)
