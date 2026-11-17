@@ -677,7 +677,7 @@ class SketchDraftDialog(QDialog):
         QMessageBox.information(self, "Проверка контуров", text)
 
     def _undo(self) -> None:
-        if self.canvas.pending is not None:
+        if self.canvas.pending is not None or self.canvas.construction_indices:
             self.canvas.cancel()
             return
         self.canvas.draft.undo()
@@ -686,7 +686,7 @@ class SketchDraftDialog(QDialog):
         self.canvas.update()
 
     def _redo(self) -> None:
-        if self.canvas.pending is not None:
+        if self.canvas.pending is not None or self.canvas.construction_indices:
             self.canvas.cancel()
             return
         self.canvas.draft.redo()

@@ -421,3 +421,21 @@ def test_trim_circle_click_creates_arc_and_undo(qtbot):
     dialog._undo()
     assert tuple(canvas.draft.entities) == old
     dialog._saved = dialog._document()
+
+
+def test_undo_during_tangent_selection_cancels_selection_first(qtbot):
+    dialog = SketchDraftDialog()
+    qtbot.addWidget(dialog)
+    dialog.show()
+    canvas = dialog.canvas
+    for start, end in (((-40, 0), (40, 0)), ((0, -40), (0, 40))):
+        canvas.add_point(start)
+        canvas.add_point(end)
+    dialog.tool.setCurrentIndex(8)
+    qtbot.mouseClick(canvas, Qt.MouseButton.LeftButton, pos=canvas.to_screen((30, 0)).toPoint())
+    assert canvas.construction_indices == [0]
+    dialog._undo()
+    assert not canvas.construction_indices and len(canvas.draft.entities) == 2
+    dialog._undo()
+    assert len(canvas.draft.entities) == 1
+    dialog._saved = dialog._document()
