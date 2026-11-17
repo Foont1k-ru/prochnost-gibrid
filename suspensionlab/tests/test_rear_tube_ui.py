@@ -46,7 +46,9 @@ def test_rear_editor_live_bend_and_new_copy(qtbot, tmp_path, monkeypatch):
     p = c.project.rear.hardpoints['ll_out_l']
     c.move_point(p, (100, 10, 0))
     assert d._candidate is None and path.read_bytes() == original
+    d._baseline, d._saved_candidate = d._input_state(), None
     assert d.shutdown()
+    d.close()
 
 
 def test_input_changed_during_save_even_without_signal(qtbot, tmp_path, monkeypatch):
@@ -69,7 +71,9 @@ def test_input_changed_during_save_even_without_signal(qtbot, tmp_path, monkeypa
     assert warnings and not target.exists() and d._candidate['bend']['radius_mm'] == 25
     c.set_axle_type('rear', 'multilink_rear')
     assert d._candidate is None and d._three_d._document is None and not d._save.isEnabled()
+    d._baseline, d._saved_candidate = d._input_state(), None
     assert d.shutdown()
+    d.close()
 
 
 def test_close_confirmation_and_project_replacement(qtbot, monkeypatch):
