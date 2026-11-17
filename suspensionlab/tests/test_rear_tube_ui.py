@@ -292,3 +292,48 @@ def test_new_draft_confirms_unsaved_changes_and_resets_file(qtbot, tmp_path, mon
     assert d._candidate is not None and not d._has_unsaved() and source.read_bytes() == original
     assert d.shutdown()
     d.close()
+
+
+def test_pair_modes_keep_tube_identity_or_mirror_and_preserve_source(qtbot, tmp_path, monkeypatch):
+    c = controller()
+    for code, xyz in {'ll_in_r': (0., 0., 0.), 'll_out_r': (100., -100., 0.)}.items():
+        point = c.project.rear.hardpoints[code]
+        point.x, point.y, point.z = xyz
+    before = c.project.to_dict()
+    d = RearTubeDialog(c)
+    qtbot.addWidget(d)
+    d._arm.setCurrentIndex(d._arm.findData('rear_lower_left'))
+    d._bend.setChecked(True)
+    for field, text in zip(d._fields, ('100', '0', '0', '20'), strict=True):
+        field.setText(text)
+    assert not d._pair.isEnabled()
+    d._pair_mode.setCurrentIndex(d._pair_mode.findData('same'))
+    assert d._pair.isEnabled() and d._pair_roll.isEnabled()
+    d._pair.click()
+    assert d._arm.currentData() == 'rear_lower_right'
+    assert abs(float(d._fields[0].text())) < 1e-8 and float(d._fields[1].text()) == -100
+    assert d._has_unsaved() and d._candidate['arm'] == 'rear_lower_right'
+    path = tmp_path / 'right.kima'
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(path), ''))
+    d._save_copy()
+    assert read_document(path, 'assembly') == d._candidate
+    d._pair.click()
+    assert d._arm.currentData() == 'rear_lower_left' and float(d._fields[0].text()) == 100
+    d._pair_mode.setCurrentIndex(d._pair_mode.findData('mirror'))
+    assert not d._pair_roll.isEnabled()
+    d._pair.click()
+    assert d._arm.currentData() == 'rear_lower_right' and float(d._fields[0].text()) == 100
+    assert d._fields[1].text() in ('-0.0', '0.0')
+    assert c.project.to_dict() == before and not c.dirty
+    warnings = []
+    monkeypatch.setattr(QMessageBox, 'warning', lambda *args: warnings.append(args))
+    c.project.rear.hardpoints['ll_in_l'].y = 5
+    d._refresh()
+    state = d._input_state()
+    d._pair.click()
+    assert warnings and d._input_state() == state and d._arm.currentData() == 'rear_lower_right'
+    d._arm.setCurrentIndex(d._arm.findData('panhard'))
+    assert not d._pair.isEnabled() and not d._pair_mode.isEnabled()
+    d._baseline, d._saved_candidate = d._input_state(), None
+    assert d.shutdown()
+    d.close()

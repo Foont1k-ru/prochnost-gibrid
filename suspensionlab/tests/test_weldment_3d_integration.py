@@ -278,3 +278,34 @@ def test_front_right_reopened_tubes_rebuild_real_cad(qtbot, tmp_path, monkeypatc
     assert read_document(target, 'assembly')['bends']['rear']['radius_mm'] == 30
     assert source.read_bytes() == original
     d.close()
+
+
+def test_rear_pair_rebuilds_real_cad_before_save(qtbot, tmp_path, monkeypatch):
+    from suspensionlab.model.kim_format import read_document
+    from suspensionlab.ui.rear_tube_dialog import RearTubeDialog
+
+    c = AppController()
+    c.set_axle_type('rear', 'live_axle_coil')
+    for code, xyz in {'ll_in_l': (0, 0, 0), 'll_out_l': (100, 100, 0),
+                      'll_in_r': (0, 0, 0), 'll_out_r': (100, -100, 0)}.items():
+        point = c.project.rear.hardpoints[code]
+        point.x, point.y, point.z = xyz
+    d = RearTubeDialog(c)
+    qtbot.addWidget(d)
+    d.show()
+    d._arm.setCurrentIndex(d._arm.findData('rear_lower_left'))
+    d._bend.setChecked(True)
+    for field, value in zip(d._fields, ('100', '0', '0', '20'), strict=True):
+        field.setText(value)
+    d._three_d._enable.setChecked(True)
+    qtbot.waitUntil(lambda: d._three_d._view.mesh is not None, timeout=45000)
+    d._pair_mode.setCurrentIndex(d._pair_mode.findData('same'))
+    d._pair.click()
+    assert d._arm.currentData() == 'rear_lower_right'
+    assert d._three_d._view.mesh is None and not d._save.isEnabled()
+    qtbot.waitUntil(lambda: d._three_d._view.mesh is not None and d._save.isEnabled(), timeout=45000)
+    path = tmp_path / 'pair.kima'
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(path), ''))
+    d._save_copy()
+    assert read_document(path, 'assembly')['arm'] == 'rear_lower_right'
+    d.close()

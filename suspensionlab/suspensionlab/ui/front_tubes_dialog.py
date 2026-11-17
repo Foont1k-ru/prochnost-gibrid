@@ -90,6 +90,12 @@ class FrontTubesDialog(QDialog):
         layout.addLayout(form)
         self._bend_editor = BendEditor(body)
         layout.addWidget(self._bend_editor)
+        self._mirror = QPushButton(tr('front_pair.apply'), body)
+        self._mirror.clicked.connect(self._apply_mirror)
+        layout.addWidget(self._mirror)
+        pair_note = QLabel(tr('front_pair.note'), body)
+        pair_note.setWordWrap(True)
+        layout.addWidget(pair_note)
         self._status = QLabel(body)
         self._status.setWordWrap(True)
         layout.addWidget(self._status)
@@ -215,10 +221,31 @@ class FrontTubesDialog(QDialog):
             result['name'] = self._source['name']
         return result
 
+    def _apply_mirror(self) -> None:
+        candidate = self._candidate
+        if not self._active or candidate is None or not self._candidate_is_current(candidate):
+            self._refresh()
+            return
+        arm = candidate['arm']
+        other = arm.removesuffix('_left') + '_right' if arm.endswith('_left') else arm.removesuffix('_right') + '_left'
+        bends = {leg: {'vertex_mm': [bend['vertex_mm'][0], -bend['vertex_mm'][1], bend['vertex_mm'][2]],
+                       'radius_mm': bend['radius_mm']} for leg, bend in candidate['bends'].items()}
+        try:
+            paired = make_front_tube_arm(self.controller.project, other, candidate['radius_mm'],
+                                         candidate['wall_mm'], bends)
+        except (KimFormatError, ValueError, TypeError, OverflowError):
+            QMessageBox.warning(self, tr('front_tubes.title'), tr('front_pair.failed'))
+            return
+        with QSignalBlocker(self._arm):
+            self._arm.setCurrentIndex(self._arm.findData(paired['arm']))
+        self._bend_editor.load(paired['bends'])
+        self._refresh()
+
     def _refresh(self, *_args: object) -> None:
         self._revision += 1
         self._saved.clear()
         self._candidate = None
+        self._mirror.setEnabled(False)
         for widget in (self._arm, self._radius, self._wall):
             widget.setEnabled(self._active)
         self._bend_editor.set_editable(self._active)
@@ -237,6 +264,7 @@ class FrontTubesDialog(QDialog):
             self._update_edit_status()
             return
         self._candidate = candidate
+        self._mirror.setEnabled(self._active)
         for plan in self._plans:
             plan.set_view(view, paths=paths)
         self._three_d.set_document(candidate)

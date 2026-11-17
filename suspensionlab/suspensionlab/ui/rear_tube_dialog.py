@@ -29,6 +29,7 @@ from ..model.entities import Project
 from ..model.kim_format import KimFormatError, read_document, write_document
 from ..model.niva_arm_views import REAR, make_niva_arm_view
 from ..model.rear_tube import make_rear_tube, rear_tube_centerline, rear_tube_points, validate_rear_tube
+from ..model.rear_tube_pair import PAIRS, make_paired_rear_tube
 from .controller import AppController
 from .niva_arms_dialog import ArmPlan
 from .weldment_3d import Weldment3D
@@ -99,6 +100,22 @@ class RearTubeDialog(QDialog):
         note = QLabel(tr('rear_tube.bend_note'), body)
         note.setWordWrap(True)
         layout.addWidget(note)
+        pair_note = QLabel(tr('rear_pair.note'), body)
+        pair_note.setWordWrap(True)
+        layout.addWidget(pair_note)
+        pair_form = QFormLayout()
+        self._pair_mode = QComboBox(body)
+        self._pair_mode.addItem(tr('rear_pair.choose'), '')
+        self._pair_mode.addItem(tr('rear_pair.same'), 'same')
+        self._pair_mode.addItem(tr('rear_pair.mirror'), 'mirror')
+        self._pair_roll = self._number_field(body, '0', tr('rear_pair.roll'))
+        pair_form.addRow(tr('rear_pair.mode'), self._pair_mode)
+        pair_form.addRow(tr('rear_pair.roll'), self._pair_roll)
+        layout.addLayout(pair_form)
+        self._pair = QPushButton(tr('rear_pair.apply'), body)
+        self._pair.clicked.connect(self._apply_pair)
+        layout.addWidget(self._pair)
+        self._pair_mode.currentIndexChanged.connect(self._update_pair)
         self._status = QLabel(body)
         self._status.setWordWrap(True)
         layout.addWidget(self._status)
@@ -238,10 +255,44 @@ class RearTubeDialog(QDialog):
             result['name'] = self._source['name']
         return result
 
+    def _update_pair(self, *_args: object) -> None:
+        mode = self._pair_mode.currentData()
+        self._pair_roll.setEnabled(self._active and mode == 'same')
+        self._pair_mode.setEnabled(self._active and self._arm.currentData() in PAIRS)
+        self._pair.setEnabled(self._active and self._candidate is not None and
+                              self._arm.currentData() in PAIRS and mode in ('same', 'mirror'))
+
+    def _apply_pair(self) -> None:
+        candidate = self._candidate
+        if candidate is None or not self._active or not self._candidate_is_current(candidate):
+            self._refresh()
+            return
+        try:
+            mode = str(self._pair_mode.currentData())
+            roll = float(self._pair_roll.text().strip().replace(',', '.')) if mode == 'same' else 0.0
+            paired = make_paired_rear_tube(candidate, mode, roll)
+        except (KimFormatError, ValueError, TypeError, OverflowError):
+            QMessageBox.warning(self, tr('rear_pair.title'), tr('rear_pair.failed'))
+            return
+        widgets = [self._arm, self._bend, *self._fields]
+        blockers = [QSignalBlocker(widget) for widget in widgets]
+        try:
+            self._arm.setCurrentIndex(self._arm.findData(paired['arm']))
+            bend = paired['bend']
+            self._bend.setChecked(bend is not None)
+            if bend is not None:
+                for field, value in zip(self._fields, [*bend['vertex_mm'], bend['radius_mm']], strict=True):
+                    field.setText(str(value))
+        finally:
+            for blocker in blockers:
+                blocker.unblock()
+        self._refresh()
+
     def _refresh(self, *_args: object) -> None:
         self._revision += 1
         self._saved.clear()
         self._candidate = None
+        self._update_pair()
         for widget in (self._arm, self._radius, self._wall, self._bend):
             widget.setEnabled(self._active)
         for field in self._fields:
@@ -261,6 +312,7 @@ class RearTubeDialog(QDialog):
             self._update_edit_status()
             return
         self._candidate = candidate
+        self._update_pair()
         for plan in self._plans:
             plan.set_view(view, path)
         self._three_d.set_document(candidate)

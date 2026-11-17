@@ -148,3 +148,26 @@ def test_project_replacement_and_close_cancel_keep_loaded_edits(qtbot, tmp_path,
     monkeypatch.setattr(QMessageBox, 'question', lambda *args: QMessageBox.StandardButton.Yes)
     d.close()
     assert not d.isVisible()
+
+
+def test_pair_mirror_reflects_both_bends_and_keeps_project(qtbot):
+    c = controller()
+    before = c.project.to_dict()
+    d = FrontTubesDialog(c)
+    qtbot.addWidget(d)
+    d._arm.setCurrentIndex(d._arm.findData('front_upper_left'))
+    for leg, values in [('front', ('100', '0', '0', '20')), ('rear', ('100', '-100', '0', '25'))]:
+        d._bend_editor.checks[leg].setChecked(True)
+        for field, value in zip(d._bend_editor.fields[leg], values, strict=True):
+            field.setText(value)
+    original = d._candidate
+    assert original is not None and d._mirror.isEnabled()
+    d._mirror.click()
+    assert d._candidate['arm'] == 'front_upper_right'
+    assert d._candidate['bends']['rear']['vertex_mm'] == [100, 100, 0]
+    assert d._has_unsaved() and c.project.to_dict() == before
+    d._mirror.click()
+    assert d._candidate == original
+    d._bend_editor.fields['front'][1].setText('not yet')
+    assert not d._mirror.isEnabled() and d._candidate is None
+    clean_close(d)
