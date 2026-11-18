@@ -27,3 +27,14 @@ def validate_hole_depth(thickness: float, hole_depth: float, *, has_holes: bool 
         raise ValueError("Глубина глухих отверстий должна быть больше нуля и меньше толщины; 0 означает сквозные")
     if hole_depth > 0 and has_holes is False:
         raise ValueError("Для глухих отверстий нужны внутренние замкнутые контуры")
+
+
+def hole_entry_side(direction: str, side: str = "auto") -> str:
+    """Сторона входа — меньшая или большая координата нормальной оси."""
+    if direction not in ("positive", "negative", "symmetric"):
+        raise ValueError("Некорректное направление выдавливания")
+    if side == "auto":
+        return "positive" if direction == "negative" else "negative"
+    if side in ("negative", "positive"):
+        return side
+    raise ValueError("Некорректная сторона входа глухих отверстий")

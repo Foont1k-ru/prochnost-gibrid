@@ -410,3 +410,56 @@ def test_blind_arc_pocket_and_cad_mesh(tmp_path, cad):
     assert cad(target)[1] == pytest.approx(math.pi * 2500 * 10 - (75 * math.pi + 50) * 3, rel=1e-9)
     mesh = CadJob().run(target, 0.2)
     assert mesh.skipped_faces == 0 and mesh.face_count >= 5 and len(mesh.triangles) > 12
+
+
+@pytest.mark.parametrize("plane,axis", [("XY", 2), ("XZ", 1), ("YZ", 0)])
+@pytest.mark.parametrize("direction,start,end", [("positive", 12, 22), ("negative", 2, 12),
+                                                  ("symmetric", 7, 17)])
+@pytest.mark.parametrize("hole_side", ["negative", "positive"])
+def test_blind_entry_side_override_is_real_after_step_roundtrip(tmp_path, cad, plane, axis, direction, start, end, hole_side):
+    from OCP.BRepClass3d import BRepClass3d_SolidClassifier
+    from OCP.gp import gp_Pnt
+    from OCP.TopAbs import TopAbs_State
+
+    hole = make_entity("circle", (25, 25), (35, 25))
+    shape = doc((*rectangle_entities((0, 0), (100, 50)), hole), plane, 12)
+    target = tmp_path / "выбранная сторона.step"
+    SketchSolidJob().run(shape, 10, target, direction=direction, hole_depth=4, hole_side=hole_side)
+    solid, volume, bounds = cad(target)
+    assert (bounds[axis], bounds[axis + 3]) == pytest.approx((start, end), abs=1e-6)
+    assert volume == pytest.approx(50000 - 400 * math.pi, rel=1e-9)
+    def point(u, v, w):
+        return gp_Pnt(*((u, v, w) if plane == "XY" else (u, w, v) if plane == "XZ" else (w, u, v)))
+    for coordinate, expected in [(start + 1, TopAbs_State.TopAbs_OUT if hole_side == "negative" else TopAbs_State.TopAbs_IN),
+                                 (end - 1, TopAbs_State.TopAbs_OUT if hole_side == "positive" else TopAbs_State.TopAbs_IN)]:
+        assert BRepClass3d_SolidClassifier(solid, point(25, 25, coordinate), 1e-7).State() == expected
+        assert BRepClass3d_SolidClassifier(solid, point(50, 25, coordinate), 1e-7).State() == TopAbs_State.TopAbs_IN
+
+
+def test_blind_side_auto_and_invalid():
+    from suspensionlab.model.sketch_extrude_settings import hole_entry_side
+
+    assert hole_entry_side("positive") == "negative"
+    assert hole_entry_side("negative") == "positive"
+    assert hole_entry_side("symmetric") == "negative"
+    assert hole_entry_side("positive", "positive") == "positive"
+    with pytest.raises(ValueError, match="сторона"):
+        hole_entry_side("positive", "invalid")
+    with pytest.raises(ValueError, match="направление"):
+        hole_entry_side("invalid")
+
+
+def test_invalid_blind_side_does_not_create_step(tmp_path):
+    target = tmp_path / "bad.step"
+    with pytest.raises(SketchSolidError, match="сторона"):
+        SketchSolidJob().run(doc(rectangle_entities((0, 0), (10, 10))), 5, target, hole_side="wrong")
+    assert not target.exists()
+
+
+@pytest.mark.parametrize("side", ["negative", "positive"])
+def test_explicit_side_does_not_change_through_holes(tmp_path, cad, side):
+    hole = make_entity("circle", (25, 25), (35, 25))
+    shape = doc((*rectangle_entities((0, 0), (100, 50)), hole))
+    path = tmp_path / "through.step"
+    SketchSolidJob().run(shape, 10, path, hole_side=side)
+    assert cad(path)[1] == pytest.approx((5000 - 100 * math.pi) * 10)

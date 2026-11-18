@@ -10,7 +10,7 @@ from typing import Any
 from ..model.sketch_contours import check_contours
 from ..model.sketch_curves import NUMERIC_EPS_MM, distance, endpoints, point_at
 from ..model.sketch_draft import Entity, Point
-from ..model.sketch_extrude_settings import extrusion_limits, validate_hole_depth
+from ..model.sketch_extrude_settings import extrusion_limits, hole_entry_side, validate_hole_depth
 from ..model.sketch_io import SketchDocument, read_sketch
 
 
@@ -61,9 +61,11 @@ def ordered_contours(entities: tuple[Entity, ...]) -> tuple[tuple[tuple[Entity, 
     return tuple(result)
 
 
-def build_solid(document: SketchDocument, depth: float, direction: str = "positive", hole_depth: float = 0) -> Any:
+def build_solid(document: SketchDocument, depth: float, direction: str = "positive", hole_depth: float = 0,
+                hole_side: str = "auto") -> Any:
     """Тело OCCT с аналитическими рёбрами, без аппроксимации дуг сеткой."""
     start, end = extrusion_limits(document.offset_mm, depth, direction)
+    entry_side = hole_entry_side(direction, hole_side)
     if document.plane not in ("XY", "XZ", "YZ"):
         raise ValueError("Некорректная плоскость")
     contours = ordered_contours(document.entities)
@@ -174,8 +176,7 @@ def build_solid(document: SketchDocument, depth: float, direction: str = "positi
     if expected <= 1e-12 or not math.isclose(props.Mass(), expected, rel_tol=1e-8, abs_tol=1e-8):
         raise ValueError("Не удалось корректно вычесть отверстия")
     # Through holes use a single face. Blind pockets cut the outer prism from
-    # the sketch-facing side (positive/negative), or from the negative side
-    # for the symmetric mode. All pockets share one explicit depth.
+    # the chosen side of the normal axis. All pockets share one depth and side.
     vec = gp_Vec(*(x * (end - start) for x in normal))
     base_face = faces[outer[0]] if hole_depth > 0 else builder.Face()
     prism = BRepPrimAPI_MakePrism(base_face, vec, True)
@@ -186,8 +187,9 @@ def build_solid(document: SketchDocument, depth: float, direction: str = "positi
         for i, pocket_face in enumerate(faces):
             if i == outer[0]:
                 continue
-            # The negative extrusion starts at the sketch plane (upper face).
-            shift = depth - hole_depth if direction == "negative" else 0.
+            # A cutter starting at the lower coordinate removes inward from
+            # that side; the shifted cutter removes inward from the upper side.
+            shift = depth - hole_depth if entry_side == "positive" else 0.
             if shift:
                 transform = gp_Trsf()
                 transform.SetTranslation(gp_Vec(*(x * shift for x in normal)))
@@ -219,12 +221,13 @@ def build_solid(document: SketchDocument, depth: float, direction: str = "positi
     return solid
 
 
-def write_step(document: SketchDocument, depth: float, output: Path, direction: str = "positive", hole_depth: float = 0) -> None:
+def write_step(document: SketchDocument, depth: float, output: Path, direction: str = "positive", hole_depth: float = 0,
+               hole_side: str = "auto") -> None:
     from OCP.IFSelect import IFSelect_ReturnStatus
     from OCP.Interface import Interface_Static
     from OCP.STEPControl import STEPControl_AsIs, STEPControl_Writer
 
-    solid = build_solid(document, depth, direction, hole_depth)
+    solid = build_solid(document, depth, direction, hole_depth, hole_side)
     writer = STEPControl_Writer()
     if not Interface_Static.SetCVal_s("write.step.unit", "MM"):
         raise ValueError("Не удалось задать единицы STEP в миллиметрах")
@@ -236,13 +239,13 @@ def write_step(document: SketchDocument, depth: float, output: Path, direction: 
 
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
-    if len(args) not in (4, 5, 6):
+    if len(args) not in (4, 5, 6, 7):
         return 2
     source, output, report = (Path(x) for x in args[:3])
     try:
         document = read_sketch(source)
         write_step(document, float(args[3]), output, args[4] if len(args) >= 5 else "positive",
-                   float(args[5]) if len(args) == 6 else 0)
+                   float(args[5]) if len(args) >= 6 else 0, args[6] if len(args) == 7 else "auto")
         report.write_text(json.dumps({"status": "ok"}), encoding="utf-8")
         return 0
     except (ImportError, OSError):

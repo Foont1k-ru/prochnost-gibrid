@@ -52,7 +52,7 @@ from ..model.sketch_draft import (
     rectangle_entities,
 )
 from ..model.sketch_dxf import SketchDxfError, write_new_dxf
-from ..model.sketch_extrude_settings import validate_hole_depth
+from ..model.sketch_extrude_settings import hole_entry_side, validate_hole_depth
 from ..model.sketch_extrusion import extrusion_mesh
 from ..model.sketch_io import SUFFIX, SketchDocument, SketchIOError, read_sketch, write_new_sketch
 
@@ -750,15 +750,25 @@ class SketchDraftDialog(QDialog):
         self.hole_depth.setToolTip("0 — сквозные; положительная глубина меньше толщины — глухие. "
                                    "Все отверстия имеют одну глубину. Для симметрии вход с отрицательной стороны оси.")
         extrusion_options.addWidget(self.hole_depth)
-        depth_help = QLabel("Одинаковая глубина; при симметрии вход с −стороны оси")
-        depth_help.setToolTip("Глухие отверстия открываются со стороны плоскости эскиза; "
-                              "при симметричном выдавливании — с отрицательной стороны оси.")
-        extrusion_options.addWidget(depth_help)
+        extrusion_options.addWidget(QLabel("Вход глухих:"))
+        self.hole_side = QComboBox()
+        self.hole_side.addItem("Авто", "auto")
+        self.hole_side.addItem("− ось", "negative")
+        self.hole_side.addItem("+ ось", "positive")
+        self.hole_side.setToolTip("С какой поверхности детали идут все глухие отверстия. "
+                                  "Авто: со стороны эскиза, для симметрии — с отрицательной стороны оси. "
+                                  "При сквозных отверстиях выбор не влияет на результат.")
+        self.hole_side.setEnabled(False)
+        extrusion_options.addWidget(self.hole_side)
         extrusion_options.addStretch(1)
         layout.addLayout(extrusion_options)
         row = QHBoxLayout()
         self.plane = QComboBox()
         self.plane.addItems(["XY", "XZ", "YZ"])
+        self.plane.currentIndexChanged.connect(self._update_hole_side_labels)
+        self.extrusion_direction.currentIndexChanged.connect(self._update_hole_side_labels)
+        self.hole_depth.valueChanged.connect(self._update_hole_side_labels)
+        self._update_hole_side_labels()
         row.addWidget(QLabel("Плоскость:"))
         row.addWidget(self.plane)
         self.plane_offset = QDoubleSpinBox()
@@ -1002,6 +1012,15 @@ class SketchDraftDialog(QDialog):
         self._message("Окружность добавлена; касание не связано с последующим изменением отрезков")
         self.canvas.update()
 
+    def _update_hole_side_labels(self, *_args: object) -> None:
+        axis = {"XY": "Z", "XZ": "Y", "YZ": "X"}[self.plane.currentText()]
+        direction = str(self.extrusion_direction.currentData())
+        auto_sign = "+" if hole_entry_side(direction) == "positive" else "−"
+        self.hole_side.setItemText(0, f"Авто: {auto_sign}{axis}")
+        self.hole_side.setItemText(1, f"Со стороны −{axis}")
+        self.hole_side.setItemText(2, f"Со стороны +{axis}")
+        self.hole_side.setEnabled(self.hole_depth.value() > 0)
+
     def _export_solid_step(self) -> None:
         from .sketch_solid_dialog import SketchSolidDialog
 
@@ -1036,7 +1055,8 @@ class SketchDraftDialog(QDialog):
         if not destination.suffix:
             destination = destination.with_suffix(".step")
         progress = SketchSolidDialog(self._document(), depth, destination, self,
-                                     direction=str(self.extrusion_direction.currentData()), hole_depth=self.hole_depth.value())
+                                     direction=str(self.extrusion_direction.currentData()), hole_depth=self.hole_depth.value(),
+                                     hole_side=str(self.hole_side.currentData()))
         progress.start()
         progress.exec()
         progress.worker.wait()  # thread must be fully finished before Qt ownership is released
@@ -1093,7 +1113,8 @@ class SketchDraftDialog(QDialog):
         try:
             with TemporaryDirectory(prefix="sketch-preview-") as directory:
                 progress = SketchSolidDialog(self._document(), depth, Path(directory) / "preview.step", self,
-                                             direction=str(self.extrusion_direction.currentData()), hole_depth=self.hole_depth.value())
+                                             direction=str(self.extrusion_direction.currentData()), hole_depth=self.hole_depth.value(),
+                                             hole_side=str(self.hole_side.currentData()))
                 progress.start()
                 progress.exec()
                 progress.worker.wait()
