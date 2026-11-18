@@ -632,6 +632,8 @@ def test_cad_projection_rejects_stale_results_and_can_close(qtbot, monkeypatch):
     monkeypatch.setattr(d, '_confirm_close', lambda: True)
     d._saved = deepcopy(d.document)
     view = d.cad_views
+    d.tabs.setCurrentWidget(view)
+    d.show()
     assert not view.enable.isChecked() and view.canvas.projection is None
     view.enable.setChecked(True)
     view._timer.stop()
@@ -646,6 +648,7 @@ def test_cad_projection_rejects_stale_results_and_can_close(qtbot, monkeypatch):
         released.set()
     qtbot.waitUntil(lambda: results == ['x', 'z'] and view.canvas.projection is not None, timeout=5000)
     assert 'Актуально' in view.status.text()
+    assert not view.canvas.grab().isNull()
     view.enable.setChecked(False)
     assert view.canvas.projection is None and 'Выключено' in view.status.text()
     d._saved = deepcopy(d.document)
