@@ -174,7 +174,7 @@ def _assembly(data: Any) -> None:
 
         validate_rear_joint_layout(data)
         return
-    if isinstance(data, dict) and data.get("version") in ("0.9", "0.12"):
+    if isinstance(data, dict) and data.get("version") in ("0.9", "0.12", "0.13", "0.14"):
         from .front_joint_layout import validate_front_joint_layout
 
         validate_front_joint_layout(data)
@@ -374,7 +374,7 @@ def inspect_assembly_arm_sources(document: dict[str, Any]) -> dict[str, str]:
     'no_scheme' — схемы в сборке нет. Никакого перестроения не происходит.
     """
     _assembly(document)
-    if document["version"] in ("0.4", "0.5", "0.6", "0.7", "0.8", "0.9", "0.10", "0.11", "0.12"):
+    if document["version"] in ("0.4", "0.5", "0.6", "0.7", "0.8", "0.9", "0.10", "0.11", "0.12", "0.13", "0.14"):
         raise KimFormatError("source inspection is only supported for embedded lower arm parts")
     scheme = Project.from_dict(document["scheme"]) if document["scheme"] is not None else None
     result: dict[str, str] = {}

@@ -299,7 +299,9 @@ def run_cad_check() -> None:
     ball = make_joint_concept("ball", DEFAULTS["ball"])
     bushing = make_joint_concept("bushing", DEFAULTS["bushing"])
     layouts = [make_front_joint_layout(make_front_pair_snapshot(arm), ball, bushing),
-               make_front_joint_layout(make_front_same_pair(arm), ball, bushing)]
+               make_front_joint_layout(make_front_same_pair(arm), ball, bushing),
+               make_front_joint_layout(make_front_pair_snapshot(arm), ball, bushing, axis="x"),
+               make_front_joint_layout(make_front_same_pair(arm), ball, bushing, axis="x")]
     rear = Project.create_default()
     rear.rear.type_code, rear.rear.layout = "live_axle_coil", "4link_panhard"
     rear.rear.ensure_points(overwrite=True)

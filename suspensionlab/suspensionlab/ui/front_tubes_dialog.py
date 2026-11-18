@@ -27,7 +27,12 @@ from PySide6.QtWidgets import (
 from ..i18n import tr
 from ..model.autosave_guard import same_project_file
 from ..model.entities import Project
-from ..model.front_joint_layout import make_front_joint_layout, validate_front_joint_layout
+from ..model.front_joint_layout import (
+    LAYOUT_VERSIONS,
+    front_bushing_axis,
+    make_front_joint_layout,
+    validate_front_joint_layout,
+)
 from ..model.front_pair_snapshot import front_pair_sides, make_front_pair_snapshot, mirror_front_tube_arm
 from ..model.front_same_pair import front_same_pair_sides, make_front_same_pair
 from ..model.front_tube_arm import (
@@ -122,6 +127,13 @@ class FrontTubesDialog(QDialog):
         mirror_note = QLabel(tr('front_pair.preview'), body)
         mirror_note.setWordWrap(True)
         layout.addWidget(mirror_note)
+        axis_form = QFormLayout()
+        self._bushing_axis = QComboBox(body)
+        for axis in ('x', 'y', 'z'):
+            self._bushing_axis.addItem(tr(f'front_joint_layout.axis_{axis}'), axis)
+        axis_form.addRow(tr('front_joint_layout.axis'), self._bushing_axis)
+        layout.addLayout(axis_form)
+        self._axis_baseline = 'x'
         joint_note = QLabel(tr('front_joint_layout.note'), body)
         joint_note.setWordWrap(True)
         layout.addWidget(joint_note)
@@ -177,6 +189,7 @@ class FrontTubesDialog(QDialog):
         self._radius.textChanged.connect(self._refresh)
         self._wall.textChanged.connect(self._refresh)
         self._pair_mode.currentIndexChanged.connect(self._refresh)
+        self._bushing_axis.currentIndexChanged.connect(self._refresh)
         self._bend_editor.changed.connect(self._refresh)
         self._three_d.availabilityChanged.connect(self._update_save)
         self._pair_3d.availabilityChanged.connect(self._update_save)
@@ -206,17 +219,19 @@ class FrontTubesDialog(QDialog):
         self._joint_baseline = self._joint_state()
         self._update_joint_labels()
         self._pending_project_changes = False
-        widgets = [self._arm, self._radius, self._wall, self._pair_mode]
+        widgets = [self._arm, self._radius, self._wall, self._pair_mode, self._bushing_axis]
         blockers = [QSignalBlocker(widget) for widget in widgets]
         try:
             self._arm.setCurrentIndex(0)
             self._pair_mode.setCurrentIndex(self._pair_mode.findData('mirror'))
+            self._bushing_axis.setCurrentIndex(self._bushing_axis.findData('x'))
             self._radius.setText('12')
             self._wall.setText('2')
             self._bend_editor.load({})
         finally:
             for blocker in blockers:
                 blocker.unblock()
+        self._axis_baseline = 'x'
         self._source_label.setText(tr('front_tubes.new'))
         self._baseline = self._input_state()
         self._pair_baseline = str(self._pair_mode.currentData())
@@ -234,7 +249,7 @@ class FrontTubesDialog(QDialog):
             path = Path(selected).absolute()
             resolved = path.resolve()
             document = read_document(path, 'assembly')
-            layout_document = document if document['version'] in ('0.9', '0.12') else None
+            layout_document = document if document['version'] in LAYOUT_VERSIONS else None
             if layout_document is not None:
                 validate_front_joint_layout(layout_document)
                 pair_document = layout_document['pair']
@@ -263,9 +278,11 @@ class FrontTubesDialog(QDialog):
         self._joint_baseline = self._joint_state()
         self._update_joint_labels()
         self._pending_project_changes = False
-        widgets = [self._arm, self._radius, self._wall, self._pair_mode]
+        widgets = [self._arm, self._radius, self._wall, self._pair_mode, self._bushing_axis]
         blockers = [QSignalBlocker(widget) for widget in widgets]
         try:
+            axis = front_bushing_axis(layout_document) if layout_document else 'x'
+            self._bushing_axis.setCurrentIndex(self._bushing_axis.findData(axis))
             self._arm.setCurrentIndex(self._arm.findData(document['arm']))
             self._pair_mode.setCurrentIndex(self._pair_mode.findData(
                 'same' if pair_document and pair_document['version'] == '0.11' else 'mirror'))
@@ -275,6 +292,7 @@ class FrontTubesDialog(QDialog):
         finally:
             for blocker in blockers:
                 blocker.unblock()
+        self._axis_baseline = str(self._bushing_axis.currentData())
         self._source_label.setText(tr('front_tubes.source', path=str(path), name=document['name']))
         self._baseline = self._input_state()
         self._pair_baseline = str(self._pair_mode.currentData())
@@ -397,7 +415,7 @@ class FrontTubesDialog(QDialog):
         self._saved.clear()
         self._candidate = None
         self._mirror.setEnabled(False)
-        for widget in (self._arm, self._radius, self._wall, self._pair_mode, *self._joint_buttons.values()):
+        for widget in (self._arm, self._radius, self._wall, self._pair_mode, self._bushing_axis, *self._joint_buttons.values()):
             widget.setEnabled(self._active)
         self._bend_editor.set_editable(self._active)
         self._activate.setVisible(self._source is not None)
@@ -437,7 +455,7 @@ class FrontTubesDialog(QDialog):
         self._pair_3d.set_document(snapshot)
         if self._joint_docs['ball'] is not None and self._joint_docs['bushing'] is not None:
             try:
-                layout_doc = make_front_joint_layout(snapshot, self._joint_docs['ball'], self._joint_docs['bushing'])
+                layout_doc = self._make_layout(snapshot, self._joint_docs['ball'], self._joint_docs['bushing'])
                 self._layout_3d.set_document(layout_doc)
             except (KimFormatError, ValueError, TypeError, OverflowError):
                 self._layout_3d.set_document(None)
@@ -455,7 +473,7 @@ class FrontTubesDialog(QDialog):
 
     def _input_state(self) -> tuple[Any, ...]:
         return (self._arm.currentData(), self._radius.text(), self._wall.text(), self._bend_editor.state(),
-                self._pair_mode.currentData())
+                self._pair_mode.currentData(), self._bushing_axis.currentData())
 
     def _has_unsaved(self) -> bool:
         pair_changed = str(self._pair_mode.currentData()) != self._pair_baseline
@@ -467,7 +485,8 @@ class FrontTubesDialog(QDialog):
             except (KimFormatError, ValueError, TypeError, OverflowError):
                 pair_changed = True
         return (self._baseline is not None and (self._input_state() != self._baseline or pair_changed or
-                self._joint_state() != self._joint_baseline or self._pending_project_changes or
+                self._joint_state() != self._joint_baseline or
+                str(self._bushing_axis.currentData()) != self._axis_baseline or self._pending_project_changes or
                 (self._active and self._saved_candidate is not None and self._saved_candidate != self._candidate)))
 
     def _update_edit_status(self) -> None:
@@ -508,6 +527,12 @@ class FrontTubesDialog(QDialog):
         except (KimFormatError, ValueError, TypeError, OverflowError):
             return False
 
+    def _make_layout(self, pair: dict[str, Any], ball: dict[str, Any], bushing: dict[str, Any]) -> dict[str, Any]:
+        axis = str(self._bushing_axis.currentData())
+        # Preserve the exact old representation and its Y orientation until explicitly changed.
+        legacy = self._saved_layout is not None and self._saved_layout['version'] in ('0.9', '0.12')
+        return make_front_joint_layout(pair, ball, bushing, axis=None if legacy and axis == 'y' else axis)
+
     def _layout_is_current(self, layout: dict[str, Any]) -> bool:
         if self._candidate is None or not self._candidate_is_current(self._candidate):
             return False
@@ -515,7 +540,7 @@ class FrontTubesDialog(QDialog):
         if ball is None or bushing is None:
             return False
         try:
-            return make_front_joint_layout(self._make_pair(self._candidate), ball, bushing) == layout
+            return self._make_layout(self._make_pair(self._candidate), ball, bushing) == layout
         except (KimFormatError, ValueError, TypeError, OverflowError):
             return False
 
@@ -635,6 +660,7 @@ class FrontTubesDialog(QDialog):
         self._saved_pair = layout['pair']
         self._pair_baseline = str(self._pair_mode.currentData())
         self._saved_layout = layout
+        self._axis_baseline = str(self._bushing_axis.currentData())
         self._joint_baseline = self._joint_state()
         self._pending_project_changes = False
         self._update_edit_status()

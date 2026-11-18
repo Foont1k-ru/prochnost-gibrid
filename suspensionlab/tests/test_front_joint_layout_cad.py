@@ -93,3 +93,45 @@ def test_fine_mesh_increases_curved_surface_detail_without_changing_document():
     assert len(fine.triangles) > len(coarse.triangles)
     assert len(fine.triangles) < 100_000 and fine.skipped_faces == 0
     assert doc == before
+
+
+@pytest.mark.parametrize('same', [False, True])
+@pytest.mark.parametrize('axis', [None, 'x', 'y', 'z'])
+def test_bushing_cylinders_have_selected_vehicle_axis(same, axis):
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.GeomAbs import GeomAbs_SurfaceType
+    from OCP.TopoDS import TopoDS
+
+    from suspensionlab.model.front_same_pair import make_front_same_pair
+
+    p = Project.create_default()
+    for code, xyz in {'uca_f_in': (0, 0, 0), 'uca_r_in': (0, -100, 0), 'ubj': (100, 100, 30)}.items():
+        point = p.front.hardpoints[code]
+        point.x, point.y, point.z = xyz
+    arm = make_front_tube_arm(p, 'front_upper_left', 10, 2)
+    pair = make_front_same_pair(arm) if same else make_front_pair_snapshot(arm)
+    doc = make_front_joint_layout(pair, make_joint_concept('ball', DEFAULTS['ball']),
+                                  make_joint_concept('bushing', DEFAULTS['bushing']), axis=axis)
+    shape = build_front_joint_layout_preview(doc)
+    solids, exp = [], TopExp_Explorer(shape, TopAbs_ShapeEnum.TopAbs_SOLID)
+    while exp.More():
+        solids.append(exp.Current())
+        exp.Next()
+    expected = {'x': (1, 0, 0), 'y': (0, 1, 0), 'z': (0, 0, 1)}[axis or 'y']
+    # Inspect cylindrical surfaces in both housing and pin, at all four pivots.
+    for arm_index in range(2):
+        for pivot_index in range(2):
+            for solid in solids[4 + arm_index * 6 + pivot_index * 2:6 + arm_index * 6 + pivot_index * 2]:
+                faces = TopExp_Explorer(solid, TopAbs_ShapeEnum.TopAbs_FACE)
+                cylinders = 0
+                while faces.More():
+                    surface = BRepAdaptor_Surface(TopoDS.Face(faces.Current()))
+                    if surface.GetType() == GeomAbs_SurfaceType.GeomAbs_Cylinder:
+                        direction = surface.Cylinder().Axis().Direction()
+                        assert tuple(abs(v) for v in (direction.X(), direction.Y(), direction.Z())) == pytest.approx(expected, abs=1e-7)
+                        cylinders += 1
+                    faces.Next()
+                assert cylinders
+    if axis == 'x':
+        mesh = WeldmentCadJob().run(doc)
+        assert len(mesh.triangles) and mesh.skipped_faces == mesh.recovered_faces == 0

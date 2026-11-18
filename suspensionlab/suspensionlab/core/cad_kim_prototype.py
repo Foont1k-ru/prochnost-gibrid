@@ -92,7 +92,7 @@ def build_part(document: dict[str, Any]) -> Any:
 def build_assembly(document: dict[str, Any]) -> Any:
     """Создаёт соединение перенесённых экземпляров, не связывая их со схемой."""
     _assembly(document)
-    if document["version"] in ("0.2", "0.3", "0.4", "0.5", "0.6", "0.7", "0.8", "0.9", "0.10", "0.11", "0.12"):
+    if document["version"] in ("0.2", "0.3", "0.4", "0.5", "0.6", "0.7", "0.8", "0.9", "0.10", "0.11", "0.12", "0.13", "0.14"):
         raise ValueError("incomplete weldment: use the explicitly partial tube preview")
     from OCP.BRep import BRep_Builder
     from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
@@ -275,7 +275,7 @@ def build_front_joint_layout_preview(document: dict[str, Any]) -> Any:
     from OCP.gp import gp_Ax1, gp_Dir, gp_Pnt, gp_Trsf, gp_Vec
     from OCP.TopoDS import TopoDS_Compound
 
-    from ..model.front_joint_layout import validate_front_joint_layout
+    from ..model.front_joint_layout import front_bushing_axis, validate_front_joint_layout
     from ..model.front_pair_snapshot import front_pair_sides
     from ..model.front_same_pair import front_same_pair_sides
     from ..model.front_tube_arm import front_tube_arm_points
@@ -286,14 +286,18 @@ def build_front_joint_layout_preview(document: dict[str, Any]) -> Any:
     builder.Add(compound, build_front_pair_preview(document['pair']))
     ball, bushing = build_joint_preview(document['ball']), build_joint_preview(document['bushing'])
     # Joints are independent conditional placeholders, not transformed attachments.
-    sides = (front_same_pair_sides(document['pair']) if document['version'] == '0.12'
+    sides = (front_same_pair_sides(document['pair']) if document['pair']['version'] == '0.11'
              else front_pair_sides(document['pair']))
+    axis = front_bushing_axis(document)
     for arm in sides:
         points = front_tube_arm_points(arm)
         for index, point in enumerate(points):
             transform = gp_Trsf()
-            if index < 2:
-                # Local joint +Z -> vehicle +Y. Bushing is axially symmetric.
+            if index < 2 and axis == 'x':
+                # Local joint +Z -> vehicle +X (longitudinal).
+                transform.SetRotation(gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(0, 1, 0)), math.pi/2)
+            elif index < 2 and axis == 'y':
+                # Old formats retain +Y, transverse to the vehicle.
                 transform.SetRotation(gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(1, 0, 0)), -math.pi/2)
             transform.SetTranslationPart(gp_Vec(*point))
             shape = bushing if index < 2 else ball

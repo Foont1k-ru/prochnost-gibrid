@@ -1,4 +1,5 @@
 """Схема и частичный CAD передних труб; сохранение безопасной копии."""
+import pytest
 from PySide6.QtCore import QSettings, QSignalBlocker
 from PySide6.QtWidgets import QFileDialog, QMessageBox
 
@@ -326,7 +327,7 @@ def test_front_load_joints_save_layout_reopen_and_edit(qtbot, tmp_path, monkeypa
     monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(layout_path), ''))
     d._save_layout_copy()
     saved = read_document(layout_path, 'assembly')
-    assert saved['version'] == '0.9' and saved['ball'] == ball and saved['bushing'] == bush
+    assert saved['version'] == '0.13' and saved['axis'] == 'x' and saved['ball'] == ball and saved['bushing'] == bush
     assert not d._has_unsaved()
     assert d.shutdown()
     d.close()
@@ -475,7 +476,7 @@ def test_front_pair_mode_race_and_existing_layout_remain_unsaved(qtbot, tmp_path
     d._save_layout_copy()
     assert not d._has_unsaved()
     d._pair_mode.setCurrentIndex(d._pair_mode.findData('same'))
-    assert d._layout_3d._document['version'] == '0.12' and d._save_layout.isEnabled()
+    assert d._layout_3d._document['version'] == '0.14' and d._save_layout.isEnabled()
     pair = tmp_path / 'pair.kima'
     monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(pair), ''))
     d._save_pair_copy()
@@ -511,12 +512,12 @@ def test_same_front_layout_save_open_edit_and_keep_sources(qtbot, tmp_path, monk
         inputs.append((path, path.read_bytes()))
         monkeypatch.setattr(QFileDialog, 'getOpenFileName', lambda *args, path=path: (str(path), ''))
         d._load_joint(kind)
-    assert d._layout_3d._document['version'] == '0.12' and d._save_layout.isEnabled()
+    assert d._layout_3d._document['version'] == '0.14' and d._save_layout.isEnabled()
     target = tmp_path / 'same-layout.kima'
     monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(target), ''))
     d._save_layout_copy()
     doc = read_document(target, 'assembly')
-    assert doc['version'] == '0.12' and doc['pair']['version'] == '0.11' and not d._has_unsaved()
+    assert doc['version'] == '0.14' and doc['axis'] == 'x' and doc['pair']['version'] == '0.11' and not d._has_unsaved()
     original = target.read_bytes()
     assert d.shutdown()
     d.close()
@@ -539,5 +540,55 @@ def test_same_front_layout_save_open_edit_and_keep_sources(qtbot, tmp_path, monk
     d._save_layout_copy()
     assert read_document(updated, 'assembly')['pair']['source']['radius_mm'] == 13 and not d._has_unsaved()
     assert all(path.read_bytes() == data for path, data in inputs) and c.project.to_dict() == before
+    assert d.shutdown()
+    d.close()
+
+
+@pytest.mark.parametrize('same', [False, True])
+def test_old_layout_axis_is_preserved_until_changed_and_saved_as_copy(qtbot, tmp_path, monkeypatch, same):
+    from suspensionlab.model.front_joint_layout import make_front_joint_layout
+    from suspensionlab.model.front_pair_snapshot import make_front_pair_snapshot
+    from suspensionlab.model.front_same_pair import make_front_same_pair
+    from suspensionlab.model.front_tube_arm import make_front_tube_arm
+    from suspensionlab.model.joint_concept import DEFAULTS, make_joint_concept
+
+    c = controller()
+    arm = make_front_tube_arm(c.project, 'front_upper_left', 10, 2)
+    pair = make_front_same_pair(arm) if same else make_front_pair_snapshot(arm)
+    legacy = make_front_joint_layout(pair, make_joint_concept('ball', DEFAULTS['ball']),
+                                     make_joint_concept('bushing', DEFAULTS['bushing']))
+    source = tmp_path / 'old.kima'
+    write_document(source, 'assembly', legacy, overwrite=False)
+    original = source.read_bytes()
+    d = FrontTubesDialog(c)
+    qtbot.addWidget(d)
+    monkeypatch.setattr(QFileDialog, 'getOpenFileName', lambda *args: (str(source), ''))
+    d._open_file()
+    assert d._bushing_axis.currentData() == 'y' and d._layout_3d._document == legacy
+    assert not d._bushing_axis.isEnabled() and not d._has_unsaved()
+    d._start_preview()
+    assert d._layout_3d._document == legacy and not d._has_unsaved()
+    d._bushing_axis.setCurrentIndex(d._bushing_axis.findData('x'))
+    assert d._has_unsaved() and d._layout_3d._document['axis'] == 'x'
+    assert d._layout_3d._document['version'] == ('0.14' if same else '0.13')
+    pair_path = tmp_path / 'pair.kima'
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(pair_path), ''))
+    d._save_pair_copy()
+    assert d._has_unsaved()  # Pair does not contain bushing axis.
+    warnings = []
+    monkeypatch.setattr(QMessageBox, 'warning', lambda *args: warnings.append(args))
+    target = tmp_path / 'new.kima'
+    def changed_in_modal(*args):
+        with QSignalBlocker(d._bushing_axis):
+            d._bushing_axis.setCurrentIndex(d._bushing_axis.findData('z'))
+        return str(target), ''
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', changed_in_modal)
+    d._save_layout_copy()
+    assert warnings and not target.exists()
+    d._refresh()
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(target), ''))
+    d._save_layout_copy()
+    assert read_document(target, 'assembly')['axis'] == 'z' and not d._has_unsaved()
+    assert source.read_bytes() == original
     assert d.shutdown()
     d.close()

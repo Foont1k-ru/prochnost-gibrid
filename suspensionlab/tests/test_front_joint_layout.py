@@ -62,3 +62,33 @@ def test_same_layout_format_and_strict_pair_version(tmp_path):
         mutation(invalid)
         with pytest.raises(KimFormatError):
             write_document(tmp_path / 'invalid.kima', 'assembly', invalid, overwrite=False)
+
+
+@pytest.mark.parametrize('same,version', [(False, '0.13'), (True, '0.14')])
+@pytest.mark.parametrize('axis', ['x', 'y', 'z'])
+def test_explicit_axis_roundtrip_and_strict_validation(tmp_path, same, version, axis):
+    from suspensionlab.model.front_joint_layout import front_bushing_axis
+    from suspensionlab.model.front_same_pair import make_front_same_pair
+
+    old = layout()
+    if same:
+        p = Project.create_default()
+        for code, xyz in {'uca_f_in': (0, 0, 0), 'uca_r_in': (0, -100, 0), 'ubj': (100, 100, 0)}.items():
+            point = p.front.hardpoints[code]
+            point.x, point.y, point.z = xyz
+        pair = make_front_same_pair(make_front_tube_arm(p, 'front_upper_left', 10, 2))
+    else:
+        pair = old['pair']
+    doc = make_front_joint_layout(pair, old['ball'], old['bushing'], axis=axis)
+    assert doc['version'] == version and front_bushing_axis(doc) == axis
+    path = tmp_path / 'layout.kima'
+    write_document(path, 'assembly', doc, overwrite=False)
+    assert read_document(path, 'assembly') == doc
+    for mutate in (lambda d: d.pop('axis'), lambda d: d.update(axis='tube'),
+                   lambda d: d.update(algorithm='front-joint-layout-v1'),
+                   lambda d: d.update(extra='unexpected')):
+        broken = deepcopy(doc)
+        mutate(broken)
+        with pytest.raises(KimFormatError):
+            write_document(tmp_path / 'bad.kima', 'assembly', broken, overwrite=False)
+    assert front_bushing_axis(old) == 'y'
