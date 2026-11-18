@@ -492,16 +492,21 @@ def test_front_layout_embedded_joints_real_3d_and_copy(qtbot, tmp_path, monkeypa
     d._radius.setText('13')
     assert d._layout_3d._view.mesh is None and not d._save_layout.isEnabled()
     qtbot.waitUntil(lambda: d._layout_3d._view.mesh is not None and d._save_layout.isEnabled(), timeout=45000)
+    d._bushing_axis.setCurrentIndex(d._bushing_axis.findData('z'))
+    assert d._layout_3d._view.mesh is None and not d._save_layout.isEnabled()
+    qtbot.waitUntil(lambda: d._layout_3d._view.mesh is not None and d._save_layout.isEnabled(), timeout=45000)
     path = tmp_path / 'layout.kima'
     monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(path), ''))
     d._save_layout_copy()
-    assert read_document(path, 'assembly')['version'] == '0.9'
+    saved = read_document(path, 'assembly')
+    assert saved['version'] == '0.13' and saved['axis'] == 'z'
     assert d.shutdown()
     d.close()
     d = FrontTubesDialog(c)
     qtbot.addWidget(d)
     monkeypatch.setattr(QFileDialog, 'getOpenFileName', lambda *args: (str(path), ''))
     d._open_file()
+    assert d._bushing_axis.currentData() == 'z'
     d._layout_3d._enable.setChecked(True)
     qtbot.waitUntil(lambda: d._layout_3d._view.mesh is not None, timeout=45000)
     assert not d._save_layout.isEnabled()
@@ -613,7 +618,8 @@ def test_front_same_layout_3d_save_and_reopen(qtbot, tmp_path, monkeypatch):
     target = tmp_path / 'same-layout.kima'
     monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(target), ''))
     d._save_layout_copy()
-    assert read_document(target, 'assembly')['version'] == '0.12'
+    saved = read_document(target, 'assembly')
+    assert saved['version'] == '0.14' and saved['axis'] == 'x'
     assert d.shutdown()
     d.close()
     d = FrontTubesDialog(c)
