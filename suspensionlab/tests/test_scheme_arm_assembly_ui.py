@@ -810,6 +810,77 @@ def test_snapshot_code_updates_even_for_equal_boolean_and_number(qtbot):
     d.close()
 
 
+def test_compare_and_copy_snapshot_code_without_cad(qtbot):
+    from PySide6.QtWidgets import QApplication
+
+    from suspensionlab.model.assembly_snapshot_fingerprint import assembly_snapshot_fingerprint
+
+    c = AppController()
+    doc = make_doc(c)
+    d = SchemeArmAssemblyDialog(c, doc)
+    qtbot.addWidget(d)
+    d._saved = deepcopy(d.document)
+    view = d.cad_views
+    before = deepcopy(d.document)
+    code = assembly_snapshot_fingerprint(doc)
+    assert not view.enable.isChecked() and view.copy_code.isEnabled()
+    view.copy_code.click()
+    assert QApplication.clipboard().text() == code
+    assert 'устареет' in view.comparison_status.text()
+    view.comparison_input.setText('  ' + code.upper() + '  ')
+    assert not view.comparison_status.text()
+    view.compare_code.click()
+    assert 'Коды совпадают' in view.comparison_status.text()
+    assert 'не содержимое SVG' in view.comparison_status.text()
+    other = ('0' if code[0] != '0' else '1') + code[1:]
+    view.comparison_input.setText(other)
+    assert not view.comparison_status.text()
+    view.compare_code.click()
+    assert 'Коды различаются' in view.comparison_status.text()
+    for bad in ('', code[:63], code + '0', code[:10] + ' ' + code[10:], 'а' + code[1:]):
+        view.comparison_input.setText(bad)
+        view.compare_code.click()
+        assert '64 шестнадцатеричных' in view.comparison_status.text()
+    assert d.document == before and not c.dirty
+    d.close()
+
+
+def test_compare_snapshot_code_rejects_stale_document_and_clears_result(qtbot):
+    from PySide6.QtWidgets import QApplication
+
+    from suspensionlab.model.assembly_snapshot_fingerprint import assembly_snapshot_fingerprint
+
+    c = AppController()
+    d = SchemeArmAssemblyDialog(c, make_doc(c))
+    qtbot.addWidget(d)
+    d._saved = deepcopy(d.document)
+    view = d.cad_views
+    original = deepcopy(d.document)
+    code = assembly_snapshot_fingerprint(original)
+    view.comparison_input.setText(code)
+    view.compare_code.click()
+    assert 'Коды совпадают' in view.comparison_status.text()
+    # Even if Python treats True and 1 as equal, the current-document guard
+    # rejects a changed fingerprint before the widgets are refreshed.
+    d.document['scheme']['front_axle']['arb']['enabled'] = 1
+    assert d.document == original
+    view.compare_code.click()
+    assert 'изменился' in view.comparison_status.text()
+    QApplication.clipboard().setText('unchanged')
+    view.copy_code.click()
+    assert QApplication.clipboard().text() == 'unchanged'
+    d._saved = deepcopy(d.document)
+    d._show_document()
+    assert not view.comparison_status.text()
+    view.compare_code.click()
+    assert 'Коды различаются' in view.comparison_status.text()
+    view.copy_code.click()
+    assert QApplication.clipboard().text() == assembly_snapshot_fingerprint(d.document)
+    d.close()
+    view._compare_snapshot_code()
+    assert 'недоступен' in view.comparison_status.text()
+
+
 def test_export_refuses_equal_but_differently_fingerprinted_snapshot(qtbot, tmp_path, monkeypatch):
     from suspensionlab.core.cad_assembly_projection_job import CadAssemblyProjection
 
