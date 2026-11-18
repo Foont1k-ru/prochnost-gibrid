@@ -10,13 +10,15 @@ from PySide6.QtWidgets import QCheckBox, QLabel, QPushButton, QVBoxLayout, QWidg
 
 from ..core.cad_assembly_projection_job import CadAssemblyProjection, CadAssemblyProjectionJob
 from ..core.cad_transport import CadPreviewError
+from ..model.cad_projection_layout import ProjectionLayout, format_reference_length, projection_layout
 
 
 class ProjectionCanvas(QWidget):
     def __init__(self, parent: QWidget) -> None:
         super().__init__(parent)
         self.projection: CadAssemblyProjection | None = None
-        self.setMinimumHeight(240)
+        self.dimensions_enabled = True
+        self.setMinimumSize(600, 280)
 
     def paintEvent(self, _event: object) -> None:
         painter = QPainter(self)
@@ -26,25 +28,64 @@ class ProjectionCanvas(QWidget):
             return
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         width = self.width() / 3
-        for index, (title, lines) in enumerate(zip(('XY: +X →, +Y ↑', 'XZ: +X →, +Z ↑', 'YZ: +Y →, +Z ↑'),
-                                                   projection.views, strict=True)):
+        for index, (plane, title, lines) in enumerate(zip(
+                ('XY', 'XZ', 'YZ'), ('XY: +X →, +Y ↑', 'XZ: +X →, +Z ↑', 'YZ: +Y →, +Z ↑'),
+                projection.views, strict=True)):
             left = width * index
             painter.setPen(QColor('#303840'))
             painter.drawText(QRectF(left + 4, 2, width - 8, 25), int(Qt.AlignmentFlag.AlignLeft), title)
-            xs = [value for a, _, b, _ in lines for value in (a, b)]
-            ys = [value for _, a, _, b in lines for value in (a, b)]
-            xmin, xmax, ymin, ymax = min(xs), max(xs), min(ys), max(ys)
-            avail_w, avail_h = max(1., width - 20), max(1., self.height() - 50.)
-            scale = min(avail_w / max(xmax - xmin, 1.), avail_h / max(ymax - ymin, 1.))
-            cx, cy = (xmin + xmax) / 2, (ymin + ymax) / 2
+            frame = projection_layout(projection.bounds_mm, plane, width, float(self.height()))
             painter.save()
             painter.setClipRect(QRectF(left, 27, width, self.height() - 27))
             painter.setPen(QPen(QColor('#254b70'), 1.3))
             for x1, y1, x2, y2 in lines:
-                painter.drawLine(QLineF(left + width / 2 + (x1 - cx) * scale, 27 + avail_h / 2 - (y1 - cy) * scale,
-                                        left + width / 2 + (x2 - cx) * scale, 27 + avail_h / 2 - (y2 - cy) * scale))
+                a, b = frame.screen(x1, y1), frame.screen(x2, y2)
+                painter.drawLine(QLineF(left + a[0], a[1], left + b[0], b[1]))
+            if self.dimensions_enabled:
+                self._draw_dimensions(painter, frame, left, width)
             painter.restore()
         painter.end()
+
+
+    def set_dimensions_enabled(self, enabled: bool) -> None:
+        self.dimensions_enabled = enabled
+        self.update()
+
+    def _draw_dimensions(self, painter: QPainter, frame: ProjectionLayout, left: float, width: float) -> None:
+        """Показывает общие габариты CAD-тел, не размеры деталей или отверстий."""
+        x1, ybottom = frame.screen(frame.u_min, frame.v_min)
+        x2, ytop = frame.screen(frame.u_max, frame.v_max)
+        x1, x2 = left + x1, left + x2
+        dim_y, dim_x = ybottom + 13., x1 - 13.
+        painter.setPen(QPen(QColor('#9b5016'), 1.0))
+        # Extension lines end at the CAD bounding box, including hidden geometry.
+        for x in (x1, x2):
+            painter.drawLine(QLineF(x, ybottom + 2., x, dim_y + 3.))
+        for y in (ytop, ybottom):
+            painter.drawLine(QLineF(dim_x - 3., y, x1 - 2., y))
+        painter.drawLine(QLineF(x1, dim_y, x2, dim_y))
+        painter.drawLine(QLineF(dim_x, ytop, dim_x, ybottom))
+        # Arrowheads, kept small enough for narrow projected spans.
+        arrow_h = min(5., max(0., (x2 - x1) / 3.))
+        arrow_v = min(5., max(0., (ybottom - ytop) / 3.))
+        for dy in (-2., 2.):
+            painter.drawLine(QLineF(x1, dim_y, x1 + arrow_h, dim_y + dy))
+            painter.drawLine(QLineF(x2, dim_y, x2 - arrow_h, dim_y + dy))
+        for dx in (-2., 2.):
+            painter.drawLine(QLineF(dim_x, ytop, dim_x + dx, ytop + arrow_v))
+            painter.drawLine(QLineF(dim_x, ybottom, dim_x + dx, ybottom - arrow_v))
+        u_axis, v_axis = frame.plane[0], frame.plane[1]
+        u_size, v_size = format_reference_length(frame.width_mm), format_reference_length(frame.height_mm)
+        u_prefix, v_prefix = ('' if u_size.startswith('<') else '≈ '), ('' if v_size.startswith('<') else '≈ ')
+        painter.drawText(QRectF(left + 2., dim_y + 3., width - 4., 19.),
+                         int(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop),
+                         f'{u_axis} {u_prefix}{u_size} мм')
+        painter.save()
+        painter.translate(dim_x - 7., (ytop + ybottom) / 2.)
+        painter.rotate(-90.)
+        painter.drawText(QRectF(-(self.height() - 50.) / 2., -10., self.height() - 50., 18.),
+                         int(Qt.AlignmentFlag.AlignCenter), f'{v_axis} {v_prefix}{v_size} мм')
+        painter.restore()
 
 
 class _ProjectionReader(QThread):
@@ -93,6 +134,12 @@ class CadAssemblyProjectionView(QWidget):
         layout.addWidget(self.status)
         self.canvas = ProjectionCanvas(self)
         layout.addWidget(self.canvas, 1)
+        self.show_dimensions = QCheckBox('Размерные линии габаритов — справочно')
+        self.show_dimensions.setChecked(True)
+        self.show_dimensions.setToolTip('Границы всех предварительных CAD-тел, в том числе скрытых; '
+                                        'не допуски и не размеры для изготовления.')
+        self.show_dimensions.toggled.connect(self.canvas.set_dimensions_enabled)
+        layout.addWidget(self.show_dimensions)
         self.bounds = QLabel()
         self.bounds.setWordWrap(True)
         self.bounds.setTextFormat(Qt.TextFormat.PlainText)
@@ -147,7 +194,7 @@ class CadAssemblyProjectionView(QWidget):
         self.canvas.projection = result
         self.canvas.update()
         bounds = result.bounds_mm
-        rows = [f'{axis}: {bounds[i + 3] - bounds[i]:.1f} '
+        rows = [f'{axis}: {format_reference_length(bounds[i + 3] - bounds[i])} '
                 f'(от {bounds[i]:.1f} до {bounds[i + 3]:.1f})'
                 for i, axis in enumerate(('X', 'Y', 'Z'))]
         self.bounds.setText('Справочные габариты CAD-тел, мм (в осях кузова; округление 0,1 мм):\n'

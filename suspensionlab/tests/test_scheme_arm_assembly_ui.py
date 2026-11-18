@@ -651,7 +651,16 @@ def test_cad_projection_rejects_stale_results_and_can_close(qtbot, monkeypatch):
     assert 'Актуально' in view.status.text()
     assert 'X: 2.0' in view.bounds.text() and 'Y: 3.0' in view.bounds.text()
     assert 'Z: 4.0' in view.bounds.text() and 'не допуски' in view.bounds.text()
-    assert not view.canvas.grab().isNull()
+    assert view.show_dimensions.isChecked() and view.canvas.dimensions_enabled
+    dimension_image = view.canvas.grab().toImage()
+    assert not dimension_image.isNull()
+    token, projection = view.generation, view.canvas.projection
+    view.show_dimensions.setChecked(False)
+    assert not view.canvas.dimensions_enabled and view.canvas.projection is projection
+    assert view.generation == token and results == ['x', 'z']
+    assert dimension_image != view.canvas.grab().toImage()
+    view.show_dimensions.setChecked(True)
+    assert view.canvas.dimensions_enabled and view.generation == token
     view.enable.setChecked(False)
     assert view.canvas.projection is None and not view.bounds.text() and 'Выключено' in view.status.text()
     d._saved = deepcopy(d.document)
