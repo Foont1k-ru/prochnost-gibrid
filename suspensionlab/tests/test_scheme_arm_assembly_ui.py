@@ -590,6 +590,8 @@ def test_background_views_discard_old_results_and_track_document(qtbot, monkeypa
     assert 'Передняя труба' in d.views.dimensions.toPlainText()
     d.views.shutdown()
     assert d.three_d.shutdown()
+    d._saved = deepcopy(d.document)
+    d.close()
 
 
 def test_views_shutdown_ignores_pending(qtbot):
@@ -600,3 +602,5 @@ def test_views_shutdown_ignores_pending(qtbot):
     d.views._start()
     assert d.views._future is None and d.views._closed
     assert d.three_d.shutdown()
+    d._saved = deepcopy(d.document)
+    d.close()
