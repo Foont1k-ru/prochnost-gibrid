@@ -141,7 +141,7 @@ class MainWindow(QMainWindow):
         SketchDraftDialog(self).exec()
 
     def _open_scheme_arm_part(self) -> None:
-        from ..model.kim_format import SCHEME_ARM_PART_VERSION, KimFormatError, read_document
+        from ..model.kim_format import SCHEME_ARM_PART_VERSIONS, KimFormatError, read_document
         from .kim_scheme_arm_dialog import KimSchemeArmDialog
 
         selected, _ = QFileDialog.getOpenFileName(self, "Открыть схему и заготовку .kim", "", "Деталь KIM (*.kim)")
@@ -149,7 +149,7 @@ class MainWindow(QMainWindow):
             return
         try:
             document = read_document(selected, "part")
-            if document["version"] != SCHEME_ARM_PART_VERSION:
+            if document["version"] not in SCHEME_ARM_PART_VERSIONS:
                 raise KimFormatError("unsupported part version")
             dialog = KimSchemeArmDialog(self.controller, document, Path(selected), self)
         except (KimFormatError, OSError, TypeError, ValueError, OverflowError):

@@ -123,3 +123,55 @@ def test_legacy_rebuild_and_assembly_cannot_silently_drop_or_misversion_scheme()
     with pytest.raises(KimFormatError):
         make_assembly("Сборка", [doc], [{"id": "one", "part_id": "arm", "translation_mm": [0, 0, 0]}], project)
     assert doc == old
+
+
+@pytest.mark.parametrize("axis", ["x", "y", "z"])
+def test_two_bushing_housings_persist_and_follow_explicit_rebuild(tmp_path, axis):
+    from suspensionlab.model.kim_format import make_assembly, rebuild_lower_arm_prototype, set_scheme_arm_bushings
+
+    p = Project.create_default()
+    legacy = make_scheme_arm_part("arm", "Рычаг", p, 12, 2)
+    parameters = {"axis": axis, "outer_radius_mm": 14., "bore_radius_mm": 7., "length_mm": 24.}
+    doc = set_scheme_arm_bushings(legacy, parameters)
+    parameters['axis'] = 'changed externally'
+    assert legacy['version'] == '0.3' and doc['version'] == '0.4' and doc['bushings']['axis'] == axis
+    path = tmp_path / 'arm.kim'
+    write_document(path, 'part', doc, overwrite=False)
+    old = deepcopy(doc)
+    p.front.hardpoints['lca_f_in'].x += 15
+    updated = rebuild_scheme_arm_part(doc, p)
+    assert updated['bushings'] == old['bushings'] and compare_lower_arm_source(updated, p)
+    assert updated['geometry']['source'] != old['geometry']['source']
+    assert doc == old and read_document(path, 'part') == old
+    no_bushings = set_scheme_arm_bushings(updated, None)
+    assert no_bushings['version'] == '0.3' and 'bushings' not in no_bushings
+    with pytest.raises(KimFormatError):
+        rebuild_lower_arm_prototype(doc, p)
+    with pytest.raises(KimFormatError):
+        make_assembly('assembly', [doc], [{'id': 'one', 'part_id': 'arm', 'translation_mm': [0, 0, 0]}])
+    p.front.type_code = 'macpherson_front'
+    with pytest.raises(KimFormatError):
+        rebuild_scheme_arm_part(doc, p)
+    assert doc == old
+
+
+@pytest.mark.parametrize('change', [
+    lambda b: b.update(axis='tube'), lambda b: b.update(axis=None), lambda b: b.update(axis=['x']),
+    lambda b: b.update(outer_radius_mm=7.05), lambda b: b.update(bore_radius_mm=0),
+    lambda b: b.update(length_mm=501), lambda b: b.update(length_mm=True),
+    lambda b: b.update(length_mm=float('nan')), lambda b: b.update(extra=1), lambda b: b.pop('axis'),
+])
+def test_invalid_bushings_do_not_mutate_document_or_file(tmp_path, change):
+    from suspensionlab.model.kim_format import set_scheme_arm_bushings
+
+    base = make_scheme_arm_part('arm', 'Рычаг', Project.create_default(), 12, 2)
+    bushings = {'axis': 'x', 'outer_radius_mm': 14, 'bore_radius_mm': 7, 'length_mm': 24}
+    doc = set_scheme_arm_bushings(base, bushings)
+    path = tmp_path / 'old.kim'
+    write_document(path, 'part', doc, overwrite=False)
+    original = path.read_bytes()
+    invalid = deepcopy(bushings)
+    change(invalid)
+    with pytest.raises(KimFormatError):
+        set_scheme_arm_bushings(doc, invalid)
+    assert read_document(path, 'part') == doc and path.read_bytes() == original

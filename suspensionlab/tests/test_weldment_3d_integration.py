@@ -653,3 +653,38 @@ def test_quality_selection_real_cad_rebuilds_preview(qtbot):
     assert len(panel._view.mesh.triangles) > coarse_count
     assert panel._document == doc and panel.shutdown()
     panel.close()
+
+
+def test_scheme_part_housings_real_3d_rebuild_and_reopen(qtbot, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    from suspensionlab.model.kim_format import make_scheme_arm_part, read_document, set_scheme_arm_bushings
+    from suspensionlab.ui.kim_scheme_arm_dialog import KimSchemeArmDialog
+
+    c = AppController()
+    doc = set_scheme_arm_bushings(make_scheme_arm_part('arm', 'Рычаг', c.project, 12, 2),
+                                   {'axis': 'x', 'outer_radius_mm': 14, 'bore_radius_mm': 7, 'length_mm': 24})
+    d = KimSchemeArmDialog(c, doc, tmp_path / 'original.kim')
+    qtbot.addWidget(d)
+    d.three_d._enable.setChecked(True)
+    assert not d.save_copy.isEnabled()
+    qtbot.waitUntil(lambda: d.three_d._view.mesh is not None and d.save_copy.isEnabled(), timeout=45000)
+    point = c.project.front.hardpoints['lca_f_in']
+    c.move_point(point, (point.x + 20, point.y, point.z))
+    monkeypatch.setattr(QMessageBox, 'question', lambda *args: QMessageBox.StandardButton.Yes)
+    d._apply_current_scheme()
+    assert d.three_d._view.mesh is None and not d.save_copy.isEnabled()
+    qtbot.waitUntil(lambda: d.three_d._view.mesh is not None and d.save_copy.isEnabled(), timeout=45000)
+    target = tmp_path / 'saved.kim'
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(target), ''))
+    d._save_copy()
+    saved = read_document(target, 'part')
+    assert saved['version'] == '0.4' and saved['bushings']['axis'] == 'x'
+    assert d.three_d.shutdown()
+    d.close()
+    reopened = KimSchemeArmDialog(c, saved, target)
+    qtbot.addWidget(reopened)
+    reopened.three_d._enable.setChecked(True)
+    qtbot.waitUntil(lambda: reopened.three_d._view.mesh is not None and reopened.save_copy.isEnabled(), timeout=45000)
+    assert reopened.three_d.shutdown()
+    reopened.close()

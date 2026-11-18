@@ -86,6 +86,20 @@ def build_part(document: dict[str, Any]) -> Any:
                 raise RuntimeError("could not build prototype tube")
             rod = cut.Shape()
         builder.Add(compound, rod)
+    if document.get("version") == "0.4" and document.get("format") == "kim-part":
+        # Independent hollow housing solids, centred on the two inner pivots.
+        data = document["bushings"]
+        bush_dir = {"x": (1, 0, 0), "y": (0, 1, 0), "z": (0, 0, 1)}[data["axis"]]
+        length = float(data["length_mm"])
+        for point in points[:2]:
+            origin = [float(point[i]) - length * bush_dir[i] / 2 for i in range(3)]
+            axis = gp_Ax2(gp_Pnt(*origin), gp_Dir(*bush_dir))
+            outside = BRepPrimAPI_MakeCylinder(axis, float(data["outer_radius_mm"]), length).Shape()
+            bore = BRepPrimAPI_MakeCylinder(axis, float(data["bore_radius_mm"]), length).Shape()
+            cut = BRepAlgoAPI_Cut(outside, bore)
+            if not cut.IsDone() or cut.Shape().IsNull():
+                raise RuntimeError("could not build bushing housing")
+            builder.Add(compound, cut.Shape())
     return compound
 
 

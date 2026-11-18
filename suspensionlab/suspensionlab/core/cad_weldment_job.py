@@ -21,6 +21,7 @@ class WeldmentCadJob:
         if self._job.is_cancelled():
             raise CadPreviewError("cancelled")
         with tempfile.TemporaryDirectory(prefix="suspension-weldment-") as directory:
-            source = Path(directory) / "snapshot.kima"
-            write_document(source, "assembly", document, overwrite=False)
+            kind = "part" if document.get("format") == "kim-part" else "assembly"
+            source = Path(directory) / ("snapshot.kim" if kind == "part" else "snapshot.kima")
+            write_document(source, kind, document, overwrite=False)
             return self._job.run(source, deviation, timeout=60, mode="weldment")

@@ -14,6 +14,7 @@ from .cad_kim_prototype import (
     build_front_joint_layout_preview,
     build_front_pair_preview,
     build_joint_preview,
+    build_part,
     build_rear_joint_layout_preview,
     build_rear_pair_preview,
     build_rear_tube_preview,
@@ -30,16 +31,23 @@ def create_mesh(path: Path, deviation: float) -> tuple[np.ndarray, int]:
     if not math.isfinite(deviation) or not 0.2 <= deviation <= 20:
         raise CadWorkerError("deviation")
     try:
-        from OCP.BRep import BRep_Tool
         from OCP.BRepCheck import BRepCheck_Analyzer
-        from OCP.BRepMesh import BRepMesh_IncrementalMesh
-        from OCP.TopAbs import TopAbs_ShapeEnum
-        from OCP.TopExp import TopExp_Explorer
-        from OCP.TopLoc import TopLoc_Location
-        from OCP.TopoDS import TopoDS
     except (ImportError, OSError) as error:
         raise CadWorkerError("missing_cad") from error
-    doc = read_document(path, "assembly")
+    if path.suffix.lower() == ".kim":
+        doc = read_document(path, "part")
+        if doc["version"] != "0.4":
+            raise CadWorkerError("no_shape")
+        shape = build_part(doc)
+    else:
+        doc = read_document(path, "assembly")
+        shape = _build_assembly_preview(doc)
+    if shape.IsNull() or not BRepCheck_Analyzer(shape).IsValid():
+        raise CadWorkerError("no_shape")
+    return _mesh_shape(shape, deviation)
+
+
+def _build_assembly_preview(doc):
     if doc["version"] == "0.10":
         shape = build_rear_joint_layout_preview(doc)
     elif doc["version"] in ("0.9", "0.12", "0.13", "0.14"):
@@ -56,8 +64,17 @@ def create_mesh(path: Path, deviation: float) -> tuple[np.ndarray, int]:
         shape = build_front_arm_tubes_preview(doc)
     else:
         shape = build_weldment_tubes_preview(doc)
-    if shape.IsNull() or not BRepCheck_Analyzer(shape).IsValid():
-        raise CadWorkerError("no_shape")
+    return shape
+
+
+def _mesh_shape(shape, deviation: float) -> tuple[np.ndarray, int]:
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepMesh import BRepMesh_IncrementalMesh
+    from OCP.TopAbs import TopAbs_ShapeEnum
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopLoc import TopLoc_Location
+    from OCP.TopoDS import TopoDS
+
     angular_deviation = 0.25 if deviation <= 0.5 else 0.7
     mesher = BRepMesh_IncrementalMesh(shape, deviation, False, angular_deviation, False)
     if not mesher.IsDone():

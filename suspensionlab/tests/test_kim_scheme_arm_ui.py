@@ -197,3 +197,118 @@ def test_failed_3d_blocks_saving_until_explicitly_disabled(qtbot, tmp_path, monk
     dialog.three_d._enable.setChecked(False)
     assert dialog.save_copy.isEnabled()  # without CAD validation, as explicitly indicated
     assert dialog.three_d.shutdown()
+
+
+def test_bushing_parameter_validation_keeps_dialog_open(qtbot, monkeypatch):
+    from PySide6.QtWidgets import QWidget
+
+    from suspensionlab.ui.kim_scheme_arm_dialog import BushingParametersDialog
+
+    parent = QWidget()
+    qtbot.addWidget(parent)
+    d = BushingParametersDialog(None, parent)
+    qtbot.addWidget(d)
+    d.show()
+    assert d.axis.currentData() == 'x'
+    warnings = []
+    monkeypatch.setattr(QMessageBox, 'warning', lambda *args: warnings.append(args))
+    d.fields['bore_radius_mm'].setText('15')
+    d.accept()
+    assert warnings and d.isVisible()
+    d.fields['bore_radius_mm'].setText('7,5')
+    d.accept()
+    assert not d.isVisible() and d.values()['bore_radius_mm'] == 7.5
+
+
+def test_add_edit_remove_bushings_and_reopen_without_changing_source(qtbot, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QDialog
+
+    from suspensionlab.ui.kim_scheme_arm_dialog import BushingParametersDialog
+
+    c = AppController()
+    doc = make_scheme_arm_part('arm', 'Рычаг', c.project, 12, 2)
+    source, target = tmp_path / 'source.kim', tmp_path / 'copy.kim'
+    write_document(source, 'part', doc, overwrite=False)
+    initial_bytes = source.read_bytes()
+    d = KimSchemeArmDialog(c, doc, source)
+    qtbot.addWidget(d)
+    def accept(dialog):
+        assert dialog.axis.currentData() == 'x'
+        dialog.fields['length_mm'].setText('31.123456789')
+        return QDialog.DialogCode.Accepted
+    monkeypatch.setattr(BushingParametersDialog, 'exec', accept)
+    d._edit_bushings()
+    assert d.document['version'] == '0.4' and d.document['bushings']['axis'] == 'x'
+    assert d.document['bushings']['length_mm'] == 31.123456789 and d.document != d._saved
+    assert d.three_d._document == d.document and source.read_bytes() == initial_bytes
+    monkeypatch.setattr(QMessageBox, 'question', lambda *args: QMessageBox.StandardButton.No)
+    assert not d._confirm_close()
+    changed = c.project.front.hardpoints['lca_f_in']
+    c.move_point(changed, (changed.x + 20, changed.y, changed.z))
+    monkeypatch.setattr(QMessageBox, 'question', lambda *args: QMessageBox.StandardButton.Yes)
+    d._apply_current_scheme()
+    assert d.document['bushings']['length_mm'] == 31.123456789
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(target), ''))
+    d._save_copy()
+    saved = read_document(target, 'part')
+    assert saved == d.document and source.read_bytes() == initial_bytes
+    assert d.three_d.shutdown()
+    d.close()
+    d = KimSchemeArmDialog(c, saved, target)
+    qtbot.addWidget(d)
+    assert d.three_d._document == saved and d.remove_bushings.isEnabled()
+    d._remove_bushings()
+    assert d.document['version'] == '0.3' and 'bushings' not in d.document
+    assert read_document(target, 'part') == saved and d.document != d._saved
+    assert d.three_d.shutdown()
+    d.close()
+
+
+def test_bushing_dialog_rejects_races_and_invalid_inputs(qtbot, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QDialog
+
+    from suspensionlab.ui.kim_scheme_arm_dialog import BushingParametersDialog
+
+    c = AppController()
+    doc = make_scheme_arm_part('arm', 'Рычаг', c.project, 12, 2)
+    d = KimSchemeArmDialog(c, doc, tmp_path / 'source.kim')
+    qtbot.addWidget(d)
+    warnings = []
+    monkeypatch.setattr(QMessageBox, 'warning', lambda *args: warnings.append(args))
+    def invalid(dialog):
+        dialog.fields['length_mm'].setText('0')
+        return QDialog.DialogCode.Accepted
+    monkeypatch.setattr(BushingParametersDialog, 'exec', invalid)
+    d._edit_bushings()
+    assert warnings and d.document == doc
+    def race(dialog):
+        d.document['name'] = 'Изменено во время диалога'
+        return QDialog.DialogCode.Accepted
+    monkeypatch.setattr(BushingParametersDialog, 'exec', race)
+    d._edit_bushings()
+    assert len(warnings) == 2 and d.document['version'] == '0.3'
+    d._saved = d.document
+    assert d.three_d.shutdown()
+    d.close()
+
+
+def test_menu_opens_scheme_part_with_bushings(qtbot, tmp_path, monkeypatch):
+    from suspensionlab.model.kim_format import set_scheme_arm_bushings
+
+    c = AppController()
+    window = MainWindow(c, QSettings(str(tmp_path / 'settings.ini'), QSettings.Format.IniFormat))
+    qtbot.addWidget(window)
+    path = tmp_path / 'new.kim'
+    doc = set_scheme_arm_bushings(make_scheme_arm_part('arm', 'Рычаг', c.project, 12, 2),
+                                   {'axis': 'x', 'outer_radius_mm': 14, 'bore_radius_mm': 7, 'length_mm': 24})
+    write_document(path, 'part', doc, overwrite=False)
+    monkeypatch.setattr(QFileDialog, 'getOpenFileName', lambda *args: (str(path), ''))
+    opened = []
+    def open_dialog(dialog):
+        opened.append(dialog.document)
+        assert dialog.three_d.shutdown()
+        return 0
+    monkeypatch.setattr(KimSchemeArmDialog, 'exec', open_dialog)
+    window.action_scheme_arm_part.trigger()
+    assert opened == [doc] and not c.dirty
+    window.close()

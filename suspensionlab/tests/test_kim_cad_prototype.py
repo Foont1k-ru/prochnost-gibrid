@@ -275,3 +275,54 @@ def test_scheme_part_reopens_in_isolated_cad_preview_worker(tmp_path):
     mesh = WeldmentCadJob().run(preview, deviation=0.2)
     assert mesh.face_count >= 8 and mesh.skipped_faces == mesh.recovered_faces == 0
     assert len(mesh.triangles) > 20
+
+
+@pytest.mark.parametrize('axis', ['x', 'y', 'z'])
+def test_scheme_arm_bushing_housings_axis_center_volume_and_mesh_after_rebuild(tmp_path, axis):
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.GeomAbs import GeomAbs_SurfaceType
+    from OCP.TopAbs import TopAbs_ShapeEnum
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    from suspensionlab.core.cad_weldment_job import WeldmentCadJob
+    from suspensionlab.model.entities import Project
+    from suspensionlab.model.kim_format import make_scheme_arm_part, rebuild_scheme_arm_part, set_scheme_arm_bushings
+
+    p = Project.create_default()
+    for code, coords in {'lca_f_in': (10, 20, 30), 'lca_r_in': (110, 0, 40), 'lbj': (0, 100, 60)}.items():
+        point = p.front.hardpoints[code]
+        point.x, point.y, point.z = coords
+    doc = set_scheme_arm_bushings(make_scheme_arm_part('arm', 'Рычаг', p, 10, 2),
+                                  {'axis': axis, 'outer_radius_mm': 14, 'bore_radius_mm': 7, 'length_mm': 24})
+    source = tmp_path / 'housing.kim'
+    write_document(source, 'part', doc, overwrite=False)
+    p.front.hardpoints['lca_f_in'].x += 50
+    updated = rebuild_scheme_arm_part(read_document(source, 'part'), p)
+    shape = build_part(updated)
+    assert BRepCheck_Analyzer(shape).IsValid()
+    explorer, solids = TopExp_Explorer(shape, TopAbs_ShapeEnum.TopAbs_SOLID), []
+    while explorer.More():
+        solids.append(explorer.Current())
+        explorer.Next()
+    assert len(solids) == 4  # Two separate tubes and two separate housing solids, no boolean union.
+    direction = {'x': (1, 0, 0), 'y': (0, 1, 0), 'z': (0, 0, 1)}[axis]
+    for solid, point in zip(solids[2:], updated['geometry']['source']['coordinates_mm'][:2], strict=True):
+        assert volume(solid) == pytest.approx(math.pi * (14**2 - 7**2) * 24, rel=1e-7)
+        props = GProp_GProps()
+        BRepGProp.VolumeProperties_s(solid, props)
+        center = props.CentreOfMass()
+        assert (center.X(), center.Y(), center.Z()) == pytest.approx(point, abs=1e-6)
+        faces = TopExp_Explorer(solid, TopAbs_ShapeEnum.TopAbs_FACE)
+        found = 0
+        while faces.More():
+            surface = BRepAdaptor_Surface(TopoDS.Face(faces.Current()))
+            if surface.GetType() == GeomAbs_SurfaceType.GeomAbs_Cylinder:
+                d = surface.Cylinder().Axis().Direction()
+                assert tuple(abs(v) for v in (d.X(), d.Y(), d.Z())) == pytest.approx(direction, abs=1e-7)
+                found += 1
+            faces.Next()
+        assert found == 2
+    mesh = WeldmentCadJob().run(updated)
+    assert len(mesh.triangles) and mesh.skipped_faces == mesh.recovered_faces == 0
+    assert read_document(source, 'part') == doc

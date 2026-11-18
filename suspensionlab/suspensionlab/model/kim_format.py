@@ -24,6 +24,9 @@ VERSION = "0.1"
 BENT_PART_VERSION = "0.2"
 SCHEME_ARM_PART_VERSION = "0.3"
 SCHEME_ARM_ALGORITHM = "front_lower_left_straight_tubes_v1"
+SCHEME_ARM_BUSHING_VERSION = "0.4"
+SCHEME_ARM_BUSHING_ALGORITHM = "front_lower_left_tubes_bushings_v1"
+SCHEME_ARM_PART_VERSIONS = (SCHEME_ARM_PART_VERSION, SCHEME_ARM_BUSHING_VERSION)
 MAX_PARTS = 256
 MAX_INSTANCES = 1024
 MAX_MM = 1_000_000.0  # защитная граница прототипа, не инженерный допуск
@@ -68,10 +71,17 @@ def _number(value: Any, *, positive: bool = False) -> float:
 
 
 def _part(data: Any) -> None:
-    if isinstance(data, dict) and data.get("version") == SCHEME_ARM_PART_VERSION:
-        doc = _keys(data, {"format", "version", "id", "name", "units", "geometry", "scheme", "algorithm"})
-        if doc["algorithm"] != SCHEME_ARM_ALGORITHM or doc["scheme"] is None:
+    if isinstance(data, dict) and data.get("version") in SCHEME_ARM_PART_VERSIONS:
+        has_bushings = data["version"] == SCHEME_ARM_BUSHING_VERSION
+        keys = {"format", "version", "id", "name", "units", "geometry", "scheme", "algorithm"}
+        if has_bushings:
+            keys.add("bushings")
+        doc = _keys(data, keys)
+        algorithm = SCHEME_ARM_BUSHING_ALGORITHM if has_bushings else SCHEME_ARM_ALGORITHM
+        if doc["algorithm"] != algorithm or doc["scheme"] is None:
             raise KimFormatError("unsupported scheme-driven part")
+        if has_bushings:
+            _validate_scheme_arm_bushings(doc["bushings"])
         _scheme(doc["scheme"])
         legacy = {key: doc[key] for key in ("format", "id", "name", "units", "geometry")}
         legacy["version"] = VERSION
@@ -224,7 +234,7 @@ def _assembly(data: Any) -> None:
     part_ids: set[str] = set()
     for part in parts:
         _part(part)
-        if part["version"] == SCHEME_ARM_PART_VERSION:
+        if part["version"] in SCHEME_ARM_PART_VERSIONS:
             raise KimFormatError("scheme-driven part requires a future assembly format")
         key = _id(part["id"])
         if key in part_ids:
@@ -287,6 +297,35 @@ def make_lower_arm_tube_prototype(identifier: str, name: str, project: Project,
     return part
 
 
+def _validate_scheme_arm_bushings(value: Any) -> None:
+    """Оба корпуса одинаковы; размеры и общая ось заданы пользователем, не извлечены из схемы."""
+    data = _keys(value, {"axis", "outer_radius_mm", "bore_radius_mm", "length_mm"})
+    if data["axis"] not in ("x", "y", "z"):
+        raise KimFormatError("invalid bushing axis")
+    outer = _number(data["outer_radius_mm"], positive=True)
+    bore = _number(data["bore_radius_mm"], positive=True)
+    length = _number(data["length_mm"], positive=True)
+    if not (0.1 <= bore <= 500 and 0.1 <= outer <= 500 and 0.1 <= length <= 500 and outer - bore >= 0.1):
+        raise KimFormatError("invalid bushing geometry")
+
+
+def set_scheme_arm_bushings(part: dict[str, Any], bushings: dict[str, Any] | None) -> dict[str, Any]:
+    """Новая копия: явное добавление/изменение или удаление двух условных корпусов."""
+    _part(part)
+    if part["version"] not in SCHEME_ARM_PART_VERSIONS:
+        raise KimFormatError("not a scheme-driven part")
+    result = json.loads(json.dumps(part, allow_nan=False))
+    if bushings is None:
+        result.pop("bushings", None)
+        result.update(version=SCHEME_ARM_PART_VERSION, algorithm=SCHEME_ARM_ALGORITHM)
+    else:
+        _validate_scheme_arm_bushings(bushings)
+        result.update(version=SCHEME_ARM_BUSHING_VERSION, algorithm=SCHEME_ARM_BUSHING_ALGORITHM,
+                      bushings=json.loads(json.dumps(bushings, allow_nan=False)))
+    _part(result)
+    return result  # type: ignore[no-any-return]
+
+
 def make_scheme_arm_part(identifier: str, name: str, project: Project,
                          radius_mm: float, wall_mm: float) -> dict[str, Any]:
     """Самодостаточный снимок схемы и параметров двух прямых труб, не готовый рычаг."""
@@ -305,12 +344,13 @@ def make_scheme_arm_part(identifier: str, name: str, project: Project,
 def rebuild_scheme_arm_part(part: dict[str, Any], project: Project) -> dict[str, Any]:
     """Явно создаёт новый снимок; не меняет исходник и не меняет тип подвески."""
     _part(part)
-    if part["version"] != SCHEME_ARM_PART_VERSION:
+    if part["version"] not in SCHEME_ARM_PART_VERSIONS:
         raise KimFormatError("not a scheme-driven part")
     if _lower_arm_source(project)["suspension_type"] != part["geometry"]["source"]["suspension_type"]:
         raise KimFormatError("suspension type changed; create a new part")
     geometry = part["geometry"]
-    return make_scheme_arm_part(part["id"], part["name"], project, geometry["radius_mm"], geometry["wall_mm"])
+    updated = make_scheme_arm_part(part["id"], part["name"], project, geometry["radius_mm"], geometry["wall_mm"])
+    return set_scheme_arm_bushings(updated, part["bushings"]) if part["version"] == SCHEME_ARM_BUSHING_VERSION else updated
 
 
 def make_arm_tube(identifier: str, name: str, project: Project, leg: str,
@@ -326,7 +366,7 @@ def make_arm_tube(identifier: str, name: str, project: Project, leg: str,
 def rebuild_lower_arm_prototype(part: dict[str, Any], project: Project) -> dict[str, Any]:
     """Новый снимок по тем же параметрам; тип схемы менять не разрешается."""
     _part(part)
-    if part["version"] == SCHEME_ARM_PART_VERSION:
+    if part["version"] in SCHEME_ARM_PART_VERSIONS:
         raise KimFormatError("use the scheme-driven rebuild to preserve the scheme")
     shape = part["geometry"]
     kind = shape["kind"]
