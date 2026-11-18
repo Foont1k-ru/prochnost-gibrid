@@ -140,3 +140,87 @@ def test_replace_part_is_explicit_and_rejects_conflicts():
     with pytest.raises(KimFormatError):
         set_assembly_axis(doc, 'tube')
     assert doc == before
+
+
+def test_plate_assembly_roundtrip_edit_export_rebuild_and_remove(tmp_path):
+    from suspensionlab.model.scheme_arm_assembly import (
+        edit_assembly_part,
+        make_plate,
+        replace_assembly_part,
+        set_assembly_plate,
+        set_plate_placement,
+    )
+
+    project = Project.create_default()
+    original = make_scheme_arm_assembly(project, 12, 2, parameters())
+    plate = make_plate(60, 50, 5, 10)
+    placement = {'normal': 'z', 'offset_mm': [4, -2, 5]}
+    doc = set_assembly_plate(original, plate, placement)
+    assert doc['version'] == '0.16' and len(doc['parts']) == 5 and original['version'] == '0.15'
+    placement['offset_mm'][0] = 999
+    plate['geometry']['width_mm'] = 100
+    assert doc['plate_placement']['offset_mm'] == [4, -2, 5] and doc['parts'][4]['geometry']['width_mm'] == 60
+    path = tmp_path / 'assembly.kima'
+    write_document(path, 'assembly', doc, overwrite=False)
+    single = tmp_path / 'plate.kim'
+    write_document(single, 'part', doc['parts'][4], overwrite=False)
+    assert read_document(single, 'part') == doc['parts'][4] and read_document(path, 'assembly') == doc
+    updated = edit_assembly_part(doc, 'ball_plate', {'width_mm': 90, 'height_mm': 70,
+                                                     'thickness_mm': 6, 'hole_radius_mm': 12})
+    updated = set_plate_placement(updated, {'normal': 'x', 'offset_mm': [1, 2, 3]})
+    assert updated['parts'][:4] == doc['parts'][:4] and updated['axis'] == doc['axis']
+    project.front.hardpoints['lbj'].x += 23
+    rebuilt = rebuild_scheme_arm_assembly(updated, project)
+    assert rebuilt['parts'][4] == updated['parts'][4] and rebuilt['plate_placement'] == updated['plate_placement']
+    assert rebuilt['parts'][0]['geometry']['source'] != doc['parts'][0]['geometry']['source']
+    replacement = read_document(single, 'part')
+    replaced = replace_assembly_part(rebuilt, 'ball_plate', replacement)
+    assert replaced['parts'][4] == replacement and replaced['plate_placement'] == updated['plate_placement']
+    without = set_assembly_plate(rebuilt, None)
+    assert without['version'] == '0.15' and without['parts'] == rebuilt['parts'][:4]
+    assert 'plate_placement' not in without and read_document(path, 'assembly') == doc
+
+
+@pytest.mark.parametrize('dimensions', [(20, 20, 5, 10), (60, 50, 0, 10), (60, 50, 5, 0),
+                                         (60, 50, 501, 10), (float('nan'), 50, 5, 10)])
+def test_plate_invalid_geometry_is_rejected(dimensions):
+    from suspensionlab.model.scheme_arm_assembly import make_plate
+
+    with pytest.raises(KimFormatError):
+        make_plate(*dimensions)
+
+
+@pytest.mark.parametrize('placement', [
+    {'normal': 'tube', 'offset_mm': [0, 0, 0]},
+    {'normal': 'z', 'offset_mm': [0, 0]},
+    {'normal': 'z', 'offset_mm': [0, 0, float('nan')]},
+    {'normal': 'z', 'offset_mm': [0, 0, 10001]},
+    {'normal': 'z', 'offset_mm': [0, False, 0]},
+    {'normal': 'z', 'offset_mm': [0, 0, 0], 'other': 1},
+])
+def test_invalid_plate_placement_never_mutates_source(placement):
+    from suspensionlab.model.scheme_arm_assembly import make_plate, set_assembly_plate
+
+    doc = make_scheme_arm_assembly(Project.create_default(), 12, 2, parameters())
+    before = deepcopy(doc)
+    with pytest.raises(KimFormatError):
+        set_assembly_plate(doc, make_plate(60, 50, 5, 10), placement)
+    assert doc == before
+
+
+def test_plate_rejects_unknown_data_without_overwriting(tmp_path):
+    from suspensionlab.model.scheme_arm_assembly import make_plate, set_assembly_plate
+
+    doc = set_assembly_plate(make_scheme_arm_assembly(Project.create_default(), 12, 2, parameters()),
+                             make_plate(60, 50, 5, 10), {'normal': 'z', 'offset_mm': [0, 0, 0]})
+    path = tmp_path / 'assembly.kima'
+    write_document(path, 'assembly', doc, overwrite=False)
+    original = path.read_bytes()
+    for mutate in (lambda d: d['parts'][4]['geometry'].update(extra_hole=1),
+                   lambda d: d['plate_placement'].update(roll=15), lambda d: d.update(version='0.15'),
+                   lambda d: d.update(algorithm='front_lower_left_assembly_v1')):
+        broken = deepcopy(doc)
+        mutate(broken)
+        with pytest.raises(KimFormatError):
+            write_document(path, 'assembly', broken)
+    assert path.read_bytes() == original

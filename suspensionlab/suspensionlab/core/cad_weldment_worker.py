@@ -37,7 +37,7 @@ def create_mesh(path: Path, deviation: float) -> tuple[np.ndarray, int]:
         raise CadWorkerError("missing_cad") from error
     if path.suffix.lower() == ".kim":
         doc = read_document(path, "part")
-        if doc["version"] != "0.4":
+        if doc["version"] not in ("0.4", "0.6"):
             raise CadWorkerError("no_shape")
         shape = build_part(doc)
     else:
@@ -49,7 +49,7 @@ def create_mesh(path: Path, deviation: float) -> tuple[np.ndarray, int]:
 
 
 def _build_assembly_preview(doc):
-    if doc["version"] == "0.15":
+    if doc["version"] in ("0.15", "0.16"):
         shape = build_scheme_arm_assembly_preview(doc)
     elif doc["version"] == "0.10":
         shape = build_rear_joint_layout_preview(doc)

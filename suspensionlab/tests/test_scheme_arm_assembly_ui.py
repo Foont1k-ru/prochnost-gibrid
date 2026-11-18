@@ -284,3 +284,153 @@ def test_stale_tube_import_rejected_and_current_rebuild_preserves_import(qtbot, 
     d._saved = deepcopy(d.document)
     assert d.three_d.shutdown()
     d.close()
+
+
+def test_plate_add_edit_rebuild_export_save_reopen_and_remove(qtbot, tmp_path, monkeypatch):
+    from suspensionlab.ui.scheme_arm_assembly_dialog import PartDimensionsDialog, PlatePlacementDialog
+
+    c = AppController()
+    old = make_doc(c)
+    source = tmp_path / 'old.kima'
+    write_document(source, 'assembly', old, overwrite=False)
+    original = source.read_bytes()
+    d = SchemeArmAssemblyDialog(c, old, source)
+    qtbot.addWidget(d)
+    assert not d.remove_plate.isEnabled() and d.part_choice.count() == 4
+    def add(dialog):
+        assert not dialog.has_plate
+        dialog.fields['width_mm'].setText('82.123456789')
+        dialog.normal.setCurrentIndex(dialog.normal.findData('y'))
+        dialog.offset_fields[0].setText('11')
+        return QDialog.DialogCode.Accepted
+    monkeypatch.setattr(PlatePlacementDialog, 'exec', add)
+    d._edit_plate_placement()
+    assert d.document['version'] == '0.16' and d.document['plate_placement'] == {'normal': 'y', 'offset_mm': [11, 0, 0]}
+    assert d.remove_plate.isEnabled() and d.part_choice.count() == 5 and d.document != d._saved
+    d.part_choice.setCurrentIndex(d.part_choice.findData('ball_plate'))
+    assert '82.1235' in d.part_info.text()
+    def edit(dialog):
+        assert dialog.identifier == 'ball_plate'
+        dialog.fields['thickness_mm'].setText('7')
+        return QDialog.DialogCode.Accepted
+    monkeypatch.setattr(PartDimensionsDialog, 'exec', edit)
+    d._edit_selected_part()
+    assert d.document['parts'][4]['geometry']['thickness_mm'] == 7
+    part_path = tmp_path / 'plate.kim'
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(part_path), ''))
+    d._export_part()
+    assert read_document(part_path, 'part') == d.document['parts'][4]
+    p = c.project.front.hardpoints['lbj']
+    c.move_point(p, (p.x + 10, p.y, p.z))
+    monkeypatch.setattr(QMessageBox, 'question', lambda *args: QMessageBox.StandardButton.Yes)
+    d._apply_current_scheme()
+    assert d.document['parts'][4]['geometry']['width_mm'] == 82.123456789
+    assert d.document['plate_placement']['offset_mm'] == [11, 0, 0]
+    output = tmp_path / 'new.kima'
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(output), ''))
+    d._save_copy()
+    saved = read_document(output, 'assembly')
+    assert saved == d.document and source.read_bytes() == original
+    assert d.three_d.shutdown()
+    d.close()
+    reopened = SchemeArmAssemblyDialog(c, saved, output)
+    qtbot.addWidget(reopened)
+    assert reopened.part_choice.count() == 5 and reopened.remove_plate.isEnabled()
+    def move(dialog):
+        assert dialog.has_plate and not dialog.fields
+        dialog.normal.setCurrentIndex(dialog.normal.findData('x'))
+        dialog.offset_fields[2].setText('-12')
+        return QDialog.DialogCode.Accepted
+    monkeypatch.setattr(PlatePlacementDialog, 'exec', move)
+    reopened._edit_plate_placement()
+    assert reopened.document['plate_placement'] == {'normal': 'x', 'offset_mm': [11, 0, -12]}
+    assert reopened.document['parts'][4] == saved['parts'][4]
+    reopened._remove_plate()
+    assert reopened.document['version'] == '0.15' and reopened.part_choice.count() == 4
+    assert not reopened.remove_plate.isEnabled() and read_document(output, 'assembly') == saved
+    reopened._saved = deepcopy(reopened.document)
+    assert reopened.three_d.shutdown()
+    reopened.close()
+
+
+def test_plate_dialog_validation_and_modal_races(qtbot, monkeypatch):
+    from PySide6.QtWidgets import QWidget
+
+    from suspensionlab.ui.scheme_arm_assembly_dialog import PlatePlacementDialog
+
+    c = AppController()
+    doc = make_doc(c)
+    parent = QWidget()
+    qtbot.addWidget(parent)
+    form = PlatePlacementDialog(doc, parent)
+    form.show()
+    warnings = []
+    monkeypatch.setattr(QMessageBox, 'warning', lambda *args: warnings.append(args))
+    form.fields['hole_radius_mm'].setText('25')
+    form.accept()
+    assert warnings and form.isVisible()
+    form.fields['hole_radius_mm'].setText('10')
+    form.offset_fields[1].setText('nan')
+    form.accept()
+    assert len(warnings) == 2 and form.isVisible()
+    form.offset_fields[1].setText('1,5')
+    form.accept()
+    assert not form.isVisible() and form.candidate()['plate_placement']['offset_mm'][1] == 1.5
+    d = SchemeArmAssemblyDialog(c, doc)
+    qtbot.addWidget(d)
+    def changed(form):
+        d.axis.setCurrentIndex(d.axis.findData('z'))
+        return QDialog.DialogCode.Accepted
+    monkeypatch.setattr(PlatePlacementDialog, 'exec', changed)
+    d._edit_plate_placement()
+    assert len(warnings) == 3 and d.document['version'] == '0.15' and d.document['axis'] == 'z'
+    d._saved = deepcopy(d.document)
+    assert d.three_d.shutdown()
+    d.close()
+
+
+def test_plate_import_and_confirmation_cancel_preserves_state(qtbot, tmp_path, monkeypatch):
+    from suspensionlab.model.scheme_arm_assembly import make_plate, set_assembly_plate
+
+    c = AppController()
+    doc = set_assembly_plate(make_doc(c), make_plate(60, 50, 5, 10), {'normal': 'z', 'offset_mm': [0, 0, 0]})
+    d = SchemeArmAssemblyDialog(c, doc)
+    qtbot.addWidget(d)
+    d.part_choice.setCurrentIndex(d.part_choice.findData('ball_plate'))
+    replacement = make_plate(90, 70, 8, 12)
+    source = tmp_path / 'import.kim'
+    write_document(source, 'part', replacement, overwrite=False)
+    raw = source.read_bytes()
+    monkeypatch.setattr(QFileDialog, 'getOpenFileName', lambda *args: (str(source), ''))
+    monkeypatch.setattr(QMessageBox, 'question', lambda *args: QMessageBox.StandardButton.No)
+    d._import_selected_part()
+    d._remove_plate()
+    assert d.document == doc
+    monkeypatch.setattr(QMessageBox, 'question', lambda *args: QMessageBox.StandardButton.Yes)
+    d._import_selected_part()
+    assert d.document['parts'][4] == replacement and d.document['plate_placement'] == doc['plate_placement']
+    assert source.read_bytes() == raw
+    d._saved = deepcopy(d.document)
+    assert d.three_d.shutdown()
+    d.close()
+
+
+def test_menu_opens_plate_assembly(qtbot, tmp_path, monkeypatch):
+    from suspensionlab.model.scheme_arm_assembly import make_plate, set_assembly_plate
+
+    c = AppController()
+    window = MainWindow(c, QSettings(str(tmp_path / 'settings.ini'), QSettings.Format.IniFormat))
+    qtbot.addWidget(window)
+    doc = set_assembly_plate(make_doc(c), make_plate(60, 50, 5, 10), {'normal': 'z', 'offset_mm': [0, 0, 0]})
+    path = tmp_path / 'assembly.kima'
+    write_document(path, 'assembly', doc, overwrite=False)
+    opened = []
+    monkeypatch.setattr(QFileDialog, 'getOpenFileName', lambda *args: (str(path), ''))
+    def show(d):
+        opened.append(deepcopy(d.document))
+        assert d.three_d.shutdown()
+        return 0
+    monkeypatch.setattr(SchemeArmAssemblyDialog, 'exec', show)
+    window.action_open_scheme_assembly.trigger()
+    assert opened == [doc] and not c.dirty
+    window.close()

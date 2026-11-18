@@ -750,3 +750,36 @@ def test_scheme_assembly_edit_and_axis_invalidate_real_3d(qtbot, tmp_path, monke
     assert saved['parts'][3]['geometry']['length_mm'] == 24
     assert d.three_d.shutdown()
     d.close()
+
+
+def test_plate_assembly_actual_preview_updates_saves_and_reopens(qtbot, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QDialog
+
+    from suspensionlab.model.kim_format import read_document
+    from suspensionlab.model.scheme_arm_assembly import make_scheme_arm_assembly
+    from suspensionlab.ui.scheme_arm_assembly_dialog import PlatePlacementDialog, SchemeArmAssemblyDialog
+
+    c = AppController()
+    doc = make_scheme_arm_assembly(c.project, 12, 2, {'axis': 'x', 'outer_radius_mm': 14,
+                                                        'bore_radius_mm': 7, 'length_mm': 24})
+    d = SchemeArmAssemblyDialog(c, doc)
+    qtbot.addWidget(d)
+    d.three_d._enable.setChecked(True)
+    qtbot.waitUntil(lambda: d.three_d._view.mesh is not None and d.save_copy.isEnabled(), timeout=45000)
+    monkeypatch.setattr(PlatePlacementDialog, 'exec', lambda form: QDialog.DialogCode.Accepted)
+    d._edit_plate_placement()
+    assert d.three_d._view.mesh is None and not d.save_copy.isEnabled()
+    qtbot.waitUntil(lambda: d.three_d._view.mesh is not None and d.save_copy.isEnabled(), timeout=45000)
+    path = tmp_path / 'assembly.kima'
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(path), ''))
+    d._save_copy()
+    saved = read_document(path, 'assembly')
+    assert saved['version'] == '0.16' and len(saved['parts']) == 5
+    assert d.three_d.shutdown()
+    d.close()
+    reopened = SchemeArmAssemblyDialog(c, saved, path)
+    qtbot.addWidget(reopened)
+    reopened.three_d._enable.setChecked(True)
+    qtbot.waitUntil(lambda: reopened.three_d._view.mesh is not None and reopened.save_copy.isEnabled(), timeout=45000)
+    assert reopened.three_d.shutdown()
+    reopened.close()

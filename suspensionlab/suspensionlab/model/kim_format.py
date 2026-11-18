@@ -28,6 +28,7 @@ SCHEME_ARM_BUSHING_VERSION = "0.4"
 SCHEME_ARM_BUSHING_ALGORITHM = "front_lower_left_tubes_bushings_v1"
 SCHEME_ARM_PART_VERSIONS = (SCHEME_ARM_PART_VERSION, SCHEME_ARM_BUSHING_VERSION)
 HOUSING_PART_VERSION = "0.5"
+PLATE_PART_VERSION = "0.6"
 MAX_PARTS = 256
 MAX_INSTANCES = 1024
 MAX_MM = 1_000_000.0  # защитная граница прототипа, не инженерный допуск
@@ -72,6 +73,22 @@ def _number(value: Any, *, positive: bool = False) -> float:
 
 
 def _part(data: Any) -> None:
+    if isinstance(data, dict) and data.get("version") == PLATE_PART_VERSION:
+        doc = _keys(data, {"format", "version", "id", "name", "units", "geometry"})
+        if doc["format"] != "kim-part" or doc["units"] != "mm":
+            raise KimFormatError("unsupported plate part")
+        _id(doc["id"])
+        _name(doc["name"])
+        geom = _keys(doc["geometry"], {"kind", "width_mm", "height_mm", "thickness_mm", "hole_radius_mm"})
+        if geom["kind"] != "prototype_rectangular_plate_hole":
+            raise KimFormatError("unsupported plate geometry")
+        width, height, thickness, radius = (_number(geom[key], positive=True) for key in
+                                             ("width_mm", "height_mm", "thickness_mm", "hole_radius_mm"))
+        if (not 0.1 <= width <= 5000 or not 0.1 <= height <= 5000 or
+                not 0.1 <= thickness <= 500 or not 0.1 <= radius <= 2500 or
+                min(width, height) / 2 - radius < 0.1):
+            raise KimFormatError("invalid plate dimensions")
+        return
     if isinstance(data, dict) and data.get("version") == HOUSING_PART_VERSION:
         doc = _keys(data, {"format", "version", "id", "name", "units", "geometry"})
         if doc["format"] != "kim-part" or doc["units"] != "mm":
@@ -187,7 +204,7 @@ def _scheme(data: Any) -> None:
 
 
 def _assembly(data: Any) -> None:
-    if isinstance(data, dict) and data.get("version") == "0.15":
+    if isinstance(data, dict) and data.get("version") in ("0.15", "0.16"):
         from .scheme_arm_assembly import validate_scheme_arm_assembly
 
         validate_scheme_arm_assembly(data)
@@ -432,7 +449,7 @@ def inspect_assembly_arm_sources(document: dict[str, Any]) -> dict[str, str]:
     'no_scheme' — схемы в сборке нет. Никакого перестроения не происходит.
     """
     _assembly(document)
-    if document["version"] in ("0.4", "0.5", "0.6", "0.7", "0.8", "0.9", "0.10", "0.11", "0.12", "0.13", "0.14", "0.15"):
+    if document["version"] in ("0.4", "0.5", "0.6", "0.7", "0.8", "0.9", "0.10", "0.11", "0.12", "0.13", "0.14", "0.15", "0.16"):
         raise KimFormatError("source inspection is only supported for embedded lower arm parts")
     scheme = Project.from_dict(document["scheme"]) if document["scheme"] is not None else None
     result: dict[str, str] = {}

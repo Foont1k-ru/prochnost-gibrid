@@ -194,7 +194,7 @@ class MainWindow(QMainWindow):
             validate_scheme_arm_assembly(doc)
             dialog = SchemeArmAssemblyDialog(self.controller, doc, Path(selected), self)
         except (KimFormatError, OSError, TypeError, ValueError, OverflowError):
-            QMessageBox.warning(self, 'Открытие сборки', 'Нужна предварительная сборка .kima 0.15; файл не изменён.')
+            QMessageBox.warning(self, 'Открытие сборки', 'Нужна предварительная сборка .kima 0.15/0.16; файл не изменён.')
             return
         dialog.exec()
         dialog.deleteLater()

@@ -54,11 +54,20 @@ def build_part(document: dict[str, Any]) -> Any:
     _part(document)
     from OCP.BRep import BRep_Builder
     from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
-    from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox, BRepPrimAPI_MakeCylinder
     from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt
     from OCP.TopoDS import TopoDS_Compound
 
     geometry = document["geometry"]
+    if geometry["kind"] == "prototype_rectangular_plate_hole":
+        width, height, thickness = (float(geometry[key]) for key in ("width_mm", "height_mm", "thickness_mm"))
+        box = BRepPrimAPI_MakeBox(gp_Pnt(-width / 2, -height / 2, -thickness / 2), width, height, thickness).Shape()
+        hole_axis = gp_Ax2(gp_Pnt(0, 0, -thickness / 2), gp_Dir(0, 0, 1))
+        hole = BRepPrimAPI_MakeCylinder(hole_axis, float(geometry["hole_radius_mm"]), thickness).Shape()
+        cut = BRepAlgoAPI_Cut(box, hole)
+        if not cut.IsDone() or cut.Shape().IsNull():
+            raise RuntimeError("could not build plate")
+        return cut.Shape()
     if geometry["kind"] == "prototype_bushing_housing":
         length = float(geometry["length_mm"])
         axis = gp_Ax2(gp_Pnt(0, 0, -length / 2), gp_Dir(0, 0, 1))
@@ -115,7 +124,7 @@ def build_part(document: dict[str, Any]) -> Any:
 def build_assembly(document: dict[str, Any]) -> Any:
     """Создаёт соединение перенесённых экземпляров, не связывая их со схемой."""
     _assembly(document)
-    if document["version"] in ("0.2", "0.3", "0.4", "0.5", "0.6", "0.7", "0.8", "0.9", "0.10", "0.11", "0.12", "0.13", "0.14", "0.15"):
+    if document["version"] in ("0.2", "0.3", "0.4", "0.5", "0.6", "0.7", "0.8", "0.9", "0.10", "0.11", "0.12", "0.13", "0.14", "0.15", "0.16"):
         raise ValueError("incomplete weldment: use the explicitly partial tube preview")
     from OCP.BRep import BRep_Builder
     from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
@@ -381,7 +390,7 @@ def build_scheme_arm_assembly_preview(document: dict[str, Any]) -> Any:
     for part in document['parts'][:2]:
         builder.Add(compound, build_part(part))
     points = document['parts'][0]['geometry']['source']['coordinates_mm']
-    for part, point in zip(document['parts'][2:], points[:2], strict=True):
+    for part, point in zip(document['parts'][2:4], points[:2], strict=True):
         transform = gp_Trsf()
         if document['axis'] == 'x':
             transform.SetRotation(gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(0, 1, 0)), math.pi / 2)
@@ -392,4 +401,17 @@ def build_scheme_arm_assembly_preview(document: dict[str, Any]) -> Any:
         if placed.IsNull():
             raise RuntimeError('housing placement failed')
         builder.Add(compound, placed)
+    if document['version'] == '0.16':
+        placement = document['plate_placement']
+        transform = gp_Trsf()
+        if placement['normal'] == 'x':
+            transform.SetRotation(gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(0, 1, 0)), math.pi / 2)
+        elif placement['normal'] == 'y':
+            transform.SetRotation(gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(1, 0, 0)), -math.pi / 2)
+        position = [float(points[2][i]) + float(placement['offset_mm'][i]) for i in range(3)]
+        transform.SetTranslationPart(gp_Vec(*position))
+        plate = BRepBuilderAPI_Transform(build_part(document['parts'][4]), transform, True).Shape()
+        if plate.IsNull():
+            raise RuntimeError('plate placement failed')
+        builder.Add(compound, plate)
     return compound
