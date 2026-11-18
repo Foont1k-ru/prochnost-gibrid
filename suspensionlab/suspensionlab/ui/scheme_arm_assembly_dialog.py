@@ -42,6 +42,7 @@ from ..model.scheme_arm_assembly import (
     validate_scheme_arm_assembly,
 )
 from .arm_concept_dialog import ArmConceptCanvas
+from .assembly_material_estimate import AssemblyMaterialEstimate
 from .cad_assembly_projection import CadAssemblyProjectionView
 from .controller import AppController
 from .kim_scheme_arm_dialog import BushingParametersDialog
@@ -241,6 +242,10 @@ class SchemeArmAssemblyDialog(QDialog):
             self.tabs, is_current=lambda candidate: candidate == self.document and
             assembly_snapshot_fingerprint(candidate) == assembly_snapshot_fingerprint(self.document))
         self.tabs.addTab(self.cad_views, 'CAD-проекции — предварительно')
+        self.material_estimate = AssemblyMaterialEstimate(
+            self.tabs, is_current=lambda candidate: candidate == self.document and
+            assembly_snapshot_fingerprint(candidate) == assembly_snapshot_fingerprint(self.document))
+        self.tabs.addTab(self.material_estimate, 'Объём и масса — справочно')
         layout.addWidget(self.tabs, 1)
         self.source_status = QLabel()
         self.source_status.setWordWrap(True)
@@ -300,6 +305,7 @@ class SchemeArmAssemblyDialog(QDialog):
     def _show_document(self) -> None:
         self.views.set_document(self.document)
         self.cad_views.set_document(self.document)
+        self.material_estimate.set_document(self.document)
         project = Project.from_dict(self.document['scheme'])
         geometry = self.document['parts'][0]['geometry']
         self.canvas.set_concept(make_arm_concept(project, 'tube', geometry['radius_mm'], geometry['wall_mm'], 3.))

@@ -810,6 +810,48 @@ def test_snapshot_code_updates_even_for_equal_boolean_and_number(qtbot):
     d.close()
 
 
+def test_material_estimate_follows_snapshot_without_saving_density(qtbot, tmp_path):
+    from suspensionlab.model.assembly_material_estimate import assembly_part_volumes
+    from suspensionlab.model.kim_format import read_document, write_document
+    from suspensionlab.model.scheme_arm_assembly import edit_assembly_part, make_plate, set_assembly_plate
+
+    c = AppController()
+    initial = make_doc(c)
+    d = SchemeArmAssemblyDialog(c, initial)
+    qtbot.addWidget(d)
+    d._saved = deepcopy(d.document)
+    view = d.material_estimate
+    assert view.density.text() == ''
+    assert 'только объёмы' in view.status.text()
+    assert 'tube_front' in view.result.toPlainText() and 'кг' not in view.result.toPlainText()
+    view.density.setText('7850')
+    assert 'Сумма условных масс' in view.result.toPlainText()
+    total = sum(p.volume_mm3 for p in assembly_part_volumes(initial))
+    assert f'{total * 7850 / 1e9:.3f} кг' in view.result.toPlainText()
+    assert d.document == initial and not c.dirty
+    view.density.setText('nan')
+    assert not view.result.toPlainText() and 'Проверьте плотность' in view.status.text()
+    view.density.setText('7,85e3')
+    assert 'Сумма условных масс' in view.result.toPlainText()
+    # The editor can change before a view refresh: do not calculate stale data.
+    d.document = edit_assembly_part(d.document, 'housing_front',
+                                     {'outer_radius_mm': 14, 'bore_radius_mm': 7, 'length_mm': 40})
+    view.density.setText('7800')
+    assert not view.result.toPlainText() and 'изменился' in view.status.text()
+    d._show_document()
+    assert view.density.text() == '7800' and 'Сумма условных масс' in view.result.toPlainText()
+    d.document = set_assembly_plate(d.document, make_plate(60, 50, 5, 10),
+                                     {'normal': 'z', 'offset_mm': [0, 0, 0]})
+    d._show_document()
+    assert 'ball_plate' in view.result.toPlainText()
+    path = tmp_path / 'assembly.kima'
+    write_document(path, 'assembly', d.document, overwrite=False)
+    assert read_document(path, 'assembly') == d.document
+    assert 'density' not in d.document
+    d._saved = deepcopy(d.document)
+    d.close()
+
+
 def test_compare_and_copy_snapshot_code_without_cad(qtbot):
     from PySide6.QtWidgets import QApplication
 
