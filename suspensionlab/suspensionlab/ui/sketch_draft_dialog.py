@@ -5,7 +5,7 @@ from __future__ import annotations
 from math import atan2, degrees, floor, hypot
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Literal
+from typing import Literal, cast
 
 import numpy as np
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
@@ -801,6 +801,9 @@ class SketchDraftDialog(QDialog):
         self._update_hole_side_labels()
         row.addWidget(QLabel("Плоскость:"))
         row.addWidget(self.plane)
+        self.choose_plane_3d = QPushButton("Выбрать в 3D…")
+        self.choose_plane_3d.setToolTip("Наглядный выбор базовой плоскости до начала эскиза")
+        row.addWidget(self.choose_plane_3d)
         self.plane_offset = QDoubleSpinBox()
         self.plane_offset.setRange(-LIMIT_MM, LIMIT_MM)
         self.plane_offset.setDecimals(3)
@@ -908,6 +911,7 @@ class SketchDraftDialog(QDialog):
         solid_step.clicked.connect(self._export_solid_step)
         self.assign_hole.clicked.connect(self._assign_hole_override)
         self.remove_hole_override.clicked.connect(self._remove_hole_override)
+        self.choose_plane_3d.clicked.connect(self._choose_plane_in_space)
         self.plane.currentIndexChanged.connect(self._reference_changed)
         self.plane_offset.valueChanged.connect(self._reference_changed)
         self.extrusion_direction.currentIndexChanged.connect(self._refresh)
@@ -959,6 +963,7 @@ class SketchDraftDialog(QDialog):
                 self.canvas.diagnostic_snapshot != tuple(self.canvas.draft.entities)):
             self._clear_diagnostics()
         self.plane.setEnabled(not self.canvas.plane_locked)
+        self.choose_plane_3d.setEnabled(not self.canvas.plane_locked)
         self.plane_offset.setEnabled(not self.canvas.plane_locked)
         selected = self.canvas.selected is not None
         self.edit_button.setEnabled(selected)
@@ -967,6 +972,17 @@ class SketchDraftDialog(QDialog):
         self.add_button.setEnabled(self.canvas.kind in ("line", "circle", "rectangle", "chain", "measure", "arc"))
         name = str(self._path) if self._path else "Новый эскиз"
         self.file_label.setText(name + (" *" if self._dirty() else ""))
+
+    def _choose_plane_in_space(self) -> None:
+        from ..model.sketch_plane_view import Plane
+        from .sketch_plane_dialog import SketchPlaneDialog
+
+        if self.canvas.plane_locked:
+            return
+        chooser = SketchPlaneDialog(cast(Plane, self.plane.currentText()), self)
+        if chooser.exec() == QDialog.DialogCode.Accepted and not self.canvas.plane_locked:
+            self.plane.setCurrentText(chooser.selected_plane)
+        chooser.deleteLater()
 
     def _reference_changed(self, *_args: object) -> None:
         if self.canvas.measure_start is not None:
