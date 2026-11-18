@@ -133,3 +133,78 @@ def test_version_two_arc_roundtrip_and_old_reader_guard(tmp_path):
     path.write_text(json.dumps(data), encoding="utf-8")
     with pytest.raises(SketchIOError):
         read_sketch(path)
+
+
+def extrusion_document():
+    from suspensionlab.model.sketch_draft import rectangle_entities
+    from suspensionlab.model.sketch_extrude_settings import ExtrusionSettings
+
+    entities = (*rectangle_entities((0, 0), (100, 50)),
+                make_entity("circle", (25, 25), (30, 25)),
+                *rectangle_entities((50, 15), (70, 35)))
+    settings = ExtrusionSettings("symmetric", 1.25, "negative", ((4, 0., "positive"), (5, 3., "auto")))
+    return SketchDocument("XZ", 5, entities, (), settings)
+
+
+def test_extrusion_settings_version_six_roundtrip_and_legacy_defaults(tmp_path):
+    from suspensionlab.model.sketch_extrude_settings import ExtrusionSettings
+
+    target = tmp_path / "settings.slsketch"
+    write_new_sketch(target, extrusion_document())
+    data = json.loads(target.read_text(encoding="utf-8"))
+    assert data["version"] == "6" and data["dimensions"] == []
+    assert read_sketch(target) == extrusion_document()
+    legacy = tmp_path / "legacy.slsketch"
+    write_new_sketch(legacy, document())
+    assert json.loads(legacy.read_text(encoding="utf-8"))["version"] == "1"
+    assert read_sketch(legacy).extrusion == ExtrusionSettings()
+
+
+@pytest.mark.parametrize("change", [
+    lambda e: e.update(direction="bad"),
+    lambda e: e.update(hole_side="bad"),
+    lambda e: e.update(hole_depth=True),
+    lambda e: e.update(hole_depth=-1),
+    lambda e: e.update(hole_depth=0.0001),
+    lambda e: e.update(hole_depth=1_000_001),
+    lambda e: e.update(unexpected=1),
+    lambda e: e["hole_overrides"][0].update(entity_index=True),
+    lambda e: e["hole_overrides"][0].update(entity_index=99),
+    lambda e: e["hole_overrides"][1].update(entity_index=6),  # not canonical contour index
+    lambda e: e["hole_overrides"][1].update(entity_index=4),
+    lambda e: e["hole_overrides"][0].update(depth=-1),
+    lambda e: e["hole_overrides"][0].update(side="bad"),
+    lambda e: e["hole_overrides"].reverse(),
+])
+def test_reject_corrupt_persisted_extrusion_settings(tmp_path, change):
+    good, bad = tmp_path / "good.slsketch", tmp_path / "bad.slsketch"
+    write_new_sketch(good, extrusion_document())
+    data = json.loads(good.read_text(encoding="utf-8"))
+    change(data["extrusion"])
+    bad.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(SketchIOError):
+        read_sketch(bad)
+
+
+def test_reject_stale_overrides_when_geometry_is_open(tmp_path):
+    from suspensionlab.model.sketch_extrude_settings import ExtrusionSettings
+
+    doc = replace(extrusion_document(), entities=extrusion_document().entities[:-1],
+                  extrusion=ExtrusionSettings(hole_overrides=((4, 2., "auto"),)))
+    with pytest.raises(SketchIOError):
+        write_new_sketch(tmp_path / "bad.slsketch", doc)
+
+
+def test_version_six_keeps_arcs_and_both_angle_dimensions(tmp_path):
+    from suspensionlab.model.sketch_draft import Dimension
+    from suspensionlab.model.sketch_extrude_settings import ExtrusionSettings
+
+    line_a = make_entity("line", (0, 0), (10, 0))
+    line_b = make_entity("line", (0, 0), (0, 10))
+    arc = make_entity("arc", (30, 30), (35, 30), 90)
+    dimensions = (Dimension(0, (4, 4), "inclination"), Dimension(0, (5, 5), "between", 1))
+    doc = SketchDocument("YZ", 1, (line_a, line_b, arc), dimensions, ExtrusionSettings(direction="negative"))
+    path = tmp_path / "angles.slsketch"
+    write_new_sketch(path, doc)
+    assert json.loads(path.read_text(encoding="utf-8"))["version"] == "6"
+    assert read_sketch(path) == doc

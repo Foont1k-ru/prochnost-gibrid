@@ -525,3 +525,24 @@ def test_individual_overrides_can_replace_blind_default_with_through(tmp_path, c
     target = tmp_path / "default-blind.step"
     SketchSolidJob().run(doc((*outer, a, b)), 10, target, hole_depth=3, hole_overrides=((4, 0, "auto"),))
     assert cad(target)[1] == pytest.approx(50_000 - math.pi*25*(10+3), rel=1e-9)
+
+
+def test_saved_extrusion_settings_reach_real_cad_worker_after_reopen(tmp_path, cad):
+    from suspensionlab.model.sketch_extrude_settings import ExtrusionSettings
+    from suspensionlab.model.sketch_io import read_sketch, write_new_sketch
+
+    outer = rectangle_entities((0, 0), (100, 50))
+    a = make_entity("circle", (25, 25), (30, 25))
+    b = make_entity("circle", (75, 25), (80, 25))
+    settings = ExtrusionSettings("symmetric", 3, "positive", ((4, 0., "auto"),))
+    original = SketchDocument("XY", 12, (*outer, a, b), (), settings)
+    path = tmp_path / "saved.slsketch"
+    write_new_sketch(path, original)
+    restored = read_sketch(path)
+    cfg = restored.extrusion
+    target = tmp_path / "restored.step"
+    SketchSolidJob().run(restored, 10, target, direction=cfg.direction, hole_depth=cfg.hole_depth,
+                         hole_side=cfg.hole_side, hole_overrides=cfg.hole_overrides)
+    _, volume, bounds = cad(target)
+    assert (bounds[2], bounds[5]) == pytest.approx((7, 17), abs=1e-6)
+    assert volume == pytest.approx(50_000 - math.pi * 25 * (10 + 3), rel=1e-9)

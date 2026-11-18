@@ -52,7 +52,13 @@ from ..model.sketch_draft import (
     rectangle_entities,
 )
 from ..model.sketch_dxf import SketchDxfError, write_new_dxf
-from ..model.sketch_extrude_settings import HoleOverride, hole_entry_side, validate_hole_depth, validate_hole_overrides
+from ..model.sketch_extrude_settings import (
+    ExtrusionSettings,
+    HoleOverride,
+    hole_entry_side,
+    validate_hole_depth,
+    validate_hole_overrides,
+)
 from ..model.sketch_extrusion import extrusion_mesh
 from ..model.sketch_io import SUFFIX, SketchDocument, SketchIOError, read_sketch, write_new_sketch
 
@@ -775,7 +781,7 @@ class SketchDraftDialog(QDialog):
         per_hole.addWidget(self.assign_hole)
         per_hole.addWidget(self.hole_override_list)
         per_hole.addWidget(self.remove_hole_override)
-        per_hole.addWidget(QLabel("Временно: не сохраняются; сбрасываются при изменении геометрии"))
+        per_hole.addWidget(QLabel("Сохраняются в эскизе; сбрасываются при изменении геометрии"))
         per_hole.addStretch(1)
         layout.addLayout(per_hole)
         row = QHBoxLayout()
@@ -896,6 +902,9 @@ class SketchDraftDialog(QDialog):
         self.remove_hole_override.clicked.connect(self._remove_hole_override)
         self.plane.currentIndexChanged.connect(self._reference_changed)
         self.plane_offset.valueChanged.connect(self._reference_changed)
+        self.extrusion_direction.currentIndexChanged.connect(self._refresh)
+        self.hole_depth.valueChanged.connect(self._refresh)
+        self.hole_side.currentIndexChanged.connect(self._refresh)
         self.tool.currentIndexChanged.connect(self._set_tool)
         self.snap.toggled.connect(self._set_snap)
         self.points_snap.toggled.connect(self._set_points_snap)
@@ -924,7 +933,10 @@ class SketchDraftDialog(QDialog):
 
     def _document(self) -> SketchDocument:
         return SketchDocument(self.plane.currentText(), self.plane_offset.value(), tuple(self.canvas.draft.entities),
-                              tuple(self.canvas.draft.dimensions))
+                              tuple(self.canvas.draft.dimensions),
+                              ExtrusionSettings(str(self.extrusion_direction.currentData()), self.hole_depth.value(),
+                                                str(self.hole_side.currentData()),
+                                                tuple((i, depth, side) for i, (depth, side) in sorted(self._hole_overrides.items()))))
 
     def _dirty(self) -> bool:
         return self._document() != self._saved or self.canvas.pending is not None
@@ -1388,6 +1400,7 @@ class SketchDraftDialog(QDialog):
         if self.canvas.pending is not None or self.canvas.construction_indices or self.canvas.dimension_target is not None:
             QMessageBox.warning(self, "Незавершённый элемент", "Завершите действие или нажмите Esc, затем сохраните эскиз.")
             return False
+        self._refresh()  # Never serialize stale element indices.
         suggested = str(self._path.with_name(self._path.stem + "-новый" + SUFFIX)) if self._path else "эскиз.slsketch"
         path, _ = QFileDialog.getSaveFileName(self, "Сохранить новый эскиз", suggested,
                                               "Эскиз Подвеска.Про (*.slsketch)",
@@ -1464,6 +1477,13 @@ class SketchDraftDialog(QDialog):
         self.canvas.plane_locked = bool(doc.entities)
         self.plane.setCurrentText(doc.plane)
         self.plane_offset.setValue(doc.offset_mm)
+        settings = doc.extrusion
+        self.extrusion_direction.setCurrentIndex(self.extrusion_direction.findData(settings.direction))
+        self.hole_depth.setValue(settings.hole_depth)
+        self.hole_side.setCurrentIndex(self.hole_side.findData(settings.hole_side))
+        self._hole_overrides = {i: (depth, side) for i, depth, side in settings.hole_overrides}
+        self._hole_override_snapshot = tuple(doc.entities) if self._hole_overrides else None
+        self._render_hole_overrides()
         self._path = path
         self._saved = self._document()
         self._message("Эскиз открыт" if path else "Новый эскиз")

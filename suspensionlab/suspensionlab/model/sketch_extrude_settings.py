@@ -1,6 +1,7 @@
 """Единые параметры выдавливания для CAD-тела и полигонального просмотра."""
 from __future__ import annotations
 
+from dataclasses import dataclass
 from math import isfinite
 from typing import Literal
 
@@ -60,3 +61,12 @@ def validate_hole_overrides(thickness: float, direction: str, overrides: tuple[H
         validate_hole_depth(thickness, depth)
         hole_entry_side(direction, side)
         seen.add(index)
+
+
+@dataclass(frozen=True)
+class ExtrusionSettings:
+    """Сохраняемые настройки; толщина задаётся отдельно при построении."""
+    direction: str = "positive"
+    hole_depth: float = 0.0
+    hole_side: str = "auto"
+    hole_overrides: tuple[HoleOverride, ...] = ()
