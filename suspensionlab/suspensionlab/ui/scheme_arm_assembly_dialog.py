@@ -5,7 +5,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any, cast
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSignalBlocker, Qt
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QComboBox,
@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -25,8 +26,15 @@ from PySide6.QtWidgets import (
 from ..model.arm_concept import make_arm_concept
 from ..model.autosave_guard import same_project_file
 from ..model.entities import Project
-from ..model.kim_format import KimFormatError, _number, compare_lower_arm_source, write_document
-from ..model.scheme_arm_assembly import rebuild_scheme_arm_assembly, validate_scheme_arm_assembly
+from ..model.kim_format import KimFormatError, _number, compare_lower_arm_source, read_document, write_document
+from ..model.scheme_arm_assembly import (
+    PARTS,
+    edit_assembly_part,
+    rebuild_scheme_arm_assembly,
+    replace_assembly_part,
+    set_assembly_axis,
+    validate_scheme_arm_assembly,
+)
 from .arm_concept_dialog import ArmConceptCanvas
 from .controller import AppController
 from .kim_scheme_arm_dialog import BushingParametersDialog
@@ -64,17 +72,70 @@ class NewAssemblyParametersDialog(BushingParametersDialog):
         super().accept()
 
 
+class PartDimensionsDialog(QDialog):
+    """Параметры одной встроенной детали; неизвестные операции не изменяются."""
+    def __init__(self, document: dict[str, Any], identifier: str, parent: QWidget) -> None:
+        super().__init__(parent)
+        self.document = deepcopy(document)
+        self.identifier = identifier
+        self.setWindowTitle('Размеры выбранной детали')
+        layout = QVBoxLayout(self)
+        part = document['parts'][PARTS.index(identifier)]
+        info = QLabel(f"{part['name']}\nЭто предварительная форма без подрезки и проверок.")
+        info.setWordWrap(True)
+        info.setTextFormat(Qt.TextFormat.PlainText)
+        layout.addWidget(info)
+        form = QFormLayout()
+        self.fields: dict[str, QLineEdit] = {}
+        labels = ((('radius_mm', 'Наружный радиус трубы, мм'), ('wall_mm', 'Толщина стенки, мм'))
+                  if identifier in PARTS[:2] else
+                  (('outer_radius_mm', 'Наружный радиус корпуса, мм'),
+                   ('bore_radius_mm', 'Радиус отверстия, мм'), ('length_mm', 'Длина корпуса, мм')))
+        for key, label in labels:
+            field = QLineEdit(str(part['geometry'][key]), self)
+            field.setMaxLength(64)
+            field.setAccessibleName(label)
+            self.fields[key] = field
+            form.addRow(label, field)
+        layout.addLayout(form)
+        actions = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        actions.accepted.connect(self.accept)
+        actions.rejected.connect(self.reject)
+        layout.addWidget(actions)
+
+    def values(self) -> dict[str, float]:
+        return {key: float(field.text().strip().replace(',', '.')) for key, field in self.fields.items()}
+
+    def accept(self) -> None:
+        try:
+            edit_assembly_part(self.document, self.identifier, self.values())
+        except (KimFormatError, TypeError, ValueError, OverflowError):
+            QMessageBox.warning(self, 'Размеры детали', 'Некорректные размеры: проверьте радиусы, толщину и длину. '
+                                'Численные пределы не являются инженерными допусками.')
+            return
+        super().accept()
+
+
 class SchemeArmAssemblyDialog(QDialog):
     def __init__(self, controller: AppController, document: dict[str, Any], path: Path | None = None,
                  parent: QWidget | None = None) -> None:
         super().__init__(parent)
         validate_scheme_arm_assembly(document)
         self.controller, self.path = controller, path
+        self._source_paths: list[Path] = []
+        if path is not None:
+            self._remember_source(path)
         self.document = deepcopy(document)
         self._saved = deepcopy(document) if path is not None else None
         self.setWindowTitle('Предварительная сборка рычага .kima')
         self.resize(800, 780)
-        layout = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        outer.addWidget(scroll)
+        body = QWidget(scroll)
+        scroll.setWidget(body)
+        layout = QVBoxLayout(body)
         note = QLabel('Две трубы и два корпуса — отдельные встроенные детали .kim. '
                       'Трубы заданы в координатах кузова, корпуса — локально по оси Z и размещены в точках схемы. '
                       'Пластина, кронштейн шаровой, покупные изделия и сварка ещё не спроектированы. '
@@ -86,6 +147,7 @@ class SchemeArmAssemblyDialog(QDialog):
         self.status.setTextFormat(Qt.TextFormat.PlainText)
         layout.addWidget(self.status)
         self.tabs = QTabWidget(self)
+        self.tabs.setMinimumHeight(360)
         self.canvas = ArmConceptCanvas(self.tabs)
         self.tabs.addTab(self.canvas, 'Схема XY — условно')
         self.three_d = Weldment3D(self.tabs, is_current=lambda candidate: candidate == self.document, scheme_part=True)
@@ -94,6 +156,14 @@ class SchemeArmAssemblyDialog(QDialog):
         self.source_status = QLabel()
         self.source_status.setWordWrap(True)
         layout.addWidget(self.source_status)
+        axis_form = QFormLayout()
+        self.axis = QComboBox(self)
+        for key, label in (('x', 'X — продольная'), ('y', 'Y — поперечная'), ('z', 'Z — вертикальная')):
+            self.axis.addItem(label, key)
+        self.axis.setCurrentIndex(self.axis.findData(document['axis']))
+        self.axis.currentIndexChanged.connect(self._change_axis)
+        axis_form.addRow('Общая ось корпусов относительно кузова', self.axis)
+        layout.addLayout(axis_form)
         self.apply_scheme = QPushButton('Перестроить по текущей схеме…')
         self.apply_scheme.clicked.connect(self._apply_current_scheme)
         layout.addWidget(self.apply_scheme)
@@ -106,6 +176,17 @@ class SchemeArmAssemblyDialog(QDialog):
             self.part_choice.addItem(part['name'], part['id'])
         export.addRow('Встроенная отдельная деталь', self.part_choice)
         layout.addLayout(export)
+        self.part_info = QLabel()
+        self.part_info.setWordWrap(True)
+        self.part_info.setTextFormat(Qt.TextFormat.PlainText)
+        layout.addWidget(self.part_info)
+        self.part_choice.currentIndexChanged.connect(self._update_part_info)
+        self.edit_part = QPushButton('Изменить размеры выбранной детали…')
+        self.edit_part.clicked.connect(self._edit_selected_part)
+        layout.addWidget(self.edit_part)
+        self.import_part = QPushButton('Заменить выбранную деталь снимком из .kim…')
+        self.import_part.clicked.connect(self._import_selected_part)
+        layout.addWidget(self.import_part)
         self.export_part = QPushButton('Сохранить выбранную деталь отдельно .kim…')
         self.export_part.clicked.connect(self._export_part)
         layout.addWidget(self.export_part)
@@ -131,8 +212,98 @@ class SchemeArmAssemblyDialog(QDialog):
         marker = ' • изменена, не сохранена' if self.document != self._saved else ''
         self.status.setText(f'{path}{marker}\nОсь корпусов: {self.document["axis"].upper()}. '
                             'Снимок схемы и все четыре детали находятся внутри сборки.')
+        with QSignalBlocker(self.axis):
+            self.axis.setCurrentIndex(self.axis.findData(self.document['axis']))
+        for index, part in enumerate(self.document['parts']):
+            self.part_choice.setItemText(index, part['name'])
+        self._update_part_info()
         self._update_source_status()
         self._update_save()
+
+    def _update_part_info(self, *_args: object) -> None:
+        identifier = self.part_choice.currentData()
+        if identifier not in PARTS:
+            self.part_info.clear()
+            return
+        part = self.document['parts'][PARTS.index(identifier)]
+        g = part['geometry']
+        if identifier in PARTS[:2]:
+            detail = f"радиус {g['radius_mm']:g} мм; стенка {g['wall_mm']:g} мм"
+        else:
+            detail = (f"наружный радиус {g['outer_radius_mm']:g} мм; отверстие {g['bore_radius_mm']:g} мм; "
+                      f"длина {g['length_mm']:g} мм")
+        self.part_info.setText(f"{part['name']}: {detail}. Редактируется только эта встроенная деталь.")
+
+    def _change_axis(self, *_args: object) -> None:
+        try:
+            updated = set_assembly_axis(self.document, str(self.axis.currentData()))
+        except (KimFormatError, ValueError, TypeError):
+            with QSignalBlocker(self.axis):
+                self.axis.setCurrentIndex(self.axis.findData(self.document['axis']))
+            return
+        self.document = updated
+        self.feedback.clear()
+        self._show_document()
+
+    def _edit_selected_part(self) -> None:
+        original, identifier = deepcopy(self.document), self.part_choice.currentData()
+        if identifier not in PARTS:
+            return
+        dialog = PartDimensionsDialog(original, identifier, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        try:
+            if self.document != original or self.part_choice.currentData() != identifier:
+                raise KimFormatError('changed during input')
+            updated = edit_assembly_part(original, identifier, dialog.values())
+        except (KimFormatError, ValueError, TypeError, OverflowError):
+            QMessageBox.warning(self, 'Размеры детали', 'Размеры некорректны или сборка изменилась. Деталь не изменена.')
+            return
+        self.document = updated
+        self.feedback.clear()
+        self._show_document()
+
+    def _import_selected_part(self) -> None:
+        original, identifier = deepcopy(self.document), self.part_choice.currentData()
+        if identifier not in PARTS:
+            return
+        selected, _ = QFileDialog.getOpenFileName(self, 'Выбрать снимок детали', '', 'Деталь KIM (*.kim)')
+        if not selected:
+            return
+        try:
+            if self.document != original or self.part_choice.currentData() != identifier:
+                raise KimFormatError('changed during selection')
+            path = Path(selected).absolute()
+            resolved = path.resolve()
+            imported = read_document(path, 'part')
+            updated = replace_assembly_part(original, identifier, imported)
+        except (KimFormatError, OSError, ValueError, TypeError, OverflowError, RuntimeError):
+            QMessageBox.warning(self, 'Замена детали', 'Файл не подходит для выбранной позиции или сборка изменилась. '
+                                'Для трубы должны совпадать сторона и точки схемы. Сборка не изменена.')
+            return
+        if updated == original:
+            self.feedback.setText('Выбранный снимок уже совпадает с встроенной деталью.')
+            return
+        answer = QMessageBox.question(self, 'Замена детали',
+                                      'Заменить выбранную встроенную деталь снимком из файла? '
+                                      'Несохранённые размеры этой детали будут заменены. '
+                                      'Идентификатор позиции сохранится; внешней связи с файлом не будет.',
+                                      QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                                      QMessageBox.StandardButton.No)
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            if (self.document != original or self.part_choice.currentData() != identifier or
+                    path.resolve() != resolved or read_document(path, 'part') != imported):
+                raise KimFormatError('changed during confirmation')
+            updated = replace_assembly_part(original, identifier, imported)
+        except (KimFormatError, OSError, ValueError, TypeError, OverflowError, RuntimeError):
+            QMessageBox.warning(self, 'Замена детали', 'Деталь или сборка изменились во время подтверждения. Повторите выбор.')
+            return
+        self.document = updated
+        self._remember_source(path)
+        self.feedback.setText('Снимок заменён в памяти. Внешний файл не синхронизируется; сохраните новую сборку.')
+        self._show_document()
 
     def _update_source_status(self, *_args: object) -> None:
         matches = all(compare_lower_arm_source(part, self.controller.project) for part in self.document['parts'][:2])
@@ -171,8 +342,15 @@ class SchemeArmAssemblyDialog(QDialog):
         self.feedback.clear()
         self._show_document()
 
+    def _remember_source(self, path: Path) -> None:
+        absolute = path.absolute()
+        for candidate in (absolute, absolute.resolve()):
+            if candidate not in self._source_paths:
+                self._source_paths.append(candidate)
+
     def _safe_path(self, path: Path) -> None:
-        if self.controller.is_protected_export_target(path) or (self.path and same_project_file(path, self.path)):
+        if (self.controller.is_protected_export_target(path) or
+                any(same_project_file(path, source) for source in self._source_paths)):
             raise KimFormatError('protected source')
 
     def _save_copy(self) -> None:
@@ -194,6 +372,7 @@ class SchemeArmAssemblyDialog(QDialog):
             QMessageBox.warning(self, 'Сохранение сборки', 'Не удалось сохранить новую сборку. Существующие файлы не изменены.')
             return
         self.path, self._saved = path, deepcopy(original)
+        self._remember_source(path)
         self.feedback.setText(f'Сохранена новая сборка: {path}')
         self._show_document()
 

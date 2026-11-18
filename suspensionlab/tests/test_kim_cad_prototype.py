@@ -380,3 +380,29 @@ def test_separate_parts_and_assembly_preview_are_consistent(tmp_path, axis):
     mesh = WeldmentCadJob().run(updated)
     assert len(mesh.triangles) and mesh.skipped_faces == mesh.recovered_faces == 0
     assert read_document(path, 'assembly') == doc
+
+
+def test_assembly_individual_dimension_edit_changes_only_corresponding_solid():
+    from OCP.TopAbs import TopAbs_ShapeEnum
+    from OCP.TopExp import TopExp_Explorer
+
+    from suspensionlab.core.cad_kim_prototype import build_scheme_arm_assembly_preview
+    from suspensionlab.model.entities import Project
+    from suspensionlab.model.scheme_arm_assembly import edit_assembly_part, make_scheme_arm_assembly
+
+    project = Project.create_default()
+    doc = make_scheme_arm_assembly(project, 12, 2, {'axis': 'x', 'outer_radius_mm': 14,
+                                                    'bore_radius_mm': 7, 'length_mm': 24})
+    changed = edit_assembly_part(doc, 'housing_front', {'outer_radius_mm': 14, 'bore_radius_mm': 7, 'length_mm': 40})
+    def volumes(document):
+        explorer = TopExp_Explorer(build_scheme_arm_assembly_preview(document), TopAbs_ShapeEnum.TopAbs_SOLID)
+        result = []
+        while explorer.More():
+            result.append(volume(explorer.Current()))
+            explorer.Next()
+        return result
+    original_volumes, new_volumes = volumes(doc), volumes(changed)
+    assert len(original_volumes) == len(new_volumes) == 4
+    assert new_volumes[:2] == pytest.approx(original_volumes[:2])
+    assert new_volumes[2] == pytest.approx(original_volumes[2] * 40 / 24)
+    assert new_volumes[3] == pytest.approx(original_volumes[3])

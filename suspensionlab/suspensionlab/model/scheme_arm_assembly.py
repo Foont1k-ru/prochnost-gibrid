@@ -105,3 +105,44 @@ def rebuild_scheme_arm_assembly(document: dict[str, Any], project: Project) -> d
         return result
     except (TypeError, ValueError, KeyError, OverflowError, RecursionError) as error:
         raise KimFormatError('cannot rebuild assembly') from error
+
+
+def replace_assembly_part(document: dict[str, Any], identifier: str, part: dict[str, Any]) -> dict[str, Any]:
+    """Вставить копию одной совместимой детали в указанную позицию; исходники не менять.
+
+    Идентификатор внутри сборки принадлежит позиции. При замене он явно
+    привязывается к ней; данные геометрии и имя импортированного снимка сохраняются.
+    Для трубы тип, сторона и три точки должны совпадать со снимком схемы.
+    """
+    validate_scheme_arm_assembly(document)
+    if identifier not in PARTS:
+        raise KimFormatError('unknown part position')
+    _part(part)
+    result = copy.deepcopy(document)
+    replacement = copy.deepcopy(part)
+    replacement['id'] = identifier
+    result['parts'][PARTS.index(identifier)] = replacement
+    validate_scheme_arm_assembly(result)
+    return result
+
+
+def edit_assembly_part(document: dict[str, Any], identifier: str, dimensions: dict[str, Any]) -> dict[str, Any]:
+    """Изменить только размеры выбранной детали, без сброса других данных."""
+    validate_scheme_arm_assembly(document)
+    if identifier not in PARTS:
+        raise KimFormatError('unknown part position')
+    keys = ({'radius_mm', 'wall_mm'} if identifier in PARTS[:2] else
+            {'outer_radius_mm', 'bore_radius_mm', 'length_mm'})
+    _keys(dimensions, keys)
+    part = copy.deepcopy(document['parts'][PARTS.index(identifier)])
+    part['geometry'].update(copy.deepcopy(dimensions))
+    return replace_assembly_part(document, identifier, part)
+
+
+def set_assembly_axis(document: dict[str, Any], axis: str) -> dict[str, Any]:
+    """Общая ось размещения корпусов в координатах кузова, без изменений деталей."""
+    validate_scheme_arm_assembly(document)
+    result = copy.deepcopy(document)
+    result['axis'] = axis
+    validate_scheme_arm_assembly(result)
+    return result

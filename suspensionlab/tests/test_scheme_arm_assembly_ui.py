@@ -129,3 +129,158 @@ def test_modal_races_do_not_save_or_overwrite(qtbot, tmp_path, monkeypatch):
     d._saved = deepcopy(d.document)
     assert d.three_d.shutdown()
     d.close()
+
+
+def test_edit_selected_parts_axis_rebuild_and_save_copy(qtbot, tmp_path, monkeypatch):
+    from suspensionlab.ui.scheme_arm_assembly_dialog import PartDimensionsDialog
+
+    c = AppController()
+    doc = make_doc(c)
+    path = tmp_path / 'source.kima'
+    write_document(path, 'assembly', doc, overwrite=False)
+    original = path.read_bytes()
+    d = SchemeArmAssemblyDialog(c, doc, path)
+    qtbot.addWidget(d)
+    def edit(dialog):
+        if dialog.identifier == 'tube_front':
+            dialog.fields['radius_mm'].setText('15,123456789')
+            dialog.fields['wall_mm'].setText('3')
+        else:
+            dialog.fields['length_mm'].setText('31')
+        return QDialog.DialogCode.Accepted
+    monkeypatch.setattr(PartDimensionsDialog, 'exec', edit)
+    d._edit_selected_part()
+    assert d.document['parts'][0]['geometry']['radius_mm'] == 15.123456789
+    assert d.document['parts'][1] == doc['parts'][1] and d.document != d._saved
+    d.part_choice.setCurrentIndex(2)
+    d._edit_selected_part()
+    assert d.document['parts'][2]['geometry']['length_mm'] == 31
+    assert d.document['parts'][3] == doc['parts'][3]
+    assert '31' in d.part_info.text()
+    d.axis.setCurrentIndex(d.axis.findData('z'))
+    assert d.document['axis'] == 'z'
+    point = c.project.front.hardpoints['lca_f_in']
+    c.move_point(point, (point.x + 30, point.y, point.z))
+    monkeypatch.setattr(QMessageBox, 'question', lambda *args: QMessageBox.StandardButton.Yes)
+    d._apply_current_scheme()
+    assert d.document['parts'][0]['geometry']['radius_mm'] == 15.123456789
+    assert d.document['parts'][2]['geometry']['length_mm'] == 31 and d.document['axis'] == 'z'
+    out = tmp_path / 'changed.kima'
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(out), ''))
+    d._save_copy()
+    assert read_document(out, 'assembly') == d.document and path.read_bytes() == original
+    assert d.three_d.shutdown()
+    d.close()
+
+
+def test_edit_parameter_dialog_checks_and_races(qtbot, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QWidget
+
+    from suspensionlab.ui.scheme_arm_assembly_dialog import PartDimensionsDialog
+
+    parent = QWidget()
+    qtbot.addWidget(parent)
+    c = AppController()
+    doc = make_doc(c)
+    dialog = PartDimensionsDialog(doc, 'tube_front', parent)
+    dialog.show()
+    warnings = []
+    monkeypatch.setattr(QMessageBox, 'warning', lambda *args: warnings.append(args))
+    dialog.fields['wall_mm'].setText('12')
+    dialog.accept()
+    assert warnings and dialog.isVisible()
+    dialog.fields['wall_mm'].setText('2,5')
+    dialog.accept()
+    assert not dialog.isVisible() and dialog.values()['wall_mm'] == 2.5
+    d = SchemeArmAssemblyDialog(c, doc)
+    qtbot.addWidget(d)
+    def edit_with_race(form):
+        form.fields['radius_mm'].setText('20')
+        d.axis.setCurrentIndex(d.axis.findData('y'))
+        return QDialog.DialogCode.Accepted
+    monkeypatch.setattr(PartDimensionsDialog, 'exec', edit_with_race)
+    d._edit_selected_part()
+    assert len(warnings) == 2 and d.document['parts'][0] == doc['parts'][0] and d.document['axis'] == 'y'
+    d._saved = deepcopy(d.document)
+    assert d.three_d.shutdown()
+    d.close()
+
+
+def test_import_explicit_confirmation_races_and_source_protection(qtbot, tmp_path, monkeypatch):
+    c = AppController()
+    doc = make_doc(c)
+    original = deepcopy(doc)
+    d = SchemeArmAssemblyDialog(c, doc)
+    qtbot.addWidget(d)
+    d.part_choice.setCurrentIndex(2)
+    replacement = deepcopy(doc['parts'][3])
+    replacement['name'] = 'Запасной корпус'
+    replacement['geometry']['length_mm'] = 40
+    source = tmp_path / 'input.kim'
+    write_document(source, 'part', replacement, overwrite=False)
+    raw = source.read_bytes()
+    monkeypatch.setattr(QFileDialog, 'getOpenFileName', lambda *args: (str(source), ''))
+    monkeypatch.setattr(QMessageBox, 'question', lambda *args: QMessageBox.StandardButton.No)
+    d._import_selected_part()
+    assert d.document == original
+    monkeypatch.setattr(QMessageBox, 'question', lambda *args: QMessageBox.StandardButton.Yes)
+    d._import_selected_part()
+    assert d.document['parts'][2]['id'] == 'housing_front'
+    assert d.document['parts'][2]['name'] == 'Запасной корпус' and d.document['parts'][2]['geometry']['length_mm'] == 40
+    assert d.document['parts'][3] == original['parts'][3] and source.read_bytes() == raw
+    assert d.part_choice.currentText() == 'Запасной корпус' and d.document != d._saved
+    warnings = []
+    monkeypatch.setattr(QMessageBox, 'warning', lambda *args: warnings.append(args))
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(source), ''))
+    d._export_part()
+    assert warnings and source.read_bytes() == raw
+    bad = tmp_path / 'wrong.kim'
+    write_document(bad, 'part', doc['parts'][0], overwrite=False)
+    monkeypatch.setattr(QFileDialog, 'getOpenFileName', lambda *args: (str(bad), ''))
+    state = deepcopy(d.document)
+    d._import_selected_part()
+    assert len(warnings) == 2 and d.document == state
+    changed = tmp_path / 'changed.kim'
+    imported = deepcopy(replacement)
+    imported['geometry']['length_mm'] = 45
+    write_document(changed, 'part', imported, overwrite=False)
+    monkeypatch.setattr(QFileDialog, 'getOpenFileName', lambda *args: (str(changed), ''))
+    def modify_file(*args):
+        altered = deepcopy(imported)
+        altered['geometry']['length_mm'] = 46
+        write_document(changed, 'part', altered)
+        return QMessageBox.StandardButton.Yes
+    monkeypatch.setattr(QMessageBox, 'question', modify_file)
+    d._import_selected_part()
+    assert len(warnings) == 3 and d.document == state
+    d._saved = deepcopy(d.document)
+    assert d.three_d.shutdown()
+    d.close()
+
+
+def test_stale_tube_import_rejected_and_current_rebuild_preserves_import(qtbot, tmp_path, monkeypatch):
+    from suspensionlab.model.scheme_arm_assembly import edit_assembly_part
+
+    c = AppController()
+    doc = make_doc(c)
+    d = SchemeArmAssemblyDialog(c, doc)
+    qtbot.addWidget(d)
+    imported = edit_assembly_part(doc, 'tube_front', {'radius_mm': 19, 'wall_mm': 3})['parts'][0]
+    path = tmp_path / 'tube.kim'
+    write_document(path, 'part', imported, overwrite=False)
+    monkeypatch.setattr(QFileDialog, 'getOpenFileName', lambda *args: (str(path), ''))
+    monkeypatch.setattr(QMessageBox, 'question', lambda *args: QMessageBox.StandardButton.Yes)
+    d._import_selected_part()
+    assert d.document['parts'][0]['geometry']['radius_mm'] == 19
+    point = c.project.front.hardpoints['lbj']
+    c.move_point(point, (point.x, point.y + 40, point.z))
+    d._apply_current_scheme()
+    assert d.document['parts'][0]['geometry']['radius_mm'] == 19
+    state = deepcopy(d.document)
+    warnings = []
+    monkeypatch.setattr(QMessageBox, 'warning', lambda *args: warnings.append(args))
+    d._import_selected_part()  # old file's points conflict with updated scheme
+    assert warnings and d.document == state
+    d._saved = deepcopy(d.document)
+    assert d.three_d.shutdown()
+    d.close()

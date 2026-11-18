@@ -715,3 +715,38 @@ def test_scheme_assembly_real_3d_save_and_reopen(qtbot, tmp_path, monkeypatch):
     qtbot.waitUntil(lambda: reopened.three_d._view.mesh is not None and reopened.save_copy.isEnabled(), timeout=45000)
     assert reopened.three_d.shutdown()
     reopened.close()
+
+
+def test_scheme_assembly_edit_and_axis_invalidate_real_3d(qtbot, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QDialog
+
+    from suspensionlab.model.kim_format import read_document
+    from suspensionlab.model.scheme_arm_assembly import make_scheme_arm_assembly
+    from suspensionlab.ui.scheme_arm_assembly_dialog import PartDimensionsDialog, SchemeArmAssemblyDialog
+
+    c = AppController()
+    doc = make_scheme_arm_assembly(c.project, 12, 2, {'axis': 'x', 'outer_radius_mm': 14,
+                                                        'bore_radius_mm': 7, 'length_mm': 24})
+    d = SchemeArmAssemblyDialog(c, doc)
+    qtbot.addWidget(d)
+    d.three_d._enable.setChecked(True)
+    qtbot.waitUntil(lambda: d.three_d._view.mesh is not None and d.save_copy.isEnabled(), timeout=45000)
+    d.part_choice.setCurrentIndex(2)
+    def edit(form):
+        form.fields['length_mm'].setText('36')
+        return QDialog.DialogCode.Accepted
+    monkeypatch.setattr(PartDimensionsDialog, 'exec', edit)
+    d._edit_selected_part()
+    assert d.three_d._view.mesh is None and not d.save_copy.isEnabled()
+    qtbot.waitUntil(lambda: d.three_d._view.mesh is not None and d.save_copy.isEnabled(), timeout=45000)
+    d.axis.setCurrentIndex(d.axis.findData('y'))
+    assert d.three_d._view.mesh is None and not d.save_copy.isEnabled()
+    qtbot.waitUntil(lambda: d.three_d._view.mesh is not None and d.save_copy.isEnabled(), timeout=45000)
+    path = tmp_path / 'edited.kima'
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(path), ''))
+    d._save_copy()
+    saved = read_document(path, 'assembly')
+    assert saved['axis'] == 'y' and saved['parts'][2]['geometry']['length_mm'] == 36
+    assert saved['parts'][3]['geometry']['length_mm'] == 24
+    assert d.three_d.shutdown()
+    d.close()
