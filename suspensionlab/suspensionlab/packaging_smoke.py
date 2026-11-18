@@ -91,7 +91,8 @@ def run_cad_check() -> None:
     assembly = set_assembly_plate(assembly, make_plate(40., 20., 3., 5.),
                                   {'normal': 'z', 'offset_mm': [0., 0., 0.]})
     projection = CadAssemblyProjectionJob().run(assembly)
-    _require(len(projection.views) == 3 and all(len(lines) > 4 for lines in projection.views),
+    _require(len(projection.views) == 3 and all(len(lines) > 4 for lines in projection.views) and
+             all(projection.bounds_mm[i] < projection.bounds_mm[i + 3] for i in range(3)),
              "В собранном приложении недоступны CAD-проекции предварительной сборки")
 
     # Искусственная поверхность с единственным круговым контуром, как отдельный

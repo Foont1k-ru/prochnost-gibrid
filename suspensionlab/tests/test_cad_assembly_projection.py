@@ -15,11 +15,23 @@ def make_document():
 
 
 def test_untrusted_projection_validation_and_cancellation():
-    value = {plane: [[0, 0, 1, 1]] for plane in ('XY', 'XZ', 'YZ')}
-    assert len(parse_projection(value).views) == 3
-    for bad in ({}, {**value, 'XY': []}, {**value, 'XY': [[0, 0, 1, float('nan')]]},
-                {**value, 'XY': [[0, 0, 1, True]]}, {**value, 'XY': [[0, 0, 1, 10**1000]]},
-                {**value, 'XY': [[0, 0, 1, 2, 3]]}, {**value, 'ZZ': []}):
+    views = {plane: [[0, 0, 1, 1]] for plane in ('XY', 'XZ', 'YZ')}
+    value = {'views': views, 'bounds_mm': [0, 0, 0, 1, 1, 1]}
+    parsed = parse_projection(value)
+    assert len(parsed.views) == 3 and parsed.bounds_mm == (0, 0, 0, 1, 1, 1)
+    for bad in ({}, {**value, 'views': {**views, 'XY': []}},
+                {**value, 'views': {**views, 'XY': [[0, 0, 1, float('nan')]]}},
+                {**value, 'views': {**views, 'XY': [[0, 0, 1, True]]}},
+                {**value, 'views': {**views, 'XY': [[0, 0, 1, 10**1000]]}},
+                {**value, 'views': {**views, 'XY': [[0, 0, 1, 2, 3]]}},
+                {**value, 'views': {**views, 'ZZ': []}},
+                {**value, 'bounds_mm': [0, 0, 0, 1, 1]},
+                {**value, 'bounds_mm': [0, 0, 0, 1, 1, float('nan')]},
+                {**value, 'bounds_mm': [0, 0, 0, 1, 1, True]},
+                {**value, 'bounds_mm': [0, 0, 0, 1, 1, 10**1000]},
+                {**value, 'bounds_mm': [0, 0, 0, 1, 1, 0]},
+                {**value, 'bounds_mm': [0, 0, 0, 1, 1, 0.5]},
+                {**value, 'unexpected': 1}):
         with pytest.raises(CadPreviewError):
             parse_projection(bad)
     job = CadAssemblyProjectionJob()
@@ -35,13 +47,15 @@ def test_hlr_projection_orientation_visibility_and_curves():
     from OCP.gp import gp_Pnt
     from OCP.TopoDS import TopoDS_Compound
 
-    from suspensionlab.core.cad_assembly_projection import project_shape
+    from suspensionlab.core.cad_assembly_projection import bounds_for_shape, project_shape
 
     builder, compound = BRep_Builder(), TopoDS_Compound()
     builder.MakeCompound(compound)
     builder.Add(compound, BRepPrimAPI_MakeBox(gp_Pnt(-5, -5, 2), 10, 10, 2).Shape())
     builder.Add(compound, BRepPrimAPI_MakeBox(gp_Pnt(-2, -2, -2), 4, 4, 2).Shape())
     views = project_shape(compound)
+    # CAD bounds include hidden bodies, not just the visible outlines.
+    assert bounds_for_shape(compound) == pytest.approx([-5, -5, -2, 5, 5, 4])
     # Looking along -Z, the larger front box completely hides the smaller one.
     assert len(views['XY']) == 4
     assert all(max(abs(x) for x in line) == pytest.approx(5) for line in views['XY'])
@@ -54,7 +68,9 @@ def test_hlr_projection_orientation_visibility_and_curves():
         xs = [x for a, _, b, _ in lines for x in (a, b)]
         ys = [y for _, a, _, b in lines for y in (a, b)]
         assert (min(xs), max(xs), min(ys), max(ys)) == pytest.approx(expected)
-    cylinder = project_shape(BRepPrimAPI_MakeCylinder(3, 7).Shape())
+    shape = BRepPrimAPI_MakeCylinder(3, 7).Shape()
+    assert bounds_for_shape(shape) == pytest.approx([-3, -3, 0, 3, 3, 7], abs=1e-6)
+    cylinder = project_shape(shape)
     assert len(cylinder['XY']) > 4  # circle approximated by segments
     assert any(abs(a + 3) < 1e-5 and abs(c + 3) < 1e-5 and abs(b-d) == pytest.approx(7)
                for a, b, c, d in cylinder['XZ'])
@@ -69,6 +85,7 @@ def test_isolated_job_builds_real_assembly_and_does_not_mutate_it(plate):
     original = deepcopy(doc)
     result = CadAssemblyProjectionJob().run(doc, timeout=45)
     assert len(result.views) == 3 and all(len(lines) > 4 for lines in result.views)
+    assert all(result.bounds_mm[i] < result.bounds_mm[i + 3] for i in range(3))
     assert doc == original
 
 
@@ -114,3 +131,16 @@ def test_invalid_or_crashed_worker_output_is_not_displayed(monkeypatch):
     monkeypatch.setattr(cad_assembly_projection_job.subprocess, 'Popen', start)
     with pytest.raises(CadPreviewError, match='output'):
         CadAssemblyProjectionJob().run(make_document())
+
+
+def test_cad_bounds_follow_plate_placement_in_isolated_worker():
+    pytest.importorskip('OCP')
+    doc = make_document()
+    first = CadAssemblyProjectionJob().run(doc)
+    plate = set_assembly_plate(doc, make_plate(40, 20, 3, 5),
+                               {'normal': 'z', 'offset_mm': [2000, 0, 0]})
+    point_x = plate['parts'][0]['geometry']['source']['coordinates_mm'][2][0]
+    second = CadAssemblyProjectionJob().run(plate)
+    assert second.bounds_mm[3] == pytest.approx(point_x + 2000 + 20, abs=1e-5)
+    assert second.bounds_mm[3] > first.bounds_mm[3] + 1000
+    assert second.bounds_mm[0] == pytest.approx(first.bounds_mm[0], abs=1e-5)

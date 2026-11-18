@@ -93,6 +93,10 @@ class CadAssemblyProjectionView(QWidget):
         layout.addWidget(self.status)
         self.canvas = ProjectionCanvas(self)
         layout.addWidget(self.canvas, 1)
+        self.bounds = QLabel()
+        self.bounds.setWordWrap(True)
+        self.bounds.setTextFormat(Qt.TextFormat.PlainText)
+        layout.addWidget(self.bounds)
         self.retry = QPushButton('Повторить построение')
         self.retry.setEnabled(False)
         self.retry.clicked.connect(self._schedule)
@@ -110,6 +114,7 @@ class CadAssemblyProjectionView(QWidget):
         self._pending = None
         self.canvas.projection = None
         self.canvas.update()
+        self.bounds.clear()
         self.retry.setEnabled(False)
         if self._worker is not None:
             self._worker.job.cancel()
@@ -141,6 +146,12 @@ class CadAssemblyProjectionView(QWidget):
             return
         self.canvas.projection = result
         self.canvas.update()
+        bounds = result.bounds_mm
+        rows = [f'{axis}: {bounds[i + 3] - bounds[i]:.1f} '
+                f'(от {bounds[i]:.1f} до {bounds[i + 3]:.1f})'
+                for i, axis in enumerate(('X', 'Y', 'Z'))]
+        self.bounds.setText('Справочные габариты CAD-тел, мм (в осях кузова; округление 0,1 мм):\n'
+                            + '  •  '.join(rows) + '\nНе размеры для изготовления и не допуски.')
         self.retry.setEnabled(True)
         self.status.setText('Актуально для текущего снимка .kima. '
                             'Совпадение с текущим проектом проверяется отдельно ниже.')
@@ -155,6 +166,7 @@ class CadAssemblyProjectionView(QWidget):
                    'crash': 'CAD-процесс завершился аварийно', 'start': 'не удалось запустить процесс'}
         self.canvas.projection = None
         self.canvas.update()
+        self.bounds.clear()
         self.retry.setEnabled(self.enable.isChecked() and self._document is not None)
         self.status.setText(f'Проекции не построены: {reasons.get(code, "ошибка построения")}. '
                             'Сборка не изменена; условные виды доступны отдельно.')

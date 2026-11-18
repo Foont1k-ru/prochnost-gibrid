@@ -622,7 +622,8 @@ def test_cad_projection_rejects_stale_results_and_can_close(qtbot, monkeypatch):
                 entered.set()
                 assert released.wait(5)
             lines = (((0., 0., 1., 1.),),) * 3
-            return CadAssemblyProjection(lines)
+            bounds = (0., 0., 0., 2., 3., 4.) if doc['axis'] == 'z' else (0., 0., 0., 9., 9., 9.)
+            return CadAssemblyProjection(lines, bounds)
         def cancel(self):
             pass  # Simulate a response racing with cancellation.
     monkeypatch.setattr(cad_assembly_projection, 'CadAssemblyProjectionJob', FakeJob)
@@ -643,14 +644,16 @@ def test_cad_projection_rejects_stale_results_and_can_close(qtbot, monkeypatch):
         d.document = set_assembly_axis(d.document, 'z')
         d._saved = deepcopy(d.document)
         d._show_document()
-        assert view.canvas.projection is None and 'очищены' in view.status.text()
+        assert view.canvas.projection is None and not view.bounds.text() and 'очищены' in view.status.text()
     finally:
         released.set()
     qtbot.waitUntil(lambda: results == ['x', 'z'] and view.canvas.projection is not None, timeout=5000)
     assert 'Актуально' in view.status.text()
+    assert 'X: 2.0' in view.bounds.text() and 'Y: 3.0' in view.bounds.text()
+    assert 'Z: 4.0' in view.bounds.text() and 'не допуски' in view.bounds.text()
     assert not view.canvas.grab().isNull()
     view.enable.setChecked(False)
-    assert view.canvas.projection is None and 'Выключено' in view.status.text()
+    assert view.canvas.projection is None and not view.bounds.text() and 'Выключено' in view.status.text()
     d._saved = deepcopy(d.document)
     d.close()
     assert view._closed

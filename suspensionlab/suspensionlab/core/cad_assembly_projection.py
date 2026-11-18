@@ -66,7 +66,24 @@ def project_shape(shape: Any) -> dict[str, list[list[float]]]:
     return result
 
 
-def project_document(document: dict[str, Any]) -> dict[str, list[list[float]]]:
+def bounds_for_shape(shape: Any) -> list[float]:
+    """Границы всех CAD-тел в координатах кузова, включая скрытые тела."""
+    from OCP.Bnd import Bnd_Box
+    from OCP.BRepBndLib import BRepBndLib
+
+    bounds = Bnd_Box()
+    BRepBndLib.AddOptimal_s(shape, bounds, False, False)
+    if bounds.IsVoid() or bounds.IsOpen():
+        raise CadWorkerError('coordinates')
+    low, high = bounds.CornerMin(), bounds.CornerMax()
+    coordinates = [low.X(), low.Y(), low.Z(), high.X(), high.Y(), high.Z()]
+    if (not all(math.isfinite(x) and abs(x) <= MAX_COORDINATE for x in coordinates) or
+            any(coordinates[i] >= coordinates[i + 3] for i in range(3))):
+        raise CadWorkerError('coordinates')
+    return coordinates
+
+
+def project_document(document: dict[str, Any]) -> dict[str, Any]:
     from OCP.BRepCheck import BRepCheck_Analyzer
 
     from ..model.scheme_arm_assembly import validate_scheme_arm_assembly
@@ -76,4 +93,4 @@ def project_document(document: dict[str, Any]) -> dict[str, list[list[float]]]:
     shape = build_scheme_arm_assembly_preview(document)
     if shape.IsNull() or not BRepCheck_Analyzer(shape).IsValid():
         raise CadWorkerError('no_shape')
-    return project_shape(shape)
+    return {'views': project_shape(shape), 'bounds_mm': bounds_for_shape(shape)}

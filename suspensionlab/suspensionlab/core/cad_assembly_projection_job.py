@@ -24,15 +24,29 @@ Line = tuple[float, float, float, float]
 @dataclass(frozen=True)
 class CadAssemblyProjection:
     views: tuple[tuple[Line, ...], ...]
+    # (xmin, ymin, zmin, xmax, ymax, zmax) in the vehicle frame, mm.
+    bounds_mm: tuple[float, float, float, float, float, float]
 
 
 def parse_projection(data: Any) -> CadAssemblyProjection:
-    if not isinstance(data, dict) or set(data) != set(PLANES):
+    if not isinstance(data, dict) or set(data) != {'views', 'bounds_mm'}:
         raise CadPreviewError('output')
+    raw_views, bounds = data['views'], data['bounds_mm']
+    if (not isinstance(raw_views, dict) or set(raw_views) != set(PLANES) or
+            not isinstance(bounds, list) or len(bounds) != 6 or
+            any(type(x) not in (int, float) for x in bounds)):
+        raise CadPreviewError('output')
+    try:
+        if (not all(math.isfinite(x) and abs(x) <= MAX_COORDINATE for x in bounds) or
+                any(bounds[i] >= bounds[i + 3] for i in range(3))):
+            raise CadPreviewError('output')
+        limits = tuple(float(x) for x in bounds)
+    except OverflowError as error:
+        raise CadPreviewError('output') from error
     total = 0
     views: list[tuple[Line, ...]] = []
     for plane in PLANES:
-        source = data[plane]
+        source = raw_views[plane]
         if not isinstance(source, list) or not source:
             raise CadPreviewError('output')
         total += len(source)
@@ -50,7 +64,16 @@ def parse_projection(data: Any) -> CadAssemblyProjection:
             except OverflowError as error:
                 raise CadPreviewError('output') from error
         views.append(tuple(lines))
-    return CadAssemblyProjection(tuple(views))
+    # Reject mismatched results instead of attaching unrelated dimensions to a view.
+    for plane, view_lines in zip(PLANES, views, strict=True):
+        u, v = {'XY': (0, 1), 'XZ': (0, 2), 'YZ': (1, 2)}[plane]
+        for x1, y1, x2, y2 in view_lines:
+            for x, y in ((x1, y1), (x2, y2)):
+                if not (limits[u] - 0.01 <= x <= limits[u + 3] + 0.01 and
+                        limits[v] - 0.01 <= y <= limits[v + 3] + 0.01):
+                    raise CadPreviewError('output')
+    return CadAssemblyProjection(tuple(views), (limits[0], limits[1], limits[2],
+                                                limits[3], limits[4], limits[5]))
 
 
 class CadAssemblyProjectionJob:
