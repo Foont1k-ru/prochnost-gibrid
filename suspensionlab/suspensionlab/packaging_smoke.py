@@ -83,6 +83,7 @@ def run_cad_check() -> None:
     from .core.cad_recovery import recover_revolution_face
     from .core.cad_transport import CadJob
     from .export.cad_assembly_svg import write_new_projection_svg
+    from .model.assembly_snapshot_fingerprint import assembly_snapshot_fingerprint
     from .model.entities import Project
     from .model.scheme_arm_assembly import make_plate, make_scheme_arm_assembly, set_assembly_plate
 
@@ -111,8 +112,10 @@ def run_cad_check() -> None:
 
     with TemporaryDirectory(prefix="suspensionlab-cad-check-") as directory:
         svg = Path(directory) / "виды.svg"
-        write_new_projection_svg(svg, projection, assembly['version'], dimensions=True)
-        _require('НЕ ПРОИЗВОДСТВЕННЫЙ ЧЕРТЁЖ' in svg.read_text(encoding='utf-8'),
+        write_new_projection_svg(svg, projection, assembly, dimensions=True)
+        svg_text = svg.read_text(encoding='utf-8')
+        _require('НЕ ПРОИЗВОДСТВЕННЫЙ ЧЕРТЁЖ' in svg_text and
+                 assembly_snapshot_fingerprint(assembly) in svg_text,
                  "В собранном приложении недоступен SVG предварительных CAD-видов")
         path = Path(directory) / "fixture.step"
         unicode_path = Path(directory) / "проверка сборки.step"

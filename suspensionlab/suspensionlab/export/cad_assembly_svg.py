@@ -11,9 +11,10 @@ from xml.etree import ElementTree as ET
 from ..core.cad_assembly_projection import MAX_SEGMENTS, PLANES
 from ..core.cad_assembly_projection_job import CadAssemblyProjection, parse_projection
 from ..core.cad_transport import CadPreviewError
+from ..model.assembly_snapshot_fingerprint import assembly_snapshot_fingerprint
 from ..model.cad_projection_layout import dimension_segments, projection_layout, reference_caption
 
-WIDTH, HEIGHT = 1200, 560
+WIDTH, HEIGHT = 1200, 580
 PANEL_WIDTH, PANEL_HEIGHT = 380., 350.
 MAX_SVG_BYTES = 8_000_000
 
@@ -32,13 +33,15 @@ def _text(parent: ET.Element, x: float, y: float, value: str, **attrs: str) -> E
     return element
 
 
-def projection_svg(projection: CadAssemblyProjection, assembly_version: str, *, dimensions: bool) -> bytes:
+def projection_svg(projection: CadAssemblyProjection, document: dict[str, Any], *, dimensions: bool) -> bytes:
     """Статичный обзор текущего снимка; отдельные масштабы, без внешних ссылок."""
-    if not isinstance(projection, CadAssemblyProjection) or assembly_version not in ('0.15', '0.16'):
-        raise SvgProjectionError('unsupported assembly')
+    if not isinstance(projection, CadAssemblyProjection):
+        raise SvgProjectionError('unsupported projection')
     if type(dimensions) is not bool or not isinstance(projection.views, tuple) or len(projection.views) != 3:
         raise SvgProjectionError('invalid settings')
     try:
+        fingerprint = assembly_snapshot_fingerprint(document)
+        assembly_version = document['version']
         if sum(len(view) for view in projection.views) > MAX_SEGMENTS:
             raise SvgProjectionError('too many segments')
         # The file must never include malformed, stale, or inconsistent bounds.
@@ -96,6 +99,8 @@ def projection_svg(projection: CadAssemblyProjection, assembly_version: str, *, 
               **{'font-size': '13'})
         _text(base, 30, 531, 'Отдельная визуальная копия; не связана с проектом или исходной сборкой.',
               **{'font-size': '13'})
+        _text(base, 30, 551, f'SHA-256 снимка v1 (не хэш файла, не подпись): {fingerprint}',
+              **{'font-size': '12'})
         content = ET.tostring(root, encoding='utf-8', xml_declaration=True)
         if len(content) > MAX_SVG_BYTES:
             raise SvgProjectionError('output exceeds limit')
@@ -106,13 +111,13 @@ def projection_svg(projection: CadAssemblyProjection, assembly_version: str, *, 
         raise SvgProjectionError('invalid projection') from error
 
 
-def write_new_projection_svg(path: str | Path, projection: CadAssemblyProjection, assembly_version: str, *,
+def write_new_projection_svg(path: str | Path, projection: CadAssemblyProjection, document: dict[str, Any], *,
                              dimensions: bool) -> Path:
     """Атомарно создать только новый SVG; существующие файлы не заменяются."""
     target = Path(path)
     if target.suffix.lower() != '.svg':
         raise SvgProjectionError('incorrect extension')
-    content = projection_svg(projection, assembly_version, dimensions=dimensions)
+    content = projection_svg(projection, document, dimensions=dimensions)
     temporary: str | None = None
     try:
         if target.is_symlink():

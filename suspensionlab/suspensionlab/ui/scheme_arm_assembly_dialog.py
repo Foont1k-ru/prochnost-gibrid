@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..model.arm_concept import make_arm_concept
+from ..model.assembly_snapshot_fingerprint import assembly_snapshot_fingerprint
 from ..model.autosave_guard import same_project_file
 from ..model.entities import Project
 from ..model.kim_format import KimFormatError, _number, compare_lower_arm_source, read_document, write_document
@@ -236,7 +237,9 @@ class SchemeArmAssemblyDialog(QDialog):
         self.tabs.addTab(self.three_d, '3D — предварительная сборка')
         self.views = SchemeAssemblyViews(self.tabs)
         self.tabs.addTab(self.views, 'Виды и размеры — условно')
-        self.cad_views = CadAssemblyProjectionView(self.tabs, is_current=lambda candidate: candidate == self.document)
+        self.cad_views = CadAssemblyProjectionView(
+            self.tabs, is_current=lambda candidate: candidate == self.document and
+            assembly_snapshot_fingerprint(candidate) == assembly_snapshot_fingerprint(self.document))
         self.tabs.addTab(self.cad_views, 'CAD-проекции — предварительно')
         layout.addWidget(self.tabs, 1)
         self.source_status = QLabel()

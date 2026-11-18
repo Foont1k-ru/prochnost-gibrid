@@ -695,6 +695,7 @@ def test_cad_svg_export_current_snapshot_no_overwrite_and_toggle(qtbot, tmp_path
     from xml.etree import ElementTree as ET
 
     from suspensionlab.core.cad_assembly_projection_job import CadAssemblyProjection
+    from suspensionlab.model.assembly_snapshot_fingerprint import assembly_snapshot_fingerprint
 
     c = AppController()
     doc = make_doc(c)
@@ -718,6 +719,8 @@ def test_cad_svg_export_current_snapshot_no_overwrite_and_toggle(qtbot, tmp_path
     root = ET.fromstring(target.read_bytes())
     assert len(root.findall('.//{http://www.w3.org/2000/svg}path')) == 3
     assert 'НЕ ПРОИЗВОДСТВЕННЫЙ ЧЕРТЁЖ' in ' '.join(root.itertext())
+    assert assembly_snapshot_fingerprint(doc) in view.snapshot_code.text()
+    assert assembly_snapshot_fingerprint(doc) in ' '.join(root.itertext())
     assert 'Создан отдельный SVG' in view.export_status.text()
     content = target.read_bytes()
     view._export_svg()
@@ -775,4 +778,80 @@ def test_cad_svg_export_refuses_dimension_toggle_during_dialog(qtbot, tmp_path, 
     view._export_svg()
     assert warnings and not target.exists()
     assert view.canvas.projection is not None  # Toggle is display-only.
+    d.close()
+
+
+def test_snapshot_code_updates_even_for_equal_boolean_and_number(qtbot):
+    from suspensionlab.core.cad_assembly_projection_job import CadAssemblyProjection
+    from suspensionlab.model.assembly_snapshot_fingerprint import assembly_snapshot_fingerprint
+
+    c = AppController()
+    d = SchemeArmAssemblyDialog(c, make_doc(c))
+    qtbot.addWidget(d)
+    d._saved = deepcopy(d.document)
+    view = d.cad_views
+    before = deepcopy(d.document)
+    first = assembly_snapshot_fingerprint(before)
+    assert first in view.snapshot_code.text() and 'Не хэш файла' in view.snapshot_code.text()
+    view.enable.setChecked(True)
+    view._timer.stop()
+    view._completed(view.generation, CadAssemblyProjection((((0., 0., 1., 1.),),) * 3,
+                                                              (0., 0., 0., 2., 3., 4.)))
+    assert view.canvas.projection is not None
+    old_generation = view.generation
+    d.document['scheme']['front_axle']['arb']['enabled'] = 1
+    d._saved = deepcopy(d.document)
+    assert d.document == before  # Python compares True and 1 equal.
+    d._show_document()
+    changed = assembly_snapshot_fingerprint(d.document)
+    assert changed != first and changed in view.snapshot_code.text()
+    assert view.generation > old_generation and view.canvas.projection is None
+    assert not view.export_button.isEnabled()
+    d.close()
+
+
+def test_export_refuses_equal_but_differently_fingerprinted_snapshot(qtbot, tmp_path, monkeypatch):
+    from suspensionlab.core.cad_assembly_projection_job import CadAssemblyProjection
+
+    c = AppController()
+    d = SchemeArmAssemblyDialog(c, make_doc(c))
+    qtbot.addWidget(d)
+    d._saved = deepcopy(d.document)
+    view = d.cad_views
+    view.enable.setChecked(True)
+    view._timer.stop()
+    view._completed(view.generation, CadAssemblyProjection((((0., 0., 1., 1.),),) * 3,
+                                                              (0., 0., 0., 2., 3., 4.)))
+    before = deepcopy(d.document)
+    target = tmp_path / 'boolean-race.svg'
+    def choose(*args, **kwargs):
+        d.document['scheme']['front_axle']['arb']['enabled'] = 1
+        d._saved = deepcopy(d.document)
+        assert before == d.document
+        return str(target), ''
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', choose)
+    warnings = []
+    monkeypatch.setattr(QMessageBox, 'warning', lambda *args: warnings.append(args))
+    view._export_svg()
+    assert warnings and not target.exists()
+    d.close()
+
+
+def test_delayed_projection_rejected_when_snapshot_changes_without_refresh(qtbot):
+    from suspensionlab.core.cad_assembly_projection_job import CadAssemblyProjection
+
+    c = AppController()
+    d = SchemeArmAssemblyDialog(c, make_doc(c))
+    qtbot.addWidget(d)
+    d._saved = deepcopy(d.document)
+    view = d.cad_views
+    view.enable.setChecked(True)
+    view._timer.stop()
+    token = view.generation
+    d.document['scheme']['front_axle']['arb']['enabled'] = 1
+    d._saved = deepcopy(d.document)
+    view._completed(token, CadAssemblyProjection((((0., 0., 1., 1.),),) * 3,
+                                                   (0., 0., 0., 2., 3., 4.)))
+    assert view.canvas.projection is None and not view.export_button.isEnabled()
+    assert 'снимок изменился' in view.status.text()
     d.close()

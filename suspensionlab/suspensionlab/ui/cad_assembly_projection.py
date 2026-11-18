@@ -13,6 +13,7 @@ from PySide6.QtWidgets import QCheckBox, QFileDialog, QLabel, QMessageBox, QPush
 from ..core.cad_assembly_projection_job import CadAssemblyProjection, CadAssemblyProjectionJob
 from ..core.cad_transport import CadPreviewError
 from ..export.cad_assembly_svg import SvgProjectionError, write_new_projection_svg
+from ..model.assembly_snapshot_fingerprint import assembly_snapshot_fingerprint
 from ..model.cad_projection_layout import (
     ProjectionLayout,
     dimension_segments,
@@ -102,6 +103,7 @@ class CadAssemblyProjectionView(QWidget):
         super().__init__(parent)
         self._is_current = is_current
         self._document: dict[str, Any] | None = None
+        self._snapshot_fingerprint: str | None = None
         self._pending: dict[str, Any] | None = None
         self._worker: _ProjectionReader | None = None
         self._closed = False
@@ -132,6 +134,13 @@ class CadAssemblyProjectionView(QWidget):
                                         'не допуски и не размеры для изготовления.')
         self.show_dimensions.toggled.connect(self.canvas.set_dimensions_enabled)
         layout.addWidget(self.show_dimensions)
+        self.snapshot_code = QLabel()
+        self.snapshot_code.setWordWrap(True)
+        self.snapshot_code.setTextFormat(Qt.TextFormat.PlainText)
+        self.snapshot_code.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.snapshot_code.setToolTip('Код нормализованного снимка в редакторе; не хэш файла и не подпись. '
+                                      'Имя и данные снимка проекта тоже входят в расчёт.')
+        layout.addWidget(self.snapshot_code)
         self.bounds = QLabel()
         self.bounds.setWordWrap(True)
         self.bounds.setTextFormat(Qt.TextFormat.PlainText)
@@ -150,10 +159,30 @@ class CadAssemblyProjectionView(QWidget):
         layout.addWidget(self.retry)
 
     def set_document(self, document: dict[str, Any]) -> None:
-        if self._closed or self._document == document:
+        if self._closed:
+            return
+        try:
+            fingerprint: str | None = assembly_snapshot_fingerprint(document)
+        except (TypeError, ValueError, OverflowError, RecursionError):
+            fingerprint = None
+        if self._document == document and self._snapshot_fingerprint == fingerprint:
             return
         self._document = deepcopy(document)
+        self._snapshot_fingerprint = fingerprint
+        if fingerprint is None:
+            self.snapshot_code.setText('Код снимка недоступен; SVG экспортировать нельзя.')
+        else:
+            self.snapshot_code.setText(f'SHA-256 снимка v1: {fingerprint}\n'
+                                       'Не хэш файла и не подпись; сравните этот код с кодом в SVG.')
         self._schedule()
+
+    def _candidate_is_current(self, document: dict[str, Any]) -> bool:
+        if self._is_current is None:
+            return True
+        try:
+            return self._is_current(document)
+        except (TypeError, ValueError, OverflowError, RecursionError):
+            return False
 
     def _schedule(self, *_args: object) -> None:
         self.generation += 1
@@ -190,6 +219,9 @@ class CadAssemblyProjectionView(QWidget):
     def _completed(self, token: int, result: object) -> None:
         if token != self.generation or self._closed or not self.enable.isChecked():
             return
+        if self._document is None or not self._candidate_is_current(self._document):
+            self._failed(token, 'changed')
+            return
         if not isinstance(result, CadAssemblyProjection):
             self._failed(token, 'output')
             return
@@ -202,7 +234,7 @@ class CadAssemblyProjectionView(QWidget):
         self.bounds.setText('Справочные габариты CAD-тел, мм (в осях кузова; округление 0,1 мм):\n'
                             + '  •  '.join(rows) + '\nНе размеры для изготовления и не допуски.')
         self.retry.setEnabled(True)
-        self.export_button.setEnabled(True)
+        self.export_button.setEnabled(self._snapshot_fingerprint is not None)
         self.status.setText('Актуально для текущего снимка .kima. '
                             'Совпадение с текущим проектом проверяется отдельно ниже.')
 
@@ -213,6 +245,7 @@ class CadAssemblyProjectionView(QWidget):
                    'cancelled': 'построение отменено', 'limit': 'превышен предел сложности',
                    'no_shape': 'CAD-геометрия некорректна', 'coordinates': 'некорректные координаты',
                    'projection': 'не удалось вычислить видимые линии', 'output': 'некорректный ответ процесса',
+                   'changed': 'снимок изменился во время построения',
                    'crash': 'CAD-процесс завершился аварийно', 'start': 'не удалось запустить процесс'}
         self.canvas.projection = None
         self.canvas.update()
@@ -228,7 +261,8 @@ class CadAssemblyProjectionView(QWidget):
         document = deepcopy(self._document)
         token, dimensions = self.generation, self.show_dimensions.isChecked()
         if (self._closed or not self.enable.isChecked() or projection is None or document is None or
-                (self._is_current is not None and not self._is_current(document))):
+                self._snapshot_fingerprint is None or
+                not self._candidate_is_current(document)):
             return
         selected, _ = QFileDialog.getSaveFileName(
             self, 'Сохранить новый предварительный SVG', 'виды-сборки.svg', 'SVG (*.svg)',
@@ -242,9 +276,9 @@ class CadAssemblyProjectionView(QWidget):
             if (self._closed or not self.enable.isChecked() or self.generation != token or
                     self.canvas.projection is not projection or self._document != document or
                     self.show_dimensions.isChecked() != dimensions or
-                    (self._is_current is not None and not self._is_current(document))):
+                    not self._candidate_is_current(document)):
                 raise SvgProjectionError('changed during export')
-            write_new_projection_svg(path, projection, document['version'], dimensions=dimensions)
+            write_new_projection_svg(path, projection, document, dimensions=dimensions)
         except (SvgProjectionError, OSError, TypeError, ValueError, OverflowError, KeyError):
             QMessageBox.warning(self, 'Экспорт SVG', 'Не удалось создать новый SVG: выберите другое имя или '
                                 'повторите экспорт после перестроения. Существующие файлы не изменены.')
