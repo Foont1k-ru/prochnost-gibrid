@@ -630,6 +630,7 @@ def test_cad_projection_rejects_stale_results_and_can_close(qtbot, monkeypatch):
     d = SchemeArmAssemblyDialog(c, make_doc(c))
     qtbot.addWidget(d)
     monkeypatch.setattr(d, '_confirm_close', lambda: True)
+    d._saved = deepcopy(d.document)
     view = d.cad_views
     assert not view.enable.isChecked() and view.canvas.projection is None
     view.enable.setChecked(True)
@@ -638,6 +639,7 @@ def test_cad_projection_rejects_stale_results_and_can_close(qtbot, monkeypatch):
     try:
         assert entered.wait(3)
         d.document = set_assembly_axis(d.document, 'z')
+        d._saved = deepcopy(d.document)
         d._show_document()
         assert view.canvas.projection is None and 'очищены' in view.status.text()
     finally:
@@ -665,6 +667,7 @@ def test_cad_projection_error_preserves_schematic_views(qtbot, monkeypatch):
     d = SchemeArmAssemblyDialog(c, make_doc(c))
     qtbot.addWidget(d)
     monkeypatch.setattr(d, '_confirm_close', lambda: True)
+    d._saved = deepcopy(d.document)
     d.cad_views.enable.setChecked(True)
     qtbot.waitUntil(lambda: 'CAD-ядро недоступно' in d.cad_views.status.text(), timeout=5000)
     qtbot.waitUntil(lambda: d.views.canvas.views is not None, timeout=5000)
