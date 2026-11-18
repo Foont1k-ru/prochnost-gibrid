@@ -1,6 +1,8 @@
 """Точка входа пробной Windows-сборки; обычный запуск открывает приложение."""
 from __future__ import annotations
 
+import atexit
+import os
 import sys
 import traceback
 from pathlib import Path
@@ -9,6 +11,13 @@ from pathlib import Path
 def main() -> int:
     # Специальная проверка запускается только явно в CI, с отдельным путём отчёта.
     if len(sys.argv) == 3 and sys.argv[1] in ("--packaging-check", "--packaging-startup-check", "--packaging-cad-check"):
+        if os.environ.get("SUSPENSIONLAB_SMOKE_DIAGNOSTICS") == "1":
+            # An OK report is written before interpreter teardown. This marker helps
+            # distinguish entry into atexit from earlier failures; it cannot prove
+            # that native libraries or Python finalization subsequently succeeded.
+            def teardown_marker() -> None:
+                print("SMOKE_DIAGNOSTIC: atexit reached", file=sys.stderr, flush=True)
+            atexit.register(teardown_marker)
         report = Path(sys.argv[2])
         try:
             from suspensionlab.packaging_smoke import run_cad_check, run_packaging_check, run_startup_check

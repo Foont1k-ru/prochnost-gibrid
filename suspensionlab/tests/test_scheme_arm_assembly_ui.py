@@ -558,3 +558,45 @@ def test_3d_button_accepts_macpherson_and_rejects_other_roles(qtbot, tmp_path):
     c.select(None)
     assert not view.create_assembly_button.isEnabled()
     window.close()
+
+
+def test_background_views_discard_old_results_and_track_document(qtbot, monkeypatch):
+    from threading import Event
+
+    from suspensionlab.model.scheme_arm_assembly import set_assembly_axis
+    from suspensionlab.ui import scheme_assembly_views
+
+    entered, release = Event(), Event()
+    calculate = scheme_assembly_views.assembly_views
+    def slow(doc):
+        entered.set()
+        assert release.wait(5)
+        return calculate(doc)
+    monkeypatch.setattr(scheme_assembly_views, 'assembly_views', slow)
+    c = AppController()
+    d = SchemeArmAssemblyDialog(c, make_doc(c))
+    qtbot.addWidget(d)
+    d.views._timer.stop()
+    d.views._start()
+    assert entered.wait(3)
+    try:
+        d.document = set_assembly_axis(d.document, 'z')
+        d._show_document()
+        assert d.views.canvas.views is None and 'устарели' in d.views.status.text()
+    finally:
+        release.set()
+    qtbot.waitUntil(lambda: d.views.canvas.views is not None, timeout=5000)
+    assert d.views.canvas.views.axis == 'z' and 'Актуально' in d.views.status.text()
+    assert 'Передняя труба' in d.views.dimensions.toPlainText()
+    d.views.shutdown()
+    assert d.three_d.shutdown()
+
+
+def test_views_shutdown_ignores_pending(qtbot):
+    c = AppController()
+    d = SchemeArmAssemblyDialog(c, make_doc(c))
+    qtbot.addWidget(d)
+    d.views.shutdown()
+    d.views._start()
+    assert d.views._future is None and d.views._closed
+    assert d.three_d.shutdown()

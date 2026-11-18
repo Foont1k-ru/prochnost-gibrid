@@ -43,6 +43,7 @@ from ..model.scheme_arm_assembly import (
 from .arm_concept_dialog import ArmConceptCanvas
 from .controller import AppController
 from .kim_scheme_arm_dialog import BushingParametersDialog
+from .scheme_assembly_views import SchemeAssemblyViews
 from .weldment_3d import Weldment3D
 
 
@@ -232,6 +233,8 @@ class SchemeArmAssemblyDialog(QDialog):
         self.tabs.addTab(self.canvas, 'Схема XY — условно')
         self.three_d = Weldment3D(self.tabs, is_current=lambda candidate: candidate == self.document, scheme_part=True)
         self.tabs.addTab(self.three_d, '3D — предварительная сборка')
+        self.views = SchemeAssemblyViews(self.tabs)
+        self.tabs.addTab(self.views, 'Виды и размеры — условно')
         layout.addWidget(self.tabs, 1)
         self.source_status = QLabel()
         self.source_status.setWordWrap(True)
@@ -289,6 +292,7 @@ class SchemeArmAssemblyDialog(QDialog):
         self._show_document()
 
     def _show_document(self) -> None:
+        self.views.set_document(self.document)
         project = Project.from_dict(self.document['scheme'])
         geometry = self.document['parts'][0]['geometry']
         self.canvas.set_concept(make_arm_concept(project, 'tube', geometry['radius_mm'], geometry['wall_mm'], 3.))
@@ -538,10 +542,12 @@ class SchemeArmAssemblyDialog(QDialog):
 
     def reject(self) -> None:
         if self._confirm_close() and self.three_d.shutdown():
+            self.views.shutdown()
             super().reject()
 
     def closeEvent(self, event: QCloseEvent) -> None:
         if self._confirm_close() and self.three_d.shutdown():
+            self.views.shutdown()
             super().reject()
             event.accept()
         else:

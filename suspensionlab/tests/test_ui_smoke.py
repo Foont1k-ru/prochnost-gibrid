@@ -29,11 +29,12 @@ def test_packaging_smoke_from_isolated_directory(tmp_path):
 
     entry = Path(__file__).resolve().parents[1] / "packaging_entry.py"
     report = tmp_path / "report.txt"
-    env = {**os.environ, "QT_QPA_PLATFORM": "offscreen", "APPDATA": str(tmp_path)}
+    env = {**os.environ, "QT_QPA_PLATFORM": "offscreen", "APPDATA": str(tmp_path),
+           "PYTHONFAULTHANDLER": "1", "SUSPENSIONLAB_SMOKE_DIAGNOSTICS": "1"}
     result = subprocess.run([sys.executable, str(entry), "--packaging-check", str(report)], cwd=tmp_path,
                             env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=90)
     contents = report.read_text(encoding="utf-8") if report.exists() else "нет файла отчёта"
-    assert result.returncode == 0 and contents.strip() == "OK", f"{contents}\n{result.stdout}\n{result.stderr}"
+    assert result.returncode == 0 and contents.strip() == "OK", f"exit={result.returncode} (0x{result.returncode & 0xffffffff:08x})\n{contents}\n{result.stdout}\n{result.stderr}"
 
 
 def test_step_inventory_async_is_read_only_and_clears_after_error(window, qtbot, tmp_path, monkeypatch):
