@@ -1,7 +1,7 @@
 """Интерактивный просмотр статического условного каркаса проекта."""
 from __future__ import annotations
 
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QCheckBox, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 from ...core.vehicle_schematic_scene import vehicle_schematic_scene
 from ...i18n import tr
@@ -21,6 +21,10 @@ class VehicleSchematicView(QWidget):
         controls = QHBoxLayout()
         self.camera = CameraViews(self)
         controls.addWidget(self.camera)
+        self.volume_toggle = QCheckBox(tr("vehicle_schematic.volume"), self)
+        self.volume_toggle.setToolTip(tr("vehicle_schematic.volume_tip"))
+        self.volume_toggle.setChecked(True)
+        controls.addWidget(self.volume_toggle)
         self.reset_button = QPushButton(tr("analysis.scene3d.reset"), self)
         controls.addWidget(self.reset_button)
         controls.addStretch(1)
@@ -32,9 +36,14 @@ class VehicleSchematicView(QWidget):
         layout.addWidget(self.status)
         self.camera.viewSelected.connect(self.preview.set_standard_view)
         self.reset_button.clicked.connect(self.preview.reset_camera)
+        self.volume_toggle.toggled.connect(self._set_volumetric)
         controller.modelChanged.connect(self.refresh)
         controller.projectReplaced.connect(self.refresh)
         self.refresh()
+
+    def _set_volumetric(self, enabled: bool) -> None:
+        self.preview.volumetric = enabled
+        self.preview.update()
 
     def refresh(self) -> None:
         try:

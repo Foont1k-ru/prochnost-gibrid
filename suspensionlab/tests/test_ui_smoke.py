@@ -4665,3 +4665,31 @@ def test_configured_template_and_cancel_keep_expected_active_view(window, monkey
     window._new_from_template()
     assert window.controller.project is configured
     assert window._tabs.currentWidget() is window._canvases['front']
+
+
+def test_schematic_volumes_toggle_render_and_refresh(window, qtbot):
+    window.controller.new_project('ring')
+    view = window._vehicle_view
+    window._tabs.setCurrentWidget(view)
+    window._show_workspace()
+    qtbot.wait(30)
+    before = window.controller.project.to_dict()
+    assert view.volume_toggle.isChecked() and view.preview.volumetric
+    assert view.preview._visual and view.preview._visual.faces
+    volume = view.preview.grab().toImage()
+    assert not volume.isNull()
+    view.volume_toggle.setChecked(False)
+    line = view.preview.grab().toImage()
+    assert not view.preview.volumetric and volume != line
+    view.volume_toggle.setChecked(True)
+    view.preview.set_standard_view('top')
+    assert not view.preview.grab().isNull()
+    assert window.controller.project.to_dict() == before
+    old = view.preview._visual
+    point = window.controller.project.front.hardpoints['wheel_center']
+    window.controller.move_point(point, (point.x + 10, point.y, point.z))
+    assert view.preview._visual is not old
+    window.controller.set_value(window.controller.project.vehicle, 'wheelbase_mm', 0)
+    assert view.preview.frame is None and view.preview._visual is None
+    window.controller.undo_last()
+    assert view.preview.frame is not None and view.preview._visual is not None
