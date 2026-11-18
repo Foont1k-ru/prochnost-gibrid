@@ -604,3 +604,70 @@ def test_views_shutdown_ignores_pending(qtbot):
     assert d.three_d.shutdown()
     d._saved = deepcopy(d.document)
     d.close()
+
+
+def test_cad_projection_rejects_stale_results_and_can_close(qtbot, monkeypatch):
+    from threading import Event
+
+    from suspensionlab.core.cad_assembly_projection_job import CadAssemblyProjection
+    from suspensionlab.model.scheme_arm_assembly import set_assembly_axis
+    from suspensionlab.ui import cad_assembly_projection
+
+    entered, released = Event(), Event()
+    results = []
+    class FakeJob:
+        def run(self, doc):
+            results.append(doc['axis'])
+            if len(results) == 1:
+                entered.set()
+                assert released.wait(5)
+            lines = (((0., 0., 1., 1.),),) * 3
+            return CadAssemblyProjection(lines)
+        def cancel(self):
+            pass  # Simulate a response racing with cancellation.
+    monkeypatch.setattr(cad_assembly_projection, 'CadAssemblyProjectionJob', FakeJob)
+    c = AppController()
+    d = SchemeArmAssemblyDialog(c, make_doc(c))
+    qtbot.addWidget(d)
+    monkeypatch.setattr(d, '_confirm_close', lambda: True)
+    view = d.cad_views
+    assert not view.enable.isChecked() and view.canvas.projection is None
+    view.enable.setChecked(True)
+    view._timer.stop()
+    view._start()
+    try:
+        assert entered.wait(3)
+        d.document = set_assembly_axis(d.document, 'z')
+        d._show_document()
+        assert view.canvas.projection is None and 'очищены' in view.status.text()
+    finally:
+        released.set()
+    qtbot.waitUntil(lambda: results == ['x', 'z'] and view.canvas.projection is not None, timeout=5000)
+    assert 'Актуально' in view.status.text()
+    view.enable.setChecked(False)
+    assert view.canvas.projection is None and 'Выключено' in view.status.text()
+    d._saved = deepcopy(d.document)
+    d.close()
+    assert view._closed
+
+
+def test_cad_projection_error_preserves_schematic_views(qtbot, monkeypatch):
+    from suspensionlab.core.cad_transport import CadPreviewError
+    from suspensionlab.ui import cad_assembly_projection
+
+    class FakeJob:
+        def run(self, _doc):
+            raise CadPreviewError('missing_cad')
+        def cancel(self):
+            pass
+    monkeypatch.setattr(cad_assembly_projection, 'CadAssemblyProjectionJob', FakeJob)
+    c = AppController()
+    d = SchemeArmAssemblyDialog(c, make_doc(c))
+    qtbot.addWidget(d)
+    monkeypatch.setattr(d, '_confirm_close', lambda: True)
+    d.cad_views.enable.setChecked(True)
+    qtbot.waitUntil(lambda: 'CAD-ядро недоступно' in d.cad_views.status.text(), timeout=5000)
+    qtbot.waitUntil(lambda: d.views.canvas.views is not None, timeout=5000)
+    assert d.cad_views.retry.isEnabled() and d.cad_views.canvas.projection is None
+    d._saved = deepcopy(d.document)
+    d.close()

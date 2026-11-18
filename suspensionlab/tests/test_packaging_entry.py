@@ -100,3 +100,12 @@ def test_sketch_worker_routes_both_old_and_direction_arguments(monkeypatch) -> N
                  ["source", "output", "report", "2.0", "negative", "1.0", "positive", "holes.json"]):
         monkeypatch.setattr(sys, "argv", ["app", "--sketch-solid-worker", *args])
         assert packaging_entry.main() == 13 and called[-1] == args
+
+
+def test_assembly_projection_worker_is_dispatched_before_gui(monkeypatch) -> None:
+    worker = ModuleType('suspensionlab.core.cad_assembly_projection_worker')
+    called: list[list[str]] = []
+    worker.main = lambda args: called.append(args) or 19  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, 'suspensionlab.core.cad_assembly_projection_worker', worker)
+    monkeypatch.setattr(sys, 'argv', ['app', '--assembly-projection-worker', 'source', 'output', 'report'])
+    assert packaging_entry.main() == 19 and called == [['source', 'output', 'report']]

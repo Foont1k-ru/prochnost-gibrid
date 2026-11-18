@@ -41,6 +41,10 @@ def main() -> int:
         from suspensionlab.core.sketch_solid_worker import main as sketch_solid_main
 
         return sketch_solid_main(sys.argv[2:])
+    if len(sys.argv) == 5 and sys.argv[1] == "--assembly-projection-worker":
+        from suspensionlab.core.cad_assembly_projection_worker import main as projection_main
+
+        return projection_main(sys.argv[2:])
     if len(sys.argv) == 6 and sys.argv[1] == "--weldment-preview-worker":
         from suspensionlab.core.cad_weldment_worker import main as weldment_main
 

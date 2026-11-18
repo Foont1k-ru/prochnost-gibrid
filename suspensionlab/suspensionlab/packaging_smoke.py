@@ -79,8 +79,20 @@ def run_cad_check() -> None:
     from OCP.STEPControl import STEPControl_StepModelType, STEPControl_Writer
     from OCP.TopoDS import TopoDS_Face
 
+    from .core.cad_assembly_projection_job import CadAssemblyProjectionJob
     from .core.cad_recovery import recover_revolution_face
     from .core.cad_transport import CadJob
+    from .model.entities import Project
+    from .model.scheme_arm_assembly import make_plate, make_scheme_arm_assembly, set_assembly_plate
+
+    assembly = make_scheme_arm_assembly(Project.create_default(), 12., 2.,
+                                        {'axis': 'x', 'outer_radius_mm': 14.,
+                                         'bore_radius_mm': 7., 'length_mm': 24.})
+    assembly = set_assembly_plate(assembly, make_plate(40., 20., 3., 5.),
+                                  {'normal': 'z', 'offset_mm': [0., 0., 0.]})
+    projection = CadAssemblyProjectionJob().run(assembly)
+    _require(len(projection.views) == 3 and all(len(lines) > 4 for lines in projection.views),
+             "В собранном приложении недоступны CAD-проекции предварительной сборки")
 
     # Искусственная поверхность с единственным круговым контуром, как отдельный
     # тест наличия кода восстановления в собранной программе.
