@@ -1,13 +1,15 @@
 """Интерактивный просмотр статического условного каркаса проекта."""
 from __future__ import annotations
 
-from PySide6.QtCore import QPoint, Signal
+from PySide6.QtCore import QPoint, Qt, Signal
 from PySide6.QtWidgets import QCheckBox, QHBoxLayout, QLabel, QMenu, QPushButton, QVBoxLayout, QWidget
 
 from ...core.scene3d import Scene3D
 from ...core.vehicle_schematic_pick import LinkHit
 from ...core.vehicle_schematic_scene import vehicle_schematic_scene
 from ...i18n import tr
+from ...model.kim_format import LOWER_ARM_TYPES
+from ...model.session_arm_assembly import SessionArmAssembly
 from ..controller import AppController, Selection
 from ..widgets.camera_views import CameraViews
 from .scene3d_preview import Scene3DPreview
@@ -16,10 +18,13 @@ from .scene3d_preview import Scene3DPreview
 class VehicleSchematicView(QWidget):
     schemeRequested = Signal(str)
     linkSelected = Signal()
+    newAssemblyRequested = Signal()
+    openSessionAssemblyRequested = Signal()
 
     def __init__(self, controller: AppController, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.controller = controller
+        self.session_assembly: SessionArmAssembly | None = None
         self._revision = 0
         self._focused_link: tuple[str, str] | None = None
         self._pick_menu: QMenu | None = None
@@ -49,6 +54,20 @@ class VehicleSchematicView(QWidget):
         controls.addWidget(self.open_scheme)
         controls.addStretch(1)
         layout.addLayout(controls)
+        assembly_controls = QHBoxLayout()
+        self.create_assembly_button = QPushButton(tr("vehicle_schematic.create_assembly"), self)
+        self.create_assembly_button.setToolTip(tr("vehicle_schematic.create_assembly_tip"))
+        self.create_assembly_button.setEnabled(False)
+        assembly_controls.addWidget(self.create_assembly_button)
+        self.open_assembly_button = QPushButton(tr("vehicle_schematic.open_assembly"), self)
+        self.open_assembly_button.setEnabled(False)
+        assembly_controls.addWidget(self.open_assembly_button)
+        assembly_controls.addStretch(1)
+        layout.addLayout(assembly_controls)
+        self.assembly_status = QLabel(tr("vehicle_schematic.assembly_hint"), self)
+        self.assembly_status.setWordWrap(True)
+        self.assembly_status.setTextFormat(Qt.TextFormat.PlainText)
+        layout.addWidget(self.assembly_status)
         self.preview = Scene3DPreview(self, schematic=True)
         layout.addWidget(self.preview, 1)
         self.selected_label = QLabel(tr("vehicle_schematic.pick_hint"), self)
@@ -64,11 +83,28 @@ class VehicleSchematicView(QWidget):
         self.open_scheme.clicked.connect(self._open_selected_scheme)
         self.focus_button.clicked.connect(self._focus_selection)
         self.show_all_button.clicked.connect(self._show_all)
+        self.create_assembly_button.clicked.connect(self.newAssemblyRequested)
+        self.open_assembly_button.clicked.connect(self.openSessionAssemblyRequested)
         controller.selectionChanged.connect(self._sync_selection)
         controller.modelChanged.connect(self.refresh)
         controller.projectReplaced.connect(self.refresh)
         self.refresh()
         self._sync_selection(controller.selection)
+
+    def set_session_assembly(self, link: SessionArmAssembly | None) -> None:
+        self.session_assembly = link if link is None or link.project is self.controller.project else None
+        self._update_assembly_status()
+
+    def _update_assembly_status(self) -> None:
+        link = self.session_assembly
+        if link is not None and link.project is not self.controller.project:
+            self.session_assembly = link = None
+        self.open_assembly_button.setEnabled(link is not None)
+        if link is None:
+            self.assembly_status.setText(tr("vehicle_schematic.assembly_hint"))
+        else:
+            key = "assembly_matching" if link.source_matches(self.controller.project) else "assembly_changed"
+            self.assembly_status.setText(tr(f"vehicle_schematic.{key}", path=str(link.path)))
 
     def _set_volumetric(self, enabled: bool) -> None:
         self.preview.volumetric = enabled
@@ -146,6 +182,9 @@ class VehicleSchematicView(QWidget):
         self.preview.selected_link = selected
         self.open_scheme.setEnabled(selected is not None)
         self.focus_button.setEnabled(selected is not None)
+        self.create_assembly_button.setEnabled(
+            selected == ("front", "lower_arm") and self.controller.project.front.type_code in LOWER_ARM_TYPES
+        )
         if selected is None:
             self.selected_label.setText(tr("vehicle_schematic.pick_hint"))
         else:
@@ -156,6 +195,7 @@ class VehicleSchematicView(QWidget):
         self.preview.update()
 
     def refresh(self) -> None:
+        self._update_assembly_status()
         self._revision += 1
         if self._pick_menu is not None:
             self._pick_menu.close()

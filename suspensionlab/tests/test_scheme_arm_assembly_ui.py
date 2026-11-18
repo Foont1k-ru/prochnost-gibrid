@@ -434,3 +434,127 @@ def test_menu_opens_plate_assembly(qtbot, tmp_path, monkeypatch):
     window.action_open_scheme_assembly.trigger()
     assert opened == [doc] and not c.dirty
     window.close()
+
+
+def test_3d_selected_lower_arm_create_save_session_status_reopen(qtbot, tmp_path, monkeypatch):
+    from suspensionlab.ui.controller import Selection
+
+    c = AppController()
+    window = MainWindow(c, QSettings(str(tmp_path / 'settings.ini'), QSettings.Format.IniFormat))
+    qtbot.addWidget(window)
+    window.show()
+    view = window._vehicle_view
+    window._tabs.setCurrentWidget(view)
+    window._show_workspace()
+    before = deepcopy(c.project.to_dict())
+    assert not view.create_assembly_button.isEnabled()
+    c.select(Selection('link', 'front', 'upper_arm'))
+    assert not view.create_assembly_button.isEnabled()
+    c.select(Selection('link', 'front', 'lower_arm'))
+    assert view.create_assembly_button.isEnabled()
+    output = tmp_path / 'левый рычаг.kima'
+    monkeypatch.setattr(NewAssemblyParametersDialog, 'exec', lambda d: QDialog.DialogCode.Accepted)
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(output), ''))
+    opened = []
+    def save_then_close(dialog):
+        assert dialog.document['frame'] == 'vehicle_front_left_snapshot'
+        assert 'ЛЕВЫЙ' in dialog.source_status.text()
+        opened.append(deepcopy(dialog.document))
+        if dialog.path is None:
+            dialog._save_copy()
+        assert dialog.three_d.shutdown()
+        return 0
+    monkeypatch.setattr(SchemeArmAssemblyDialog, 'exec', save_then_close)
+    view.create_assembly_button.click()
+    assert len(opened) == 1 and output.exists()
+    assert view.session_assembly is not None and view.open_assembly_button.isEnabled()
+    assert 'совпадают' in view.assembly_status.text() and 'сеанс' in view.assembly_status.text()
+    assert c.project.to_dict() == before and not c.dirty
+    initial = output.read_bytes()
+    view.open_assembly_button.click()
+    assert len(opened) == 2 and opened[1] == opened[0] and output.read_bytes() == initial
+    point = c.project.front.hardpoints['lbj']
+    c.move_point(point, (point.x, point.y, point.z + 10))
+    assert 'ВНИМАНИЕ' in view.assembly_status.text() and output.read_bytes() == initial
+    view.open_assembly_button.click()
+    assert len(opened) == 3  # An outdated snapshot may be opened, never silently rebuilt.
+    c.undo_last()
+    assert 'совпадают' in view.assembly_status.text()
+    warnings = []
+    monkeypatch.setattr(QMessageBox, 'warning', lambda *args: warnings.append(args))
+    output.write_text('changed outside', encoding='utf-8')
+    view.open_assembly_button.click()
+    assert warnings and len(opened) == 3 and output.read_text(encoding='utf-8') == 'changed outside'
+    c.new_project('ring')
+    assert view.session_assembly is None and not view.open_assembly_button.isEnabled()
+    window.close()
+
+
+def test_3d_creation_cancel_selection_and_project_races_do_not_create(qtbot, tmp_path, monkeypatch):
+    from suspensionlab.ui.controller import Selection
+
+    c = AppController()
+    window = MainWindow(c, QSettings(str(tmp_path / 'settings.ini'), QSettings.Format.IniFormat))
+    qtbot.addWidget(window)
+    view = window._vehicle_view
+    c.select(Selection('link', 'front', 'lower_arm'))
+    warnings, opened = [], []
+    monkeypatch.setattr(QMessageBox, 'warning', lambda *args: warnings.append(args))
+    monkeypatch.setattr(SchemeArmAssemblyDialog, 'exec', lambda d: opened.append(d))
+    monkeypatch.setattr(NewAssemblyParametersDialog, 'exec', lambda d: QDialog.DialogCode.Rejected)
+    window._new_selected_arm_assembly()
+    assert not opened and not warnings and view.session_assembly is None
+    def change_selection(d):
+        c.select(Selection('link', 'front', 'upper_arm'))
+        return QDialog.DialogCode.Accepted
+    monkeypatch.setattr(NewAssemblyParametersDialog, 'exec', change_selection)
+    window._new_selected_arm_assembly()
+    assert warnings and not opened and view.session_assembly is None
+    c.select(Selection('link', 'front', 'lower_arm'))
+    def replace_project(d):
+        c.new_project('ring')
+        c.select(Selection('link', 'front', 'lower_arm'))
+        return QDialog.DialogCode.Accepted
+    monkeypatch.setattr(NewAssemblyParametersDialog, 'exec', replace_project)
+    window._new_selected_arm_assembly()
+    assert len(warnings) == 2 and not opened and view.session_assembly is None
+    window.close()
+
+
+def test_3d_creation_unsaved_does_not_claim_session_link(qtbot, tmp_path, monkeypatch):
+    from suspensionlab.ui.controller import Selection
+
+    c = AppController()
+    window = MainWindow(c, QSettings(str(tmp_path / 'settings.ini'), QSettings.Format.IniFormat))
+    qtbot.addWidget(window)
+    c.select(Selection('link', 'front', 'lower_arm'))
+    monkeypatch.setattr(NewAssemblyParametersDialog, 'exec', lambda d: QDialog.DialogCode.Accepted)
+    def close_unsaved(d):
+        assert d.path is None and d._saved is None
+        assert d.three_d.shutdown()
+        return 0
+    monkeypatch.setattr(SchemeArmAssemblyDialog, 'exec', close_unsaved)
+    window._new_selected_arm_assembly()
+    assert window._vehicle_view.session_assembly is None
+    assert not window._vehicle_view.open_assembly_button.isEnabled()
+    window.close()
+
+
+def test_3d_button_accepts_macpherson_and_rejects_other_roles(qtbot, tmp_path):
+    from suspensionlab.model.templates import VehicleTemplateOptions, create_vehicle_template
+    from suspensionlab.ui.controller import Selection
+
+    c = AppController()
+    window = MainWindow(c, QSettings(str(tmp_path / 'settings.ini'), QSettings.Format.IniFormat))
+    qtbot.addWidget(window)
+    c.new_project(project=create_vehicle_template(VehicleTemplateOptions()))
+    view = window._vehicle_view
+    c.select(Selection('link', 'front', 'lower_arm'))
+    assert view.create_assembly_button.isEnabled()
+    c.select(Selection('link', 'rear', 'lower_arm'))
+    assert not view.create_assembly_button.isEnabled()
+    c.select(Selection('point', 'front', 'lbj'))
+    assert not view.create_assembly_button.isEnabled()
+    c.select(None)
+    assert not view.create_assembly_button.isEnabled()
+    window.close()

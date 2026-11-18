@@ -27,6 +27,7 @@ from .. import APP_NAME, __version__
 from ..config import diagnostic_log_path, log_file_path, settings_path
 from ..i18n import tr
 from ..model.project_io import ProjectIOError
+from ..model.session_arm_assembly import SessionArmAssembly
 from ..model.suspension_types import types_for_role
 from ..model.units import LENGTH_UNITS, RATE_UNITS, UnitKind, UnitSettings
 from .analysis_dialog import AnalysisDialog
@@ -86,6 +87,8 @@ class MainWindow(QMainWindow):
         self._build_docks()
         self._vehicle_view.schemeRequested.connect(self._open_schematic_axle)
         self._vehicle_view.linkSelected.connect(self._inspector_dock.show)
+        self._vehicle_view.newAssemblyRequested.connect(self._new_selected_arm_assembly)
+        self._vehicle_view.openSessionAssemblyRequested.connect(self._open_session_arm_assembly)
         self._build_actions()
         self._build_menus()
         self._build_toolbar()
@@ -167,20 +170,64 @@ class MainWindow(QMainWindow):
         dialog.exec()
         dialog.deleteLater()
 
-    def _new_scheme_arm_assembly(self) -> None:
+    def _new_selected_arm_assembly(self) -> None:
+        if not self._vehicle_view.create_assembly_button.isEnabled():
+            return
+        self._new_scheme_arm_assembly(from_selection=True)
+
+    def _remember_session_assembly(self, project, dialog) -> None:
+        """Только явно сохранённый файл; сессия не изменяет .susp или исходники."""
+        from ..model.kim_format import KimFormatError
+
+        if self.controller.project is not project or dialog.path is None or dialog._saved is None:
+            return
+        try:
+            link = SessionArmAssembly.from_saved(project, dialog.path, dialog._saved)
+        except (KimFormatError, OSError, ValueError, TypeError, OverflowError):
+            QMessageBox.warning(self, 'Сборка этого сеанса',
+                                'Не удалось проверить сохранённый файл .kima. Ссылка в сеансе не обновлена; '
+                                'проект и файл не изменены.')
+            return
+        self._vehicle_view.set_session_assembly(link)
+
+    def _open_session_arm_assembly(self) -> None:
+        from ..model.kim_format import KimFormatError
+        from .scheme_arm_assembly_dialog import SchemeArmAssemblyDialog
+
+        link = self._vehicle_view.session_assembly
+        if link is None:
+            return
+        project = self.controller.project
+        try:
+            document = link.load_verified(project)
+            dialog = SchemeArmAssemblyDialog(self.controller, document, link.path, self)
+        except (KimFormatError, OSError, ValueError, TypeError, OverflowError):
+            QMessageBox.warning(self, 'Открытие сборки этого сеанса',
+                                'Файл недоступен, изменился снаружи или проект заменён. '
+                                'Ничего не открыто и не изменено. Для другого файла используйте меню открытия .kima.')
+            return
+        dialog.exec()
+        self._remember_session_assembly(project, dialog)
+        dialog.deleteLater()
+
+    def _new_scheme_arm_assembly(self, *, from_selection: bool = False) -> None:
         from copy import deepcopy
 
         from ..model.kim_format import KimFormatError
         from ..model.scheme_arm_assembly import make_scheme_arm_assembly
         from .scheme_arm_assembly_dialog import NewAssemblyParametersDialog, SchemeArmAssemblyDialog
 
-        before = deepcopy(self.controller.project.to_dict())
+        project = self.controller.project
+        before = deepcopy(project.to_dict())
+        selection = self.controller.selection
         parameters = NewAssemblyParametersDialog(self)
         if parameters.exec() != QDialog.DialogCode.Accepted:
             return
         try:
-            if before != self.controller.project.to_dict():
-                raise KimFormatError('project changed during input')
+            if (project is not self.controller.project or before != self.controller.project.to_dict() or
+                    (from_selection and (self.controller.selection != selection or
+                                         not self._vehicle_view.create_assembly_button.isEnabled()))):
+                raise KimFormatError('project or selection changed during input')
             radius, wall = parameters.tube_values()
             doc = make_scheme_arm_assembly(self.controller.project, radius, wall, parameters.values())
         except (KimFormatError, TypeError, ValueError, OverflowError):
@@ -188,6 +235,8 @@ class MainWindow(QMainWindow):
             return
         dialog = SchemeArmAssemblyDialog(self.controller, doc, parent=self)
         dialog.exec()
+        if from_selection:
+            self._remember_session_assembly(project, dialog)
         dialog.deleteLater()
 
     def _open_scheme_arm_assembly(self) -> None:

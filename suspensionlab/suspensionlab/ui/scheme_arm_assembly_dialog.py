@@ -50,7 +50,12 @@ class NewAssemblyParametersDialog(BushingParametersDialog):
     """Начальные параметры, которые схема сама не задаёт."""
     def __init__(self, parent: QWidget) -> None:
         super().__init__(None, parent)
-        self.setWindowTitle('Параметры новой сборки')
+        self.setWindowTitle('Параметры передней левой сборки')
+        side_note = QLabel('Создаётся предварительная сборка переднего нижнего ЛЕВОГО рычага '
+                           'по трём точкам схемы. Подсветка в 3D может включать обе зеркальные стороны. '
+                           'Размеры ниже — примеры: проверьте и задайте свои; это не данные CAD или рекомендация.')
+        side_note.setWordWrap(True)
+        cast(QVBoxLayout, self.layout()).insertWidget(0, side_note)
         form = QFormLayout()
         self.radius = QLineEdit('12', self)
         self.wall = QLineEdit('2', self)
@@ -432,8 +437,10 @@ class SchemeArmAssemblyDialog(QDialog):
     def _update_source_status(self, *_args: object) -> None:
         matches = all(compare_lower_arm_source(part, self.controller.project) for part in self.document['parts'][:2])
         state = 'совпадают' if matches else 'различаются или недоступны'
-        self.source_status.setText(f'Текущий проект: тип подвески и три точки {state}. '
-                                   'Это не подтверждает принадлежность сборки проекту.')
+        self.source_status.setText(f'Передний нижний ЛЕВЫЙ рычаг: тип подвески и три исходные точки '
+                                   f'текущего проекта {state}. Сравнение выполняется по округлённому снимку; '
+                                   'остальные данные не сравниваются. Совпадение не подтверждает принадлежность '
+                                   'сборки проекту или её пригодность.')
 
     def _update_save(self, *_args: object) -> None:
         self.save_copy.setEnabled(self.three_d.can_save())
