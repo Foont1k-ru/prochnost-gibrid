@@ -342,3 +342,71 @@ def test_invalid_direction_is_rejected_without_output(tmp_path):
     with pytest.raises(SketchSolidError, match="направление"):
         SketchSolidJob().run(doc(rectangle_entities((0, 0), (10, 10))), 5, target, direction="bad")
     assert not target.exists()
+
+
+@pytest.mark.parametrize("plane,axis", [("XY", 2), ("XZ", 1), ("YZ", 0)])
+@pytest.mark.parametrize("direction,start,end", [("positive", 12, 22), ("negative", 2, 12),
+                                                  ("symmetric", 7, 17)])
+def test_blind_holes_step_volume_and_material_on_all_planes(tmp_path, cad, plane, axis, direction, start, end):
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.BRepClass3d import BRepClass3d_SolidClassifier
+    from OCP.GeomAbs import GeomAbs_SurfaceType
+    from OCP.gp import gp_Pnt
+    from OCP.TopAbs import TopAbs_ShapeEnum, TopAbs_State
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    circle = make_entity("circle", (25, 25), (35, 25))
+    inner = rectangle_entities((60, 15), (80, 35))
+    outer = rectangle_entities((0, 0), (100, 50))
+    target = tmp_path / "blind.step"
+    # Deliberately put the outer contour last to exercise classification.
+    SketchSolidJob().run(doc((circle, *inner, *outer), plane, 12), 10, target,
+                         direction=direction, hole_depth=4)
+    shape, volume, box = cad(target)
+    assert (box[axis], box[axis+3]) == pytest.approx((start, end), abs=1e-6)
+    assert volume == pytest.approx(5000 * 10 - (100 * math.pi + 400) * 4, rel=1e-9)
+    def xyz(u, v, z):
+        return (u, v, z) if plane == "XY" else (u, z, v) if plane == "XZ" else (z, u, v)
+    opening = end - 1 if direction == "negative" else start + 1
+    back = start + 1 if direction == "negative" else end - 1
+    for xy in ((25, 25), (70, 25)):
+        assert BRepClass3d_SolidClassifier(shape, gp_Pnt(*xyz(*xy, opening)), 1e-7).State() == TopAbs_State.TopAbs_OUT
+        assert BRepClass3d_SolidClassifier(shape, gp_Pnt(*xyz(*xy, back)), 1e-7).State() == TopAbs_State.TopAbs_IN
+    assert BRepClass3d_SolidClassifier(shape, gp_Pnt(*xyz(50, 25, opening)), 1e-7).State() == TopAbs_State.TopAbs_IN
+    explorer = TopExp_Explorer(shape, TopAbs_ShapeEnum.TopAbs_FACE)
+    types = []
+    while explorer.More():
+        types.append(BRepAdaptor_Surface(TopoDS.Face(explorer.Current())).GetType())
+        explorer.Next()
+    assert GeomAbs_SurfaceType.GeomAbs_Cylinder in types
+
+
+@pytest.mark.parametrize("hole_depth", [-1, 10, 11, float("nan"), float("inf")])
+def test_invalid_blind_depth_never_publishes(tmp_path, hole_depth):
+    target = tmp_path / "invalid.step"
+    hole = make_entity("circle", (5, 5), (6, 5))
+    with pytest.raises(SketchSolidError, match="Глубина"):
+        SketchSolidJob().run(doc((*rectangle_entities((0, 0), (10, 10)), hole)), 10, target,
+                             hole_depth=hole_depth)
+    assert not target.exists()
+
+
+def test_blind_depth_requires_internal_contour(tmp_path, cad):
+    target = tmp_path / "no-holes.step"
+    with pytest.raises(SketchSolidError):
+        SketchSolidJob().run(doc(rectangle_entities((0, 0), (10, 10))), 10, target, hole_depth=4)
+    assert not target.exists()
+
+
+def test_blind_arc_pocket_and_cad_mesh(tmp_path, cad):
+    from suspensionlab.core.cad_transport import CadJob
+
+    outer = make_entity("circle", (0, 0), (50, 0))
+    arc = make_entity("arc", (0, 0), (10, 0), 270)
+    chord = make_entity("line", (0, -10), (10, 0))
+    target = tmp_path / "blind-arc.step"
+    SketchSolidJob().run(doc((chord, outer, arc)), 10, target, direction="negative", hole_depth=3)
+    assert cad(target)[1] == pytest.approx(math.pi * 2500 * 10 - (75 * math.pi + 50) * 3, rel=1e-9)
+    mesh = CadJob().run(target, 0.2)
+    assert mesh.skipped_faces == 0 and mesh.face_count >= 5 and len(mesh.triangles) > 12

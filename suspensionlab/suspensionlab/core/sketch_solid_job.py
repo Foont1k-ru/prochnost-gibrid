@@ -11,7 +11,7 @@ import threading
 from contextlib import suppress
 from pathlib import Path
 
-from ..model.sketch_extrude_settings import extrusion_limits
+from ..model.sketch_extrude_settings import extrusion_limits, validate_hole_depth
 from ..model.sketch_io import SketchDocument, SketchIOError, write_new_sketch
 
 MAX_STEP_BYTES = 100 * 1024 * 1024
@@ -37,9 +37,10 @@ class SketchSolidJob:
                 with suppress(OSError):
                     self._process.kill()
 
-    def run(self, document: SketchDocument, depth: float, destination: str | Path, *, timeout: float = 90, direction: str = "positive") -> Path:
+    def run(self, document: SketchDocument, depth: float, destination: str | Path, *, timeout: float = 90, direction: str = "positive", hole_depth: float = 0) -> Path:
         try:
             extrusion_limits(document.offset_mm, depth, direction)
+            validate_hole_depth(depth, hole_depth)
         except (ValueError, TypeError) as exc:
             raise SketchSolidError(str(exc)) from exc
         target = Path(destination)
@@ -54,7 +55,7 @@ class SketchSolidJob:
             with tempfile.TemporaryDirectory(prefix=".sketch-solid-", dir=target.parent) as directory:
                 work = Path(directory)
                 write_new_sketch(work / "source.slsketch", document)
-                args = ["source.slsketch", "result.step", "report.json", str(depth), direction]
+                args = ["source.slsketch", "result.step", "report.json", str(depth), direction, str(hole_depth)]
                 if getattr(sys, "frozen", False):
                     command = [sys.executable, "--sketch-solid-worker", *args]
                     environment = None

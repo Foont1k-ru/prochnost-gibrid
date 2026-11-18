@@ -28,7 +28,7 @@ def main() -> int:
         from suspensionlab.core.cad_worker import main as cad_main
 
         return cad_main(sys.argv[2:])
-    if len(sys.argv) in (6, 7) and sys.argv[1] == "--sketch-solid-worker":
+    if len(sys.argv) in (6, 7, 8) and sys.argv[1] == "--sketch-solid-worker":
         from suspensionlab.core.sketch_solid_worker import main as sketch_solid_main
 
         return sketch_solid_main(sys.argv[2:])

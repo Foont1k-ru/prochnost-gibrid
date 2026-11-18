@@ -149,6 +149,16 @@ def run_cad_check() -> None:
                  np.allclose(holes_mesh.triangles.reshape(-1, 3).max(axis=0), (100., 14.5, 50.), atol=1e-6, rtol=0),
                  "В собранном приложении недоступно симметричное STEP-тело со сквозным отверстием")
 
+        blind_path = Path(directory) / "тело с глухим отверстием.step"
+        SketchSolidJob().run(hole_doc, 5., blind_path, direction="negative", hole_depth=2.)
+        blind_mesh = CadJob().run(blind_path, 0.2, timeout=90)
+        triangles = blind_mesh.triangles
+        floor = np.all(np.abs(triangles[:, :, 1] - 10.) < 1e-6, axis=1)
+        _require(blind_mesh.face_count == 8 and blind_mesh.skipped_faces == 0 and bool(np.any(floor)) and
+                 np.allclose(triangles.reshape(-1, 3).min(axis=0), (0., 7., 0.), atol=1e-6, rtol=0) and
+                 np.allclose(triangles.reshape(-1, 3).max(axis=0), (100., 12., 50.), atol=1e-6, rtol=0),
+                 "В собранном приложении недоступно STEP-тело с глухим отверстием")
+
     # 3D труб проверяется именно из собранного приложения, включая повторный
     # запуск замороженного исполняемого файла как CAD-процесса и Qt-отрисовку.
     from time import monotonic, sleep

@@ -10,7 +10,7 @@ from typing import Any
 from ..model.sketch_contours import check_contours
 from ..model.sketch_curves import NUMERIC_EPS_MM, distance, endpoints, point_at
 from ..model.sketch_draft import Entity, Point
-from ..model.sketch_extrude_settings import extrusion_limits
+from ..model.sketch_extrude_settings import extrusion_limits, validate_hole_depth
 from ..model.sketch_io import SketchDocument, read_sketch
 
 
@@ -61,13 +61,20 @@ def ordered_contours(entities: tuple[Entity, ...]) -> tuple[tuple[tuple[Entity, 
     return tuple(result)
 
 
-def build_solid(document: SketchDocument, depth: float, direction: str = "positive") -> Any:
+def build_solid(document: SketchDocument, depth: float, direction: str = "positive", hole_depth: float = 0) -> Any:
     """Тело OCCT с аналитическими рёбрами, без аппроксимации дуг сеткой."""
     start, end = extrusion_limits(document.offset_mm, depth, direction)
     if document.plane not in ("XY", "XZ", "YZ"):
         raise ValueError("Некорректная плоскость")
     contours = ordered_contours(document.entities)
-    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakeWire
+    validate_hole_depth(depth, hole_depth, has_holes=len(contours) > 1)
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+    from OCP.BRepBuilderAPI import (
+        BRepBuilderAPI_MakeEdge,
+        BRepBuilderAPI_MakeFace,
+        BRepBuilderAPI_MakeWire,
+        BRepBuilderAPI_Transform,
+    )
     from OCP.BRepCheck import BRepCheck_Analyzer
     from OCP.BRepClass import BRepClass_FaceClassifier
     from OCP.BRepExtrema import BRepExtrema_DistShapeShape
@@ -75,7 +82,7 @@ def build_solid(document: SketchDocument, depth: float, direction: str = "positi
     from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
     from OCP.BRepTools import BRepTools
     from OCP.GC import GC_MakeArcOfCircle
-    from OCP.gp import gp_Ax2, gp_Circ, gp_Dir, gp_Pln, gp_Pnt, gp_Vec
+    from OCP.gp import gp_Ax2, gp_Circ, gp_Dir, gp_Pln, gp_Pnt, gp_Trsf, gp_Vec
     from OCP.GProp import GProp_GProps
     from OCP.TopAbs import TopAbs_ShapeEnum, TopAbs_State
     from OCP.TopExp import TopExp_Explorer
@@ -166,12 +173,35 @@ def build_solid(document: SketchDocument, depth: float, direction: str = "positi
     expected = areas[outer[0]] - sum(area for i, area in enumerate(areas) if i != outer[0])
     if expected <= 1e-12 or not math.isclose(props.Mass(), expected, rel_tol=1e-8, abs_tol=1e-8):
         raise ValueError("Не удалось корректно вычесть отверстия")
-    face = builder
+    # Through holes use a single face. Blind pockets cut the outer prism from
+    # the sketch-facing side (positive/negative), or from the negative side
+    # for the symmetric mode. All pockets share one explicit depth.
     vec = gp_Vec(*(x * (end - start) for x in normal))
-    prism = BRepPrimAPI_MakePrism(face.Face(), vec, True)
+    base_face = faces[outer[0]] if hole_depth > 0 else builder.Face()
+    prism = BRepPrimAPI_MakePrism(base_face, vec, True)
     if not prism.IsDone() or prism.Shape().IsNull() or not BRepCheck_Analyzer(prism.Shape()).IsValid():
         raise ValueError("CAD-ядро не смогло создать корректное тело")
     solid = prism.Shape()
+    if hole_depth > 0:
+        for i, pocket_face in enumerate(faces):
+            if i == outer[0]:
+                continue
+            # The negative extrusion starts at the sketch plane (upper face).
+            shift = depth - hole_depth if direction == "negative" else 0.
+            if shift:
+                transform = gp_Trsf()
+                transform.SetTranslation(gp_Vec(*(x * shift for x in normal)))
+                pocket_shape = BRepBuilderAPI_Transform(pocket_face, transform, True).Shape()
+            else:
+                pocket_shape = pocket_face
+            cutter = BRepPrimAPI_MakePrism(pocket_shape, gp_Vec(*(x * hole_depth for x in normal)), True)
+            if not cutter.IsDone() or cutter.Shape().IsNull():
+                raise ValueError("CAD-ядро не смогло построить объём отверстия")
+            cut = BRepAlgoAPI_Cut(solid, cutter.Shape())
+            cut.Build()
+            if not cut.IsDone() or cut.Shape().IsNull() or not BRepCheck_Analyzer(cut.Shape()).IsValid():
+                raise ValueError("CAD-ядро не смогло создать глухое отверстие")
+            solid = cut.Shape()
     explorer = TopExp_Explorer(solid, TopAbs_ShapeEnum.TopAbs_SOLID)
     if not explorer.More():
         raise ValueError("Результат не является телом")
@@ -182,15 +212,19 @@ def build_solid(document: SketchDocument, depth: float, direction: str = "positi
     BRepGProp.VolumeProperties_s(solid, volume)
     if not math.isfinite(volume.Mass()) or volume.Mass() <= 1e-12:
         raise ValueError("Объём тела нулевой или недопустим")
+    hole_area = sum(area for i, area in enumerate(areas) if i != outer[0])
+    expected_volume = areas[outer[0]] * depth - hole_area * (hole_depth or depth)
+    if not math.isclose(volume.Mass(), expected_volume, rel_tol=1e-8, abs_tol=1e-8):
+        raise ValueError("Объём тела не соответствует глубине отверстий")
     return solid
 
 
-def write_step(document: SketchDocument, depth: float, output: Path, direction: str = "positive") -> None:
+def write_step(document: SketchDocument, depth: float, output: Path, direction: str = "positive", hole_depth: float = 0) -> None:
     from OCP.IFSelect import IFSelect_ReturnStatus
     from OCP.Interface import Interface_Static
     from OCP.STEPControl import STEPControl_AsIs, STEPControl_Writer
 
-    solid = build_solid(document, depth, direction)
+    solid = build_solid(document, depth, direction, hole_depth)
     writer = STEPControl_Writer()
     if not Interface_Static.SetCVal_s("write.step.unit", "MM"):
         raise ValueError("Не удалось задать единицы STEP в миллиметрах")
@@ -202,12 +236,13 @@ def write_step(document: SketchDocument, depth: float, output: Path, direction: 
 
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
-    if len(args) not in (4, 5):
+    if len(args) not in (4, 5, 6):
         return 2
     source, output, report = (Path(x) for x in args[:3])
     try:
         document = read_sketch(source)
-        write_step(document, float(args[3]), output, args[4] if len(args) == 5 else "positive")
+        write_step(document, float(args[3]), output, args[4] if len(args) >= 5 else "positive",
+                   float(args[5]) if len(args) == 6 else 0)
         report.write_text(json.dumps({"status": "ok"}), encoding="utf-8")
         return 0
     except (ImportError, OSError):

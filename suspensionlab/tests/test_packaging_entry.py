@@ -94,6 +94,7 @@ def test_sketch_worker_routes_both_old_and_direction_arguments(monkeypatch) -> N
     worker.main = lambda args: called.append(args) or 13  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "suspensionlab.core.sketch_solid_worker", worker)
     for args in (["source", "output", "report", "2.0"],
-                 ["source", "output", "report", "2.0", "symmetric"]):
+                 ["source", "output", "report", "2.0", "symmetric"],
+                 ["source", "output", "report", "2.0", "negative", "1.0"]):
         monkeypatch.setattr(sys, "argv", ["app", "--sketch-solid-worker", *args])
         assert packaging_entry.main() == 13 and called[-1] == args

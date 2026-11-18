@@ -19,3 +19,11 @@ def extrusion_limits(offset: float, depth: float, direction: str = "positive") -
     if direction == "symmetric":
         return offset - depth / 2, offset + depth / 2
     raise ValueError("Некорректное направление выдавливания")
+
+
+def validate_hole_depth(thickness: float, hole_depth: float, *, has_holes: bool | None = None) -> None:
+    """0 означает сквозные отверстия, иначе глубина строго меньше толщины."""
+    if not isfinite(hole_depth) or hole_depth < 0 or hole_depth >= thickness:
+        raise ValueError("Глубина глухих отверстий должна быть больше нуля и меньше толщины; 0 означает сквозные")
+    if hole_depth > 0 and has_holes is False:
+        raise ValueError("Для глухих отверстий нужны внутренние замкнутые контуры")

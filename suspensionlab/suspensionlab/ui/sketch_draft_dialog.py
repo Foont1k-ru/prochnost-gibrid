@@ -52,6 +52,7 @@ from ..model.sketch_draft import (
     rectangle_entities,
 )
 from ..model.sketch_dxf import SketchDxfError, write_new_dxf
+from ..model.sketch_extrude_settings import validate_hole_depth
 from ..model.sketch_extrusion import extrusion_mesh
 from ..model.sketch_io import SUFFIX, SketchDocument, SketchIOError, read_sketch, write_new_sketch
 
@@ -740,6 +741,19 @@ class SketchDraftDialog(QDialog):
         self.extrusion_direction.setToolTip("XY → ось Z, XZ → ось Y, YZ → ось X. "
                                             "Симметрично: половина толщины с каждой стороны.")
         extrusion_options.addWidget(self.extrusion_direction)
+        extrusion_options.addWidget(QLabel("Глубина отверстий:"))
+        self.hole_depth = QDoubleSpinBox()
+        self.hole_depth.setRange(0, 1_000_000)
+        self.hole_depth.setDecimals(3)
+        self.hole_depth.setSuffix(" мм")
+        self.hole_depth.setSpecialValueText("Сквозные")
+        self.hole_depth.setToolTip("0 — сквозные; положительная глубина меньше толщины — глухие. "
+                                   "Все отверстия имеют одну глубину. Для симметрии вход с отрицательной стороны оси.")
+        extrusion_options.addWidget(self.hole_depth)
+        depth_help = QLabel("Одинаковая глубина; при симметрии вход с −стороны оси")
+        depth_help.setToolTip("Глухие отверстия открываются со стороны плоскости эскиза; "
+                              "при симметричном выдавливании — с отрицательной стороны оси.")
+        extrusion_options.addWidget(depth_help)
         extrusion_options.addStretch(1)
         layout.addLayout(extrusion_options)
         row = QHBoxLayout()
@@ -1004,10 +1018,15 @@ class SketchDraftDialog(QDialog):
             return
         depth, ok = QInputDialog.getDouble(self, "Выдавливание в STEP",
             "Толщина в мм вдоль оси, перпендикулярной эскизу. "
-            "Один внешний контур; внутренние контуры станут сквозными отверстиями. "
+            "Один внешний контур; внутренние контуры станут отверстиями выбранной глубины. "
             "Создаётся отдельное CAD-тело, не связанное с эскизом и проектом.",
             10, 0.001, 1_000_000, 3)
         if not ok:
+            return
+        try:
+            validate_hole_depth(depth, self.hole_depth.value(), has_holes=report.closed_loops > 1)
+        except ValueError as exc:
+            QMessageBox.warning(self, "Создание 3D STEP", str(exc))
             return
         path, _ = QFileDialog.getSaveFileName(self, "Создать новый STEP", "тело.step", "STEP (*.step *.stp)",
                                               options=QFileDialog.Option.DontConfirmOverwrite)
@@ -1017,7 +1036,7 @@ class SketchDraftDialog(QDialog):
         if not destination.suffix:
             destination = destination.with_suffix(".step")
         progress = SketchSolidDialog(self._document(), depth, destination, self,
-                                     direction=str(self.extrusion_direction.currentData()))
+                                     direction=str(self.extrusion_direction.currentData()), hole_depth=self.hole_depth.value())
         progress.start()
         progress.exec()
         progress.worker.wait()  # thread must be fully finished before Qt ownership is released
@@ -1046,9 +1065,14 @@ class SketchDraftDialog(QDialog):
             return
         depth, ok = QInputDialog.getDouble(self, "Выдавливание: 3D-предпросмотр",
             "Толщина в мм вдоль оси, перпендикулярной эскизу. "
-            "Внутренние контуры станут сквозными отверстиями; результат только для просмотра.",
+            "Внутренние контуры станут отверстиями выбранной глубины; результат только для просмотра.",
             10, 0.001, 1_000_000, 3)
         if not ok:
+            return
+        try:
+            validate_hole_depth(depth, self.hole_depth.value(), has_holes=report.closed_loops > 1)
+        except ValueError as exc:
+            QMessageBox.warning(self, "3D-предпросмотр не создан", str(exc))
             return
         if report.closed_loops > 1:
             self._preview_solid_with_holes(depth)
@@ -1069,7 +1093,7 @@ class SketchDraftDialog(QDialog):
         try:
             with TemporaryDirectory(prefix="sketch-preview-") as directory:
                 progress = SketchSolidDialog(self._document(), depth, Path(directory) / "preview.step", self,
-                                             direction=str(self.extrusion_direction.currentData()))
+                                             direction=str(self.extrusion_direction.currentData()), hole_depth=self.hole_depth.value())
                 progress.start()
                 progress.exec()
                 progress.worker.wait()
