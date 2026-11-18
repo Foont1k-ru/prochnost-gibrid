@@ -86,3 +86,14 @@ def test_weldment_worker_is_dispatched_before_gui(monkeypatch) -> None:
     monkeypatch.setitem(sys.modules, "suspensionlab.core.cad_weldment_worker", worker)
     monkeypatch.setattr(sys, "argv", ["app", "--weldment-preview-worker", "source", "output", "report", "2.0"])
     assert packaging_entry.main() == 11 and called == [["source", "output", "report", "2.0"]]
+
+
+def test_sketch_worker_routes_both_old_and_direction_arguments(monkeypatch) -> None:
+    worker = ModuleType("suspensionlab.core.sketch_solid_worker")
+    called: list[list[str]] = []
+    worker.main = lambda args: called.append(args) or 13  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "suspensionlab.core.sketch_solid_worker", worker)
+    for args in (["source", "output", "report", "2.0"],
+                 ["source", "output", "report", "2.0", "symmetric"]):
+        monkeypatch.setattr(sys, "argv", ["app", "--sketch-solid-worker", *args])
+        assert packaging_entry.main() == 13 and called[-1] == args
