@@ -1,0 +1,80 @@
+name: Исследование завершения пробной Windows-сборки
+on:
+  push:
+    paths:
+      - '.github/workflows/windows-smoke-investigation.yml'
+permissions:
+  contents: read
+jobs:
+  compare:
+    name: Эксперимент PySide ${{ matrix.qt }}
+    runs-on: windows-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        qt: ['6.11.3', '6.12.0']
+    defaults:
+      run:
+        working-directory: suspensionlab
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PYTHONUTF8: '1'
+      PYTHONFAULTHANDLER: '1'
+      EXPERIMENT_QT: ${{ matrix.qt }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Установить зависимости и вариант Qt только для опыта
+        shell: pwsh
+        run: |
+          python -m pip install '.[cad]' pyinstaller==6.16.0
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m pip install --force-reinstall "PySide6-Essentials==$env:EXPERIMENT_QT"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -c "import PySide6, shiboken6; print('PySide', PySide6.__version__, 'shiboken', shiboken6.__version__)"
+      - name: Собрать экспериментальное приложение
+        shell: pwsh
+        run: |
+          $ocpLibs = python -c "from importlib.metadata import distribution; print(distribution('cadquery-ocp-novtk').locate_file('cadquery_ocp_novtk.libs'))"
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path $ocpLibs)) { throw 'Не найдены библиотеки CAD' }
+          python -m PyInstaller --noconfirm --clean --windowed --name SuspensionLab `
+            --collect-all OCP --add-binary "$ocpLibs\*.dll;cadquery_ocp_novtk.libs" `
+            --add-data "suspensionlab/resources;suspensionlab/resources" packaging_entry.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Повторные независимые проверки процесса без повторов для сокрытия ошибок
+        shell: pwsh
+        run: |
+          @'
+          import json, os, subprocess, sys, tempfile
+          from pathlib import Path
+          exe = Path('dist/SuspensionLab/SuspensionLab.exe').resolve()
+          results = []
+          with tempfile.TemporaryDirectory(prefix='qt-comparison-') as tmp:
+              root = Path(tmp)
+              for check in ['--packaging-check'] * 6 + ['--packaging-startup-check', '--packaging-cad-check']:
+                  index = len(results)
+                  working = root / f'test-{index}'
+                  working.mkdir()
+                  report = working / 'report.txt'
+                  env = {**os.environ, 'APPDATA': str(working), 'QT_QPA_PLATFORM': 'offscreen'}
+                  try:
+                      result = subprocess.run([str(exe), check, str(report)], cwd=working, env=env, timeout=150)
+                      code = result.returncode
+                  except subprocess.TimeoutExpired:
+                      code = 'timeout'
+                  text = report.read_text(encoding='utf-8', errors='replace') if report.exists() else '<missing>'
+                  results.append({'check': check, 'exit': code, 'report': text[:500],
+                                  'ok': code == 0 and text.strip() == 'OK'})
+          summary = json.dumps({'qt': os.environ['EXPERIMENT_QT'], 'results': results}, ensure_ascii=True)
+          print(summary, flush=True)
+          escaped = summary.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+          print(f'::notice title=Qt version comparison::{escaped}', flush=True)
+          if not all(r['ok'] for r in results):
+              print(f'::error title=Experimental smoke failures::{escaped}', flush=True)
+              sys.exit(1)
+          '@ | Set-Content -Encoding utf8 qt-compare-temporary.py
+          python qt-compare-temporary.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
