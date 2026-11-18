@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
 
 from ..i18n import tr
 from ..model.arm_concept import ArmConcept, ArmStyle, make_arm_concept
-from ..model.kim_format import KimFormatError, make_lower_arm_tube_prototype, write_document
+from ..model.kim_format import KimFormatError, make_lower_arm_tube_prototype, make_scheme_arm_part, write_document
 from ..model.welded_arm import make_welded_arm, weldment_centerlines
 from .bend_editor import BendEditor
 from .controller import AppController
@@ -151,6 +151,10 @@ class ArmConceptDialog(QDialog):
         self._save_tube = QPushButton(tr("arm_concept.save_tube"), self)
         self._save_tube.clicked.connect(self._save_tube_snapshot)
         layout.addWidget(self._save_tube)
+        self._save_linked_part = QPushButton("Сохранить схему и 3D-заготовку в новый .kim…", self)
+        self._save_linked_part.setToolTip("Две прямые неподрезанные трубы и полный снимок схемы; не готовая деталь.")
+        self._save_linked_part.clicked.connect(self._save_scheme_part)
+        layout.addWidget(self._save_linked_part)
         self._save_status = QLabel(self)
         self._save_status.setWordWrap(True)
         self._save_status.setTextFormat(Qt.TextFormat.PlainText)
@@ -200,6 +204,7 @@ class ArmConceptDialog(QDialog):
             self._summary.clear()
             self._save_tube.setEnabled(False)
             self._save_assembly.setEnabled(False)
+            self._save_linked_part.setEnabled(False)
             return
         self._save_tube.setEnabled(style == "tube" and not has_bend)
         self.concept = concept
@@ -235,6 +240,8 @@ class ArmConceptDialog(QDialog):
 
     def _update_save(self, *_args: object) -> None:
         self._save_assembly.setEnabled(self._candidate is not None and self._three_d.can_save())
+        self._save_linked_part.setEnabled(self._candidate is not None and not self._bend_editor.has_bends()
+                                         and self._three_d.can_save())
 
     def shutdown(self) -> bool:
         return self._three_d.shutdown()
@@ -248,6 +255,40 @@ class ArmConceptDialog(QDialog):
             super().closeEvent(event)
         else:
             event.ignore()
+
+    def _save_scheme_part(self) -> None:
+        """Сохранить независимый снимок, не меняя исходную схему."""
+        candidate = self._candidate
+        if candidate is None or self._bend_editor.has_bends() or not self._three_d.can_save():
+            return
+        try:
+            original = make_scheme_arm_part("front_lower_left", tr("arm_concept.part_name"),
+                                            self.controller.project, self._radius.value(), self._wall.value())
+            if not self._candidate_is_current(candidate):
+                raise KimFormatError("project changed")
+        except (KimFormatError, TypeError, ValueError, OverflowError):
+            QMessageBox.warning(self, "Сохранение .kim", "Схема или параметры недоступны для сохранения.")
+            return
+        revision, generation = self._revision, self._three_d.generation
+        selected, _ = QFileDialog.getSaveFileName(self, "Сохранить схему и заготовку", "рычаг.kim", "Деталь KIM (*.kim)")
+        if not selected:
+            return
+        path = Path(selected)
+        if path.suffix.lower() != ".kim":
+            path = path.with_name(path.name + ".kim")
+        try:
+            if (revision != self._revision or generation != self._three_d.generation or
+                    not self._three_d.can_save() or not self._candidate_is_current(candidate) or
+                    original != make_scheme_arm_part(original["id"], original["name"], self.controller.project,
+                                                     self._radius.value(), self._wall.value())):
+                raise KimFormatError("project changed")
+            if self.controller.is_protected_export_target(path):
+                raise KimFormatError("protected path")
+            write_document(path, "part", original, overwrite=False)
+        except (KimFormatError, OSError, RuntimeError, ValueError, TypeError, OverflowError):
+            QMessageBox.warning(self, "Сохранение .kim", "Не удалось сохранить новый файл: схема или параметры изменились, либо файл уже существует.")
+            return
+        self._save_status.setText(f"Сохранён новый .kim: {path}. Снимок не обновляется автоматически; чертежа пока нет.")
 
     def _save_tube_snapshot(self) -> None:
         """Старый эксперимент — две трубы в одном документе, не деталь."""

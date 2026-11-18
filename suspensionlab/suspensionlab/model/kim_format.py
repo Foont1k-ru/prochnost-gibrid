@@ -22,6 +22,8 @@ from .project_limits import MAX_PROJECT_BYTES
 
 VERSION = "0.1"
 BENT_PART_VERSION = "0.2"
+SCHEME_ARM_PART_VERSION = "0.3"
+SCHEME_ARM_ALGORITHM = "front_lower_left_straight_tubes_v1"
 MAX_PARTS = 256
 MAX_INSTANCES = 1024
 MAX_MM = 1_000_000.0  # защитная граница прототипа, не инженерный допуск
@@ -66,6 +68,21 @@ def _number(value: Any, *, positive: bool = False) -> float:
 
 
 def _part(data: Any) -> None:
+    if isinstance(data, dict) and data.get("version") == SCHEME_ARM_PART_VERSION:
+        doc = _keys(data, {"format", "version", "id", "name", "units", "geometry", "scheme", "algorithm"})
+        if doc["algorithm"] != SCHEME_ARM_ALGORITHM or doc["scheme"] is None:
+            raise KimFormatError("unsupported scheme-driven part")
+        _scheme(doc["scheme"])
+        legacy = {key: doc[key] for key in ("format", "id", "name", "units", "geometry")}
+        legacy["version"] = VERSION
+        _part(legacy)
+        if doc["geometry"]["kind"] != "prototype_lower_arm_tubes":
+            raise KimFormatError("unsupported scheme-driven geometry")
+        if doc["geometry"]["radius_mm"] > 10000 or doc["geometry"]["wall_mm"] > 10000:
+            raise KimFormatError("tube size exceeds scheme editor limits")
+        if doc["geometry"]["source"] != _lower_arm_source(Project.from_dict(doc["scheme"])):
+            raise KimFormatError("part source differs from saved scheme")
+        return
     doc = _keys(data, {"format", "version", "id", "name", "units", "geometry"})
     if doc["format"] != "kim-part" or doc["version"] not in (VERSION, BENT_PART_VERSION) or doc["units"] != "mm":
         raise KimFormatError("unsupported part format, version or units")
@@ -207,6 +224,8 @@ def _assembly(data: Any) -> None:
     part_ids: set[str] = set()
     for part in parts:
         _part(part)
+        if part["version"] == SCHEME_ARM_PART_VERSION:
+            raise KimFormatError("scheme-driven part requires a future assembly format")
         key = _id(part["id"])
         if key in part_ids:
             raise KimFormatError("duplicate part identifier")
@@ -268,6 +287,32 @@ def make_lower_arm_tube_prototype(identifier: str, name: str, project: Project,
     return part
 
 
+def make_scheme_arm_part(identifier: str, name: str, project: Project,
+                         radius_mm: float, wall_mm: float) -> dict[str, Any]:
+    """Самодостаточный снимок схемы и параметров двух прямых труб, не готовый рычаг."""
+    try:
+        scheme = json.loads(project_to_json(project), object_pairs_hook=_unique_object)
+        _scheme(scheme)
+        snapshot = Project.from_dict(scheme)
+        part = make_lower_arm_tube_prototype(identifier, name, snapshot, radius_mm, wall_mm)
+        part.update(version=SCHEME_ARM_PART_VERSION, algorithm=SCHEME_ARM_ALGORITHM, scheme=scheme)
+        _part(part)
+        return part
+    except (TypeError, ValueError, KeyError, OverflowError, RecursionError) as error:
+        raise KimFormatError("cannot create scheme-driven part") from error
+
+
+def rebuild_scheme_arm_part(part: dict[str, Any], project: Project) -> dict[str, Any]:
+    """Явно создаёт новый снимок; не меняет исходник и не меняет тип подвески."""
+    _part(part)
+    if part["version"] != SCHEME_ARM_PART_VERSION:
+        raise KimFormatError("not a scheme-driven part")
+    if _lower_arm_source(project)["suspension_type"] != part["geometry"]["source"]["suspension_type"]:
+        raise KimFormatError("suspension type changed; create a new part")
+    geometry = part["geometry"]
+    return make_scheme_arm_part(part["id"], part["name"], project, geometry["radius_mm"], geometry["wall_mm"])
+
+
 def make_arm_tube(identifier: str, name: str, project: Project, leg: str,
                   radius_mm: float, wall_mm: float) -> dict[str, Any]:
     """Отдельный неподрезанный трубный элемент с привязкой к снимку схемы."""
@@ -281,6 +326,8 @@ def make_arm_tube(identifier: str, name: str, project: Project, leg: str,
 def rebuild_lower_arm_prototype(part: dict[str, Any], project: Project) -> dict[str, Any]:
     """Новый снимок по тем же параметрам; тип схемы менять не разрешается."""
     _part(part)
+    if part["version"] == SCHEME_ARM_PART_VERSION:
+        raise KimFormatError("use the scheme-driven rebuild to preserve the scheme")
     shape = part["geometry"]
     kind = shape["kind"]
     if kind not in ("prototype_lower_arm_rods", "prototype_lower_arm_tubes"):

@@ -140,6 +140,24 @@ class MainWindow(QMainWindow):
     def _open_sketch_draft(self) -> None:
         SketchDraftDialog(self).exec()
 
+    def _open_scheme_arm_part(self) -> None:
+        from ..model.kim_format import SCHEME_ARM_PART_VERSION, KimFormatError, read_document
+        from .kim_scheme_arm_dialog import KimSchemeArmDialog
+
+        selected, _ = QFileDialog.getOpenFileName(self, "Открыть схему и заготовку .kim", "", "Деталь KIM (*.kim)")
+        if not selected:
+            return
+        try:
+            document = read_document(selected, "part")
+            if document["version"] != SCHEME_ARM_PART_VERSION:
+                raise KimFormatError("unsupported part version")
+            dialog = KimSchemeArmDialog(self.controller, document, Path(selected), self)
+        except (KimFormatError, OSError, TypeError, ValueError, OverflowError):
+            QMessageBox.warning(self, "Открытие .kim", "Не удалось открыть файл. Поддерживается только новый экспериментальный .kim со схемой и двумя прямыми трубами; исходный файл не изменён.")
+            return
+        dialog.exec()
+        dialog.deleteLater()
+
     def _open_step_inventory(self) -> None:
         StepInventoryDialog(self).exec()
 
@@ -319,6 +337,9 @@ class MainWindow(QMainWindow):
         self.action_sketch_draft = QAction("Плоский эскиз (отдельный документ)", self)
         self.action_sketch_draft.triggered.connect(self._open_sketch_draft)
 
+        self.action_scheme_arm_part = QAction("Эксперимент: открыть схему и 3D-заготовку .kim…", self)
+        self.action_scheme_arm_part.triggered.connect(self._open_scheme_arm_part)
+
         self.action_niva_arms = QAction(tr("niva_arms.menu"), self)
         self.action_niva_arms.triggered.connect(self._open_niva_arms)
 
@@ -425,6 +446,7 @@ class MainWindow(QMainWindow):
         menu_file.addAction(self.action_front_tubes)
         menu_file.addAction(self.action_rear_tube)
         menu_file.addAction(self.action_arm_concept)
+        menu_file.addAction(self.action_scheme_arm_part)
         menu_file.addAction(self.action_weldment)
         menu_file.addAction(self.action_recover_autosave)
         menu_file.addAction(self.action_allow_autosave)

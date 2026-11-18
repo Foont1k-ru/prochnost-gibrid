@@ -235,3 +235,43 @@ def test_bent_tube_in_spatial_plane_is_valid_and_incomplete_assembly_refused():
     assert volume(shape) == pytest.approx(math.pi * 36 * (160 + 10 * math.pi), rel=1e-7)
     with pytest.raises(ValueError):
         build_assembly(doc)
+
+
+def test_scheme_part_roundtrip_rebuilds_same_cad_as_preview(tmp_path):
+    from suspensionlab.core.cad_kim_prototype import build_weldment_tubes_preview
+    from suspensionlab.model.entities import Project
+    from suspensionlab.model.kim_format import make_scheme_arm_part
+    from suspensionlab.model.welded_arm import make_welded_arm
+
+    project = Project.create_default()
+    part = make_scheme_arm_part('arm', 'Рычаг', project, 12, 2)
+    path = tmp_path / 'схема-рычаг.kim'
+    write_document(path, 'part', part, overwrite=False)
+    saved = read_document(path, 'part')
+    shape = build_part(saved)
+    saved_project = Project.from_dict(saved['scheme'])
+    preview = build_weldment_tubes_preview(make_welded_arm(saved_project, 12, 2, 'unknown'))
+    assert BRepCheck_Analyzer(shape).IsValid() and BRepCheck_Analyzer(preview).IsValid()
+    assert volume(shape) == pytest.approx(volume(preview), rel=1e-10)
+    a, b = Bnd_Box(), Bnd_Box()
+    BRepBndLib.Add_s(shape, a)
+    BRepBndLib.Add_s(preview, b)
+    for left, right in ((a.CornerMin(), b.CornerMin()), (a.CornerMax(), b.CornerMax())):
+        assert (left.X(), left.Y(), left.Z()) == pytest.approx((right.X(), right.Y(), right.Z()), abs=1e-7)
+
+
+def test_scheme_part_reopens_in_isolated_cad_preview_worker(tmp_path):
+    from suspensionlab.core.cad_weldment_job import WeldmentCadJob
+    from suspensionlab.model.entities import Project
+    from suspensionlab.model.kim_format import make_scheme_arm_part
+    from suspensionlab.model.welded_arm import make_welded_arm
+
+    part = make_scheme_arm_part('arm', 'Рычаг', Project.create_default(), 12, 2)
+    path = tmp_path / 'арм.kim'
+    write_document(path, 'part', part, overwrite=False)
+    loaded = read_document(path, 'part')
+    geometry = loaded['geometry']
+    preview = make_welded_arm(Project.from_dict(loaded['scheme']), geometry['radius_mm'], geometry['wall_mm'], 'unknown')
+    mesh = WeldmentCadJob().run(preview, deviation=0.2)
+    assert mesh.face_count >= 8 and mesh.skipped_faces == mesh.recovered_faces == 0
+    assert len(mesh.triangles) > 20
