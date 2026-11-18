@@ -36,6 +36,7 @@ from .cad_preview_dialog import CadPreviewDialog
 from .cad_preview_settings import CadPreviewSettingsDialog
 from .cad_registration_dialog import CadRegistrationDialog
 from .canvas.axle_view import AxleCanvas
+from .canvas.vehicle_schematic import VehicleSchematicView
 from .controller import AppController, Selection
 from .dialogs import RestoreSnapshotDialog, SnapshotDialog, TemplateDialog
 from .docks.diagnostics import DiagnosticsPanel
@@ -122,6 +123,8 @@ class MainWindow(QMainWindow):
             canvas.viewChanged.connect(self._on_canvas_view_changed)
             self._canvases[key] = canvas
             self._tabs.addTab(canvas, tr(f"view.tab.{key}"))
+        self._vehicle_view = VehicleSchematicView(self.controller, self._tabs)
+        self._tabs.addTab(self._vehicle_view, tr("vehicle_schematic.tab"))
         self._tabs.currentChanged.connect(lambda _index: self._update_status())
 
         self._stack.addWidget(self._empty)
@@ -443,15 +446,15 @@ class MainWindow(QMainWindow):
 
         self.action_fit = QAction(tr("menu.view.fit"), self)
         self.action_fit.setShortcut(QKeySequence("F"))
-        self.action_fit.triggered.connect(lambda: self._current_canvas().fit_to_view())
+        self.action_fit.triggered.connect(self._fit_active_view)
 
         self.action_zoom_in = QAction("+", self)
         self.action_zoom_in.setShortcut(QKeySequence("+"))
-        self.action_zoom_in.triggered.connect(lambda: self._current_canvas().zoom_by(1.25))
+        self.action_zoom_in.triggered.connect(lambda: self._zoom_active_view(1.25))
 
         self.action_zoom_out = QAction("−", self)
         self.action_zoom_out.setShortcut(QKeySequence("-"))
-        self.action_zoom_out.triggered.connect(lambda: self._current_canvas().zoom_by(1 / 1.25))
+        self.action_zoom_out.triggered.connect(lambda: self._zoom_active_view(1 / 1.25))
 
         self.action_analysis = QAction(tr("analysis.menu_action"), self)
         self.action_analysis.triggered.connect(self._open_analysis)
@@ -733,7 +736,9 @@ class MainWindow(QMainWindow):
             )
         )
         canvas = self._current_canvas() if hasattr(self, "_canvases") else None
-        if canvas is not None:
+        if self._tabs.currentWidget() is self._vehicle_view:
+            self._status_selection.setText(tr("vehicle_schematic.title"))
+        elif canvas is not None:
             mode = canvas.view_mode()
             self._status_selection.setText(
                 tr("status.canvas_hint") + "   ·   " + tr("status.view", view=tr(f"view.{mode}"))
@@ -811,9 +816,11 @@ class MainWindow(QMainWindow):
             project = dialog.selected_project()
             if project is not None:
                 self.controller.new_project(project=project)
+                self._tabs.setCurrentWidget(self._vehicle_view)
                 self._show_workspace()
             elif dialog.selected_key():
                 self.controller.new_project(dialog.selected_key())
+                self._tabs.setCurrentWidget(self._vehicle_view)
                 self._show_workspace()
 
     def _open_project(self) -> None:
@@ -953,8 +960,22 @@ class MainWindow(QMainWindow):
             self._open_log()
 
     # ------------------------------------------------------------------ вид
+    def _fit_active_view(self) -> None:
+        if self._tabs.currentWidget() is self._vehicle_view:
+            self._vehicle_view.preview.reset_camera()
+        else:
+            self._current_canvas().fit_to_view()
+
+    def _zoom_active_view(self, factor: float) -> None:
+        if self._tabs.currentWidget() is self._vehicle_view:
+            self._vehicle_view.zoom_by(factor)
+        else:
+            self._current_canvas().zoom_by(factor)
+
     def _set_view_mode(self, mode: str) -> None:
         """Переключает проекцию на всех вкладках и в меню."""
+        if self._tabs.currentWidget() is self._vehicle_view:
+            self._tabs.setCurrentWidget(self._canvases["both"])
         self._syncing_view = True
         try:
             for canvas in self._canvases.values():

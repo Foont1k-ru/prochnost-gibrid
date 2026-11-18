@@ -19,8 +19,9 @@ _COLORS = {"arm": "#3689e6", "knuckle": "#3689e6", "steering": "#bb8ce2", "sprin
 class Scene3DPreview(QWidget):
     """Только каркас рассчитанных точек, положение камеры не меняет проект."""
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, parent: QWidget | None = None, *, schematic: bool = False) -> None:
         super().__init__(parent)
+        self.schematic = schematic
         self.setMinimumSize(300, 250)
         self.frame: Scene3D | None = None
         self.bounds: tuple[Point, float] | None = None
@@ -113,6 +114,7 @@ class Scene3DPreview(QWidget):
             painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.setPen(self.palette().text().color())
         painter.drawText(QRectF(8, 4, self.width() - 16, 22), int(Qt.AlignmentFlag.AlignLeft),
+                         tr("vehicle_schematic.title") if self.schematic else
                          tr("analysis.scene3d.travel", travel=f"{self.frame.travel_mm:+.2f}"))
         painter.drawText(QRectF(8, self.height() - 26, self.width() - 16, 20), int(Qt.AlignmentFlag.AlignLeft),
                          tr("analysis.scene3d.legend"))

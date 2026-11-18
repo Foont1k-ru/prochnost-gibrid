@@ -222,7 +222,7 @@ def test_cad_preview_load_rotate_and_cancel_without_project_changes(window, qtbo
 
 
 def test_window_and_theme(window, qtbot):
-    assert window._tabs.count() == 3
+    assert window._tabs.count() == 4
     assert "Подвеска" in window.windowTitle()
     window._apply_theme("light")
     assert window.controller.project.view.theme == "light"
@@ -4585,3 +4585,83 @@ def test_candidate_balance_closes_on_candidate_field_edit(window, qtbot):
     QTimer.singleShot(0, edit)
     candidate._balance.click()
     assert seen and not seen[0].isVisible() and candidate.comparison is None and not candidate._balance.isEnabled()
+
+
+def test_template_opens_live_schematic_with_editable_2d(window, qtbot, monkeypatch):
+    from suspensionlab.ui import main_window
+
+    class TemplateChoice:
+        def __init__(self, parent):
+            pass
+
+        def exec(self):
+            return True
+
+        def selected_project(self):
+            return None
+
+        def selected_key(self):
+            return 'ring'
+
+    monkeypatch.setattr(main_window, 'TemplateDialog', TemplateChoice)
+    window._new_from_template()
+    view = window._vehicle_view
+    assert window._stack.currentWidget() is window._tabs
+    assert window._tabs.currentWidget() is view
+    assert view.preview.frame is not None and view.preview.bounds is not None
+    before = window.controller.project.to_dict()
+    view.preview.set_standard_view('top')
+    window.action_zoom_in.trigger()
+    assert view.preview.zoom > 1
+    window.action_fit.trigger()
+    assert view.preview.zoom == 1
+    assert window.controller.project.to_dict() == before
+    old = view.preview.frame.point('front:wheel_center:left')
+    point = window.controller.project.front.hardpoints['wheel_center']
+    window.controller.move_point(point, (point.x + 10, point.y, point.z))
+    assert view.preview.frame.point('front:wheel_center:left')[0] == old[0] + 10
+    window.controller.undo_last()
+    assert view.preview.frame.point('front:wheel_center:left') == old
+    window._tabs.setCurrentWidget(window._canvases['rear'])
+    assert window._current_canvas() is window._canvases['rear']
+    window._tabs.setCurrentWidget(view)
+    window.view_actions['top'].trigger()
+    assert window._tabs.currentWidget() is window._canvases['both']
+    assert window._current_canvas().view_mode() == 'top'
+    window.controller.set_value(window.controller.project.vehicle, 'wheelbase_mm', 0)
+    assert view.preview.frame is None and 'недоступен' in view.status.text()
+    window.controller.undo_last()
+    assert view.preview.frame is not None
+    qtbot.wait(10)
+
+
+def test_configured_template_and_cancel_keep_expected_active_view(window, monkeypatch):
+    from suspensionlab.model.templates import VehicleTemplateOptions, create_vehicle_template
+    from suspensionlab.ui import main_window
+
+    configured = create_vehicle_template(VehicleTemplateOptions())
+
+    class TemplateChoice:
+        accepted = True
+
+        def __init__(self, parent):
+            pass
+
+        def exec(self):
+            return self.accepted
+
+        def selected_project(self):
+            return configured
+
+        def selected_key(self):
+            return None
+
+    monkeypatch.setattr(main_window, 'TemplateDialog', TemplateChoice)
+    window._new_from_template()
+    assert window.controller.project is configured
+    assert window._tabs.currentWidget() is window._vehicle_view
+    window._tabs.setCurrentWidget(window._canvases['front'])
+    TemplateChoice.accepted = False
+    window._new_from_template()
+    assert window.controller.project is configured
+    assert window._tabs.currentWidget() is window._canvases['front']
