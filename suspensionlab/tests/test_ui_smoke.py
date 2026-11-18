@@ -4693,3 +4693,89 @@ def test_schematic_volumes_toggle_render_and_refresh(window, qtbot):
     assert view.preview.frame is None and view.preview._visual is None
     window.controller.undo_last()
     assert view.preview.frame is not None and view.preview._visual is not None
+
+
+def test_3d_link_selection_click_drag_scheme_and_tree_sync(window, qtbot):
+    from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+    from PySide6.QtWidgets import QApplication
+
+    from suspensionlab.core.scene3d import project_orthographic
+
+    controller = window.controller
+    controller.new_project('ring')
+    view = window._vehicle_view
+    window._tabs.setCurrentWidget(view)
+    window._show_workspace()
+    window._inspector_dock.hide()
+    qtbot.wait(20)
+    preview = view.preview
+    # Restrict only the candidates here: the displayed frame remains unchanged.
+    target = next(t for t in preview.link_targets if t.role == 'front' and t.code == 'lower_arm')
+    preview.link_targets = (target,)
+    center, radius = preview.bounds
+    p, q = target.segment.start, target.segment.end
+    middle = tuple((p[i] + q[i]) / 2 for i in range(3))
+    u, v = project_orthographic(middle, center, preview.yaw, preview.elevation)
+    scale = max(1., min(preview.width() - 36, preview.height() - 70)) / (2 * radius) * preview.zoom
+    at = QPoint(round(preview.width() / 2 + preview.pan_x + u * scale),
+                round(preview.height() / 2 + 8 + preview.pan_y - v * scale))
+    before = controller.project.to_dict()
+    qtbot.mouseClick(preview, Qt.MouseButton.LeftButton, pos=at)
+    assert controller.selection == Selection('link', 'front', 'lower_arm')
+    assert preview.selected_link == ('front', 'lower_arm') and view.open_scheme.isEnabled()
+    assert window._inspector_dock.isVisible()
+    assert controller.project.to_dict() == before and not controller.dirty
+    full_bounds = preview.bounds
+    angles = (preview.yaw, preview.elevation)
+    view.focus_button.click()
+    assert preview.bounds[1] < full_bounds[1] and view.show_all_button.isEnabled()
+    assert (preview.yaw, preview.elevation) == angles
+    view.show_all_button.click()
+    assert preview.bounds == full_bounds and not view.show_all_button.isEnabled()
+    view.open_scheme.click()
+    assert window._tabs.currentWidget() is window._canvases['front']
+    assert controller.selection == Selection('link', 'front', 'lower_arm')
+    window._tabs.setCurrentWidget(view)
+    controller.select(None)
+    yaw = preview.yaw
+    QApplication.sendEvent(preview, QMouseEvent(QEvent.Type.MouseButtonPress, QPointF(at), Qt.MouseButton.LeftButton,
+                                               Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier))
+    moved = QPointF(at + QPoint(25, 15))
+    QApplication.sendEvent(preview, QMouseEvent(QEvent.Type.MouseMove, moved, Qt.MouseButton.NoButton,
+                                               Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier))
+    QApplication.sendEvent(preview, QMouseEvent(QEvent.Type.MouseButtonRelease, moved, Qt.MouseButton.LeftButton,
+                                               Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier))
+    assert preview.yaw != yaw and controller.selection is None
+    # Selection from elsewhere in the application is reflected as well.
+    controller.select(Selection('link', 'front', 'lower_arm'))
+    assert preview.selected_link == ('front', 'lower_arm')
+    controller.set_value(controller.project.vehicle, 'wheelbase_mm', 0)
+    assert not view.open_scheme.isEnabled() and preview.selected_link is None
+
+
+def test_3d_ambiguous_selection_list_and_stale_choice(window, qtbot):
+    from PySide6.QtCore import QPoint
+
+    from suspensionlab.core.vehicle_schematic_pick import LinkHit
+
+    c = window.controller
+    c.new_project('ring')
+    view = window._vehicle_view
+    window._tabs.setCurrentWidget(view)
+    window._show_workspace()
+    candidates = (LinkHit('front', 'lower_arm', 0.), LinkHit('front', 'upper_arm', 1.))
+    view._choose_hits(candidates, QPoint(30, 30))
+    menu = view._pick_menu
+    assert menu is not None and len(menu.actions()) == 2 and c.selection is None
+    menu.actions()[1].trigger()
+    assert c.selection == Selection('link', 'front', 'upper_arm')
+    menu.close()
+    view._choose_hits(candidates, QPoint(30, 30))
+    assert view._pick_menu is not None
+    revision = view._revision
+    c.set_value(c.project.vehicle, 'wheelbase_mm', c.project.vehicle.wheelbase_mm + 1)
+    assert view._pick_menu is None
+    view._select_hit(candidates[0], revision)
+    assert c.selection == Selection('link', 'front', 'upper_arm')
+    qtbot.wait(10)

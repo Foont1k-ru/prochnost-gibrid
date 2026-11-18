@@ -3,13 +3,15 @@ from __future__ import annotations
 
 from math import pi, remainder
 
-from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPen, QPolygonF
 from PySide6.QtWidgets import QWidget
 
 from ...core.camera_views import camera_view_angles
 from ...core.pose_view import Point
 from ...core.scene3d import Scene3D, Segment3D, project_orthographic, scene_bounds
+from ...core.vehicle_schematic_pick import LinkHit, projected_link_hits
+from ...core.vehicle_schematic_scene import SelectableLink
 from ...core.vehicle_schematic_visual import (
     JOINT_RADIUS_MM,
     SchematicVisual,
@@ -26,11 +28,17 @@ _COLORS = {"arm": "#3689e6", "knuckle": "#3689e6", "steering": "#bb8ce2", "sprin
 class Scene3DPreview(QWidget):
     """Только каркас рассчитанных точек, положение камеры не меняет проект."""
 
+    linksClicked = Signal(object, object)
+
     def __init__(self, parent: QWidget | None = None, *, schematic: bool = False) -> None:
         super().__init__(parent)
         self.schematic = schematic
         self.volumetric = schematic
         self._visual: SchematicVisual | None = None
+        self.link_targets: tuple[SelectableLink, ...] = ()
+        self.selected_link: tuple[str, str] | None = None
+        self._click_press: QPointF | None = None
+        self._click_moved = False
         self.setMinimumSize(300, 250)
         self.frame: Scene3D | None = None
         self.bounds: tuple[Point, float] | None = None
@@ -48,6 +56,7 @@ class Scene3DPreview(QWidget):
         self.zoom = 1.0
         self.pan_x, self.pan_y = 0., 0.
         self._drag = None
+        self._click_press = None
         self._pan_drag = None
         self._pan_button = None
         self.update()
@@ -57,6 +66,7 @@ class Scene3DPreview(QWidget):
         yaw, elevation = camera_view_angles(name)
         self.yaw, self.elevation = yaw, elevation
         self._drag = None
+        self._click_press = None
         self._pan_drag = None
         self._pan_button = None
         self.update()
@@ -77,6 +87,7 @@ class Scene3DPreview(QWidget):
     def clear(self, message: str | None = None) -> None:
         self.frame = None
         self._visual = None
+        self.link_targets = ()
         self.bounds = None
         self.sample_positions = ()
         self.message = message or tr("analysis.preview_empty")
@@ -107,6 +118,7 @@ class Scene3DPreview(QWidget):
                 painter.setPen(QPen(QColor(_COLORS[segment.kind]), 1.5 if segment.kind == "wheel" else 2.5))
                 painter.drawLine(QPointF(self.width() / 2 + self.pan_x + a[0] * scale, self.height() / 2 + 8 + self.pan_y - a[1] * scale),
                                  QPointF(self.width() / 2 + self.pan_x + b[0] * scale, self.height() / 2 + 8 + self.pan_y - b[1] * scale))
+        self._draw_selected_link(painter, center, scale)
         # Метки намеренно рисуются поверх линий, без проверки видимости/глубины.
         if self.sample_positions:
             painter.setPen(QPen(QColor("#00465a"), 1))
@@ -132,6 +144,35 @@ class Scene3DPreview(QWidget):
                          tr("analysis.scene3d.travel", travel=f"{self.frame.travel_mm:+.2f}"))
         painter.drawText(QRectF(8, self.height() - 26, self.width() - 16, 20), int(Qt.AlignmentFlag.AlignLeft),
                          tr("vehicle_schematic.legend") if self.schematic and self.volumetric else tr("analysis.scene3d.legend"))
+
+    def _draw_selected_link(self, painter: QPainter, center: Point, scale: float) -> None:
+        """Подсветка поверх сцены, не проверка видимости."""
+        if not self.schematic or self.selected_link is None:
+            return
+        pen = QPen(QColor("#ffe04a"), 3.5)
+        pen.setStyle(Qt.PenStyle.DashLine)
+        painter.setPen(pen)
+        for target in self.link_targets:
+            if (target.role, target.code) != self.selected_link:
+                continue
+            a, b = (project_orthographic(p, center, self.yaw, self.elevation)
+                    for p in (target.segment.start, target.segment.end))
+            painter.drawLine(QPointF(self.width() / 2 + self.pan_x + a[0] * scale,
+                                     self.height() / 2 + 8 + self.pan_y - a[1] * scale),
+                             QPointF(self.width() / 2 + self.pan_x + b[0] * scale,
+                                     self.height() / 2 + 8 + self.pan_y - b[1] * scale))
+
+    def _link_hits(self, position: QPointF) -> tuple[LinkHit, ...]:
+        if self.bounds is None or self.frame is None:
+            return ()
+        center, radius = self.bounds
+        scale = max(1.0, min(self.width() - 36, self.height() - 70)) / (2 * radius) * self.zoom
+        return projected_link_hits(
+            self.link_targets, center=center, yaw=self.yaw, elevation=self.elevation, scale=scale,
+            origin=(self.width() / 2 + self.pan_x, self.height() / 2 + 8 + self.pan_y),
+            click=(position.x(), position.y()),
+            tolerance_px=max(7., JOINT_RADIUS_MM * scale + 5. if self.volumetric else 7.),
+        )
 
     def _draw_schematic_volumes(self, painter: QPainter, center: Point, scale: float) -> None:
         """Условная заливка с приблизительной сортировкой по глубине, без CAD-рендера."""
@@ -185,6 +226,8 @@ class Scene3DPreview(QWidget):
             event.accept()
         elif event.button() == Qt.MouseButton.LeftButton and self._pan_drag is None:
             self._drag = event.position()
+            self._click_press = event.position() if self.schematic else None
+            self._click_moved = False
             event.accept()
         else:
             super().mousePressEvent(event)
@@ -199,6 +242,11 @@ class Scene3DPreview(QWidget):
             event.accept()
         elif self._drag is not None and event.buttons() & Qt.MouseButton.LeftButton:
             now = event.position()
+            if self._click_press is not None and not self._click_moved:
+                if (now - self._click_press).manhattanLength() < 6:
+                    event.accept()
+                    return
+                self._click_moved = True
             delta = now - self._drag
             self._drag = now
             self.yaw = remainder(self.yaw + delta.x() * 0.01, 2 * pi)
@@ -214,6 +262,12 @@ class Scene3DPreview(QWidget):
             self._pan_button = None
             event.accept()
         elif event.button() == Qt.MouseButton.LeftButton and self._pan_drag is None:
+            if (self._click_press is not None and not self._click_moved and
+                    (event.position() - self._click_press).manhattanLength() < 6):
+                hits = self._link_hits(event.position())
+                if hits:
+                    self.linksClicked.emit(hits, event.position().toPoint())
+            self._click_press = None
             self._drag = None
             event.accept()
         else:

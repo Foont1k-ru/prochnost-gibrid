@@ -11,10 +11,19 @@ from .scene3d import Scene3D, Segment3D, SegmentKind
 MAX_COORDINATE_MM = 1_000_000.0
 
 
+@dataclass(frozen=True, slots=True)
+class SelectableLink:
+    """Связь проекта с одной видимой ветвью; стороны могут делить один код."""
+    role: str
+    code: str
+    segment: Segment3D
+
+
 @dataclass(frozen=True)
 class VehicleSchematic:
     scene: Scene3D
     missing: tuple[str, ...]
+    links: tuple[SelectableLink, ...] = ()
 
 
 def _finite(value: float, *, positive: bool = False) -> float:
@@ -35,6 +44,7 @@ def vehicle_schematic_scene(project: Project) -> VehicleSchematic:
     """
     wheelbase = _finite(project.vehicle.wheelbase_mm, positive=True)
     segments: list[Segment3D] = []
+    links: list[SelectableLink] = []
     points: list[tuple[str, Point]] = []
     missing: list[str] = []
 
@@ -72,7 +82,9 @@ def vehicle_schematic_scene(project: Project) -> VehicleSchematic:
                         missing.append(f'{axle.role}:{spec.code}')
                         continue
                     kind: SegmentKind = 'steering' if spec.group == 'steering' else 'arm'
-                    segments.append(Segment3D(a, b, kind))
+                    segment = Segment3D(a, b, kind)
+                    segments.append(segment)
+                    links.append(SelectableLink(axle.role, spec.code, segment))
         for point_spec in axle.spec.points:
             if point_spec.code == 'driveshaft_front' or (point_spec.group == 'drivetrain' and not axle.drivetrain.driven):
                 continue
@@ -110,4 +122,4 @@ def vehicle_schematic_scene(project: Project) -> VehicleSchematic:
                 rings.append(ring)
                 segments.extend(Segment3D(ring[i], ring[(i + 1) % 24], 'wheel') for i in range(24))
             segments.extend(Segment3D(rings[0][i], rings[1][i], 'wheel') for i in range(0, 24, 4))
-    return VehicleSchematic(Scene3D(0.0, tuple(segments), tuple(points)), tuple(sorted(set(missing))))
+    return VehicleSchematic(Scene3D(0.0, tuple(segments), tuple(points)), tuple(sorted(set(missing))), tuple(links))

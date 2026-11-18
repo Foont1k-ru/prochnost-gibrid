@@ -84,6 +84,8 @@ class MainWindow(QMainWindow):
 
         self._build_canvas_tabs()
         self._build_docks()
+        self._vehicle_view.schemeRequested.connect(self._open_schematic_axle)
+        self._vehicle_view.linkSelected.connect(self._inspector_dock.show)
         self._build_actions()
         self._build_menus()
         self._build_toolbar()
@@ -135,6 +137,10 @@ class MainWindow(QMainWindow):
         """Схема на активной вкладке."""
         widget = self._tabs.currentWidget()
         return widget if isinstance(widget, AxleCanvas) else self._canvases["front"]
+
+    def _open_schematic_axle(self, role: str) -> None:
+        if role in ("front", "rear"):
+            self._tabs.setCurrentWidget(self._canvases[role])
 
     def _show_workspace(self) -> None:
         """Показывает рабочую область вместо стартового экрана."""
