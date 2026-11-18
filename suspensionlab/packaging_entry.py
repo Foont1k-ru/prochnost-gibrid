@@ -1,0 +1,58 @@
+"""Точка входа пробной Windows-сборки; обычный запуск открывает приложение."""
+from __future__ import annotations
+
+import atexit
+import os
+import sys
+import traceback
+from pathlib import Path
+
+
+def main() -> int:
+    # Специальная проверка запускается только явно в CI, с отдельным путём отчёта.
+    if len(sys.argv) == 3 and sys.argv[1] in ("--packaging-check", "--packaging-startup-check", "--packaging-cad-check"):
+        if os.environ.get("SUSPENSIONLAB_SMOKE_DIAGNOSTICS") == "1":
+            # An OK report is written before interpreter teardown. This marker helps
+            # distinguish entry into atexit from earlier failures; it cannot prove
+            # that native libraries or Python finalization subsequently succeeded.
+            def teardown_marker() -> None:
+                print("SMOKE_DIAGNOSTIC: atexit reached", file=sys.stderr, flush=True)
+            atexit.register(teardown_marker)
+        report = Path(sys.argv[2])
+        try:
+            from suspensionlab.packaging_smoke import run_cad_check, run_packaging_check, run_startup_check
+
+            if sys.argv[1] == "--packaging-check":
+                run_packaging_check()
+            elif sys.argv[1] == "--packaging-startup-check":
+                run_startup_check()
+            else:
+                run_cad_check()
+        except Exception:
+            report.write_text(traceback.format_exc(), encoding="utf-8")
+            return 1
+        report.write_text("OK\n", encoding="utf-8")
+        return 0
+    if len(sys.argv) == 6 and sys.argv[1] == "--cad-preview-worker":
+        from suspensionlab.core.cad_worker import main as cad_main
+
+        return cad_main(sys.argv[2:])
+    if len(sys.argv) in (6, 7, 8, 9, 10) and sys.argv[1] == "--sketch-solid-worker":
+        from suspensionlab.core.sketch_solid_worker import main as sketch_solid_main
+
+        return sketch_solid_main(sys.argv[2:])
+    if len(sys.argv) == 5 and sys.argv[1] == "--assembly-projection-worker":
+        from suspensionlab.core.cad_assembly_projection_worker import main as projection_main
+
+        return projection_main(sys.argv[2:])
+    if len(sys.argv) == 6 and sys.argv[1] == "--weldment-preview-worker":
+        from suspensionlab.core.cad_weldment_worker import main as weldment_main
+
+        return weldment_main(sys.argv[2:])
+    from suspensionlab.app import main as app_main
+
+    return app_main()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

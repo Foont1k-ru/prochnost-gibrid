@@ -1,0 +1,398 @@
+{
+  "schema_version": "1.0",
+  "meta": {
+    "name": "",
+    "author": "",
+    "created": "2026-11-12",
+    "revision": 1,
+    "comment": "Городская геометрия: комфорт, умеренные углы"
+  },
+  "vehicle": {
+    "name": "",
+    "mass_kg": 1420.0,
+    "front_weight_pct": 60.0,
+    "cg_height_mm": 540.0,
+    "cg_x_from_front_mm": 1120.0,
+    "wheelbase_mm": 2650.0,
+    "track_front_mm": 1520.0,
+    "track_rear_mm": 1540.0,
+    "unsprung_front_kg": 42.0,
+    "unsprung_rear_kg": 48.0,
+    "profile": "ring_race"
+  },
+  "front_axle": {
+    "type": "double_wishbone",
+    "driven": false,
+    "wheel": {
+      "tire": "225/45R17",
+      "r_dynamic_mm": 310.0,
+      "r_static_mm": 300.0,
+      "width_mm": 225.0,
+      "et_mm": 35.0,
+      "spacer_mm": 0.0,
+      "k_tire_N_mm": 220.0
+    },
+    "hardpoints": {
+      "uca_f_in": {
+        "x": 90.0,
+        "y": 330.0,
+        "z": 395.0
+      },
+      "uca_r_in": {
+        "x": -110.0,
+        "y": 340.0,
+        "z": 400.0
+      },
+      "ubj": {
+        "x": -5.0,
+        "y": 655.0,
+        "z": 430.0
+      },
+      "lca_f_in": {
+        "x": 120.0,
+        "y": 250.0,
+        "z": 140.0
+      },
+      "lca_r_in": {
+        "x": -140.0,
+        "y": 260.0,
+        "z": 150.0
+      },
+      "lbj": {
+        "x": 0.0,
+        "y": 690.0,
+        "z": 145.0
+      },
+      "tierod_in": {
+        "x": -120.0,
+        "y": 280.0,
+        "z": 170.0
+      },
+      "tierod_out": {
+        "x": -150.0,
+        "y": 640.0,
+        "z": 175.0
+      },
+      "spring_lo": {
+        "x": 0.0,
+        "y": 520.0,
+        "z": 150.0
+      },
+      "spring_up": {
+        "x": 0.0,
+        "y": 430.0,
+        "z": 560.0
+      },
+      "damper_lo": {
+        "x": 0.0,
+        "y": 500.0,
+        "z": 160.0
+      },
+      "damper_up": {
+        "x": 0.0,
+        "y": 415.0,
+        "z": 545.0
+      },
+      "arb_lo": {
+        "x": 0.0,
+        "y": 470.0,
+        "z": 155.0
+      },
+      "arb_up": {
+        "x": 0.0,
+        "y": 405.0,
+        "z": 320.0
+      },
+      "halfshaft_in": {
+        "x": 0.0,
+        "y": 120.0,
+        "z": 300.0
+      },
+      "halfshaft_out": {
+        "x": 0.0,
+        "y": 700.0,
+        "z": 310.0
+      },
+      "wheel_center": {
+        "x": 0.0,
+        "y": 762.0,
+        "z": 310.0
+      }
+    },
+    "links": {
+      "upper_arm": {
+        "edit_mode": "move_outer",
+        "joint": "ball",
+        "diameter_mm": 24.0,
+        "articulation_limit_deg": 25.0
+      },
+      "lower_arm": {
+        "edit_mode": "move_outer",
+        "joint": "ball",
+        "diameter_mm": 24.0,
+        "articulation_limit_deg": 25.0
+      },
+      "tierod": {
+        "edit_mode": "move_outer",
+        "joint": "rod_end",
+        "diameter_mm": 24.0,
+        "articulation_limit_deg": 25.0
+      },
+      "halfshaft": {
+        "edit_mode": "move_outer",
+        "joint": "ball",
+        "diameter_mm": 24.0,
+        "articulation_limit_deg": 25.0
+      }
+    },
+    "spring": {
+      "rate_N_mm": 55.0,
+      "free_len_mm": 250.0,
+      "preload_mm": 5.0,
+      "progressive": []
+    },
+    "damper": {
+      "len_extended_mm": 420.0,
+      "len_compressed_mm": 280.0,
+      "bump_rate_Ns_mm": 2.5,
+      "rebound_rate_Ns_mm": 6.0
+    },
+    "arb": {
+      "wheel_rate_N_mm": 25.0,
+      "diameter_mm": 22.0,
+      "arm_length_mm": 250.0,
+      "enabled": true
+    },
+    "bump_stop": {
+      "engage_travel_pct": 75.0,
+      "rate_N_mm": 400.0
+    },
+    "steering": {
+      "rack_travel_mm": 150.0,
+      "max_steer_deg": 38.0,
+      "ratio": 16.0,
+      "rack_height_offset_mm": 0.0
+    },
+    "drivetrain": {
+      "driven": false,
+      "cv_inner_limit_deg": 22.0,
+      "cv_outer_limit_deg": 45.0,
+      "plunge_min_mm": 3.0
+    },
+    "setup": {
+      "ride_height_mm": 150.0,
+      "camber_deg": -0.6,
+      "toe_deg_total": 0.2,
+      "caster_deg": 4.5,
+      "corner_weight_kg": 320.0
+    },
+    "travel": {
+      "bump_mm": 85.0,
+      "droop_mm": 80.0,
+      "sweep_points": 201
+    }
+  },
+  "rear_axle": {
+    "type": "multilink_rear",
+    "driven": false,
+    "wheel": {
+      "tire": "225/45R17",
+      "r_dynamic_mm": 310.0,
+      "r_static_mm": 300.0,
+      "width_mm": 225.0,
+      "et_mm": 35.0,
+      "spacer_mm": 0.0,
+      "k_tire_N_mm": 220.0
+    },
+    "hardpoints": {
+      "uf_in": {
+        "x": 180.0,
+        "y": 300.0,
+        "z": 430.0
+      },
+      "uf_out": {
+        "x": 120.0,
+        "y": 680.0,
+        "z": 420.0
+      },
+      "ur_in": {
+        "x": -200.0,
+        "y": 320.0,
+        "z": 450.0
+      },
+      "ur_out": {
+        "x": -140.0,
+        "y": 690.0,
+        "z": 430.0
+      },
+      "lf_in": {
+        "x": 160.0,
+        "y": 280.0,
+        "z": 150.0
+      },
+      "lf_out": {
+        "x": 130.0,
+        "y": 700.0,
+        "z": 160.0
+      },
+      "lr_in": {
+        "x": -180.0,
+        "y": 290.0,
+        "z": 140.0
+      },
+      "lr_out": {
+        "x": -160.0,
+        "y": 700.0,
+        "z": 150.0
+      },
+      "toe_in": {
+        "x": -260.0,
+        "y": 300.0,
+        "z": 300.0
+      },
+      "toe_out": {
+        "x": -240.0,
+        "y": 690.0,
+        "z": 300.0
+      },
+      "spring_lo": {
+        "x": 0.0,
+        "y": 520.0,
+        "z": 150.0
+      },
+      "spring_up": {
+        "x": 0.0,
+        "y": 430.0,
+        "z": 560.0
+      },
+      "damper_lo": {
+        "x": 0.0,
+        "y": 500.0,
+        "z": 160.0
+      },
+      "damper_up": {
+        "x": 0.0,
+        "y": 415.0,
+        "z": 545.0
+      },
+      "arb_lo": {
+        "x": 0.0,
+        "y": 470.0,
+        "z": 155.0
+      },
+      "arb_up": {
+        "x": 0.0,
+        "y": 405.0,
+        "z": 320.0
+      },
+      "halfshaft_in": {
+        "x": 0.0,
+        "y": 120.0,
+        "z": 300.0
+      },
+      "halfshaft_out": {
+        "x": 0.0,
+        "y": 700.0,
+        "z": 310.0
+      },
+      "wheel_center": {
+        "x": 0.0,
+        "y": 762.0,
+        "z": 310.0
+      }
+    },
+    "links": {
+      "upper_front": {
+        "edit_mode": "move_outer",
+        "joint": "ball",
+        "diameter_mm": 24.0,
+        "articulation_limit_deg": 25.0
+      },
+      "upper_rear": {
+        "edit_mode": "move_outer",
+        "joint": "ball",
+        "diameter_mm": 24.0,
+        "articulation_limit_deg": 25.0
+      },
+      "lower_front": {
+        "edit_mode": "move_outer",
+        "joint": "ball",
+        "diameter_mm": 24.0,
+        "articulation_limit_deg": 25.0
+      },
+      "lower_rear": {
+        "edit_mode": "move_outer",
+        "joint": "ball",
+        "diameter_mm": 24.0,
+        "articulation_limit_deg": 25.0
+      },
+      "toe_link": {
+        "edit_mode": "move_outer",
+        "joint": "rod_end",
+        "diameter_mm": 24.0,
+        "articulation_limit_deg": 25.0
+      },
+      "halfshaft": {
+        "edit_mode": "move_outer",
+        "joint": "ball",
+        "diameter_mm": 24.0,
+        "articulation_limit_deg": 25.0
+      }
+    },
+    "spring": {
+      "rate_N_mm": 75.0,
+      "free_len_mm": 250.0,
+      "preload_mm": 5.0,
+      "progressive": []
+    },
+    "damper": {
+      "len_extended_mm": 420.0,
+      "len_compressed_mm": 280.0,
+      "bump_rate_Ns_mm": 2.5,
+      "rebound_rate_Ns_mm": 6.0
+    },
+    "arb": {
+      "wheel_rate_N_mm": 25.0,
+      "diameter_mm": 22.0,
+      "arm_length_mm": 250.0,
+      "enabled": true
+    },
+    "bump_stop": {
+      "engage_travel_pct": 75.0,
+      "rate_N_mm": 400.0
+    },
+    "steering": {
+      "rack_travel_mm": 150.0,
+      "max_steer_deg": 38.0,
+      "ratio": 16.0,
+      "rack_height_offset_mm": 0.0
+    },
+    "drivetrain": {
+      "driven": false,
+      "cv_inner_limit_deg": 22.0,
+      "cv_outer_limit_deg": 45.0,
+      "plunge_min_mm": 3.0
+    },
+    "setup": {
+      "ride_height_mm": 155.0,
+      "camber_deg": -0.9,
+      "toe_deg_total": 0.15,
+      "caster_deg": 6.0,
+      "corner_weight_kg": 320.0
+    },
+    "travel": {
+      "bump_mm": 80.0,
+      "droop_mm": 75.0,
+      "sweep_points": 201
+    }
+  },
+  "model_b": null,
+  "snapshots": [],
+  "view": {
+    "theme": "dark",
+    "view_mode": "front",
+    "zoom": 1.0,
+    "layers": {},
+    "active_tab": 0
+  }
+}

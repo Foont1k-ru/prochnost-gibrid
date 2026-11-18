@@ -1,0 +1,419 @@
+"""Сохранение, загрузка, миграция и валидация файлов проектов."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from suspensionlab.model.entities import Project
+from suspensionlab.model.project_io import (
+    ProjectIOError,
+    load_project,
+    migrate,
+    project_to_json,
+    save_project,
+)
+from suspensionlab.model.templates import list_templates, load_template
+
+
+def test_save_and_load_roundtrip(tmp_path: Path, project) -> None:
+    project.front.setup.camber_deg = -3.25
+    project.front.hardpoints["ubj"].z = 412.5
+    project.meta.name = "Тестовый проект"
+    path = save_project(project, tmp_path / "probe")
+    assert path.name.endswith(".susp.json")
+
+    loaded = load_project(path)
+    assert loaded.meta.name == "Тестовый проект"
+    assert loaded.front.setup.camber_deg == pytest.approx(-3.25)
+    assert loaded.front.hardpoints["ubj"].z == pytest.approx(412.5)
+    assert loaded.rear.type_code == project.rear.type_code
+
+
+def test_save_adds_extension(tmp_path: Path, project) -> None:
+    path = save_project(project, tmp_path / "file.json")
+    assert path.name == "file.susp.json"
+
+
+def test_broken_json_reports_key(tmp_path: Path) -> None:
+    path = tmp_path / "broken.susp.json"
+    path.write_text("{ это не json", encoding="utf-8")
+    with pytest.raises(ProjectIOError) as error:
+        load_project(path)
+    assert error.value.message_key == "error.project.broken_json"
+    assert "line" in error.value.params
+
+
+def test_wrong_structure_reports_key(tmp_path: Path) -> None:
+    path = tmp_path / "list.susp.json"
+    path.write_text("[1, 2, 3]", encoding="utf-8")
+    with pytest.raises(ProjectIOError) as error:
+        load_project(path)
+    assert error.value.message_key == "error.project.bad_structure"
+
+
+def test_missing_file_reports_key(tmp_path: Path) -> None:
+    with pytest.raises(ProjectIOError) as error:
+        load_project(tmp_path / "nope.susp.json")
+    assert error.value.message_key == "error.project.read_failed"
+
+
+def test_migration_from_0_9() -> None:
+    legacy = {
+        "schema_version": "0.9",
+        "meta": {"name": "Старый проект"},
+        "vehicle": {"mass_kg": 1000},
+        "front": {
+            "type": "double_wishbone",
+            "hardpoints": {"ubj": [-5.0, 655.0, 430.0], "lbj": [0.0, 690.0, 145.0]},
+            "lengths": {"upper": 340.0},
+        },
+        "rear": {"type": "multilink_rear", "hardpoints": {"toe_in": [-260, 300, 300]}},
+    }
+    migrated = migrate(legacy)
+    assert migrated["schema_version"] == "1.0"
+    assert "front_axle" in migrated and "front" not in migrated
+    assert migrated["front_axle"]["hardpoints"]["ubj"] == {"x": -5.0, "y": 655.0, "z": 430.0}
+    project = Project.from_dict(migrated)
+    assert project.meta.name == "Старый проект"
+    assert project.front.hardpoints["ubj"].z == pytest.approx(430.0)
+
+
+def test_project_from_json_text(project) -> None:
+    text = project_to_json(project)
+    data = json.loads(text)
+    restored = Project.from_dict(data)
+    assert restored.vehicle.mass_kg == pytest.approx(project.vehicle.mass_kg)
+
+
+def test_all_templates_load_and_validate() -> None:
+    from suspensionlab.model.validation import validate_project
+
+    templates = list_templates()
+    assert len(templates) >= 3
+    for info in templates:
+        project = load_template(info.key)
+        issues = validate_project(project)
+        errors = [issue for issue in issues if issue.severity == "error"]
+        assert not errors, f"{info.key}: {[issue.key for issue in errors]}"
+
+
+def test_locks_survive_roundtrip(project) -> None:
+    project.locks["setup.camber"] = True
+    restored = Project.from_dict(project.to_dict())
+    assert restored.locks.get("setup.camber") is True
+
+
+@pytest.mark.parametrize("operation", ["fsync", "replace"])
+def test_failed_atomic_save_preserves_existing_file_and_project_path(tmp_path, project, monkeypatch, operation):
+    from suspensionlab.model import project_io
+
+    target = tmp_path / "existing.susp.json"
+    target.write_bytes(b"previous contents")
+    project.path = "previous-project.susp.json"
+
+    def fail(*args):
+        raise OSError("simulated failure")
+
+    monkeypatch.setattr(project_io.os, operation, fail)
+    with pytest.raises(ProjectIOError) as error:
+        save_project(project, target)
+    assert error.value.message_key == "error.project.write_failed"
+    assert target.read_bytes() == b"previous contents"
+    assert project.path == "previous-project.susp.json"
+    assert sorted(p.name for p in tmp_path.iterdir()) == [target.name]
+
+
+def test_serialization_failure_does_not_touch_existing_file(tmp_path, project, monkeypatch):
+    from suspensionlab.model import project_io
+
+    target = tmp_path / "existing.susp.json"
+    target.write_text("old", encoding="utf8")
+    project.path = "old-path"
+
+    def fail(_project):
+        raise TypeError("not serializable")
+
+    monkeypatch.setattr(project_io, "project_to_json", fail)
+    with pytest.raises(ProjectIOError) as error:
+        save_project(project, target)
+    assert error.value.message_key == "error.project.write_failed"
+    assert target.read_text(encoding="utf8") == "old"
+    assert project.path == "old-path"
+    assert [p.name for p in tmp_path.iterdir()] == [target.name]
+
+
+def test_atomic_save_follows_existing_symlink_and_preserves_mode(tmp_path, project):
+    import os
+    import stat
+
+    if os.name == "nt":
+        pytest.skip("Символические ссылки на Windows могут требовать специальных прав")
+    real = tmp_path / "real.susp.json"
+    real.write_text("old", encoding="utf8")
+    real.chmod(0o640)
+    link = tmp_path / "link.susp.json"
+    link.symlink_to(real.name)
+    assert save_project(project, link) == link
+    assert link.is_symlink()
+    assert stat.S_IMODE(real.stat().st_mode) == 0o640
+    assert load_project(link).to_dict() == project.to_dict()
+
+
+def test_partial_write_failure_does_not_replace_previous_file(tmp_path, project, monkeypatch):
+    from suspensionlab.model import project_io
+
+    target = tmp_path / "existing.susp.json"
+    target.write_bytes(b"previous contents")
+    real_factory = project_io.tempfile.NamedTemporaryFile
+
+    class PartialWriter:
+        def __init__(self, handle):
+            self.handle = handle
+            self.name = handle.name
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            self.handle.close()
+
+        def write(self, text):
+            self.handle.write(text[:20])
+            raise OSError("partial write")
+
+    monkeypatch.setattr(project_io.tempfile, "NamedTemporaryFile", lambda **kwargs: PartialWriter(real_factory(**kwargs)))
+    with pytest.raises(ProjectIOError):
+        save_project(project, target)
+    assert target.read_bytes() == b"previous contents"
+    assert [p.name for p in tmp_path.iterdir()] == [target.name]
+
+
+def test_strict_autosave_roundtrip_and_rejects_incomplete_or_nonfinite(tmp_path, project):
+    project.add_snapshot("Снимок")
+    path = save_project(project, tmp_path / "auto")
+    assert load_project(path, require_complete=True).to_dict() == project.to_dict()
+    data = json.loads(path.read_text(encoding="utf-8"))
+    del data["front_axle"]["hardpoints"]["ubj"]
+    path.write_text(json.dumps(data), encoding="utf-8")
+    # Обычное открытие исторически дополняет точки; восстановление — нет.
+    assert "ubj" in load_project(path).front.hardpoints
+    with pytest.raises(ProjectIOError) as error:
+        load_project(path, require_complete=True)
+    assert error.value.message_key == "error.project.bad_structure"
+    data = project.to_dict()
+    data["vehicle"]["mass_kg"] = float("inf")
+    path.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(ProjectIOError):
+        load_project(path, require_complete=True)
+    path.write_text("{}", encoding="utf-8")
+    with pytest.raises(ProjectIOError):
+        load_project(path, require_complete=True)
+
+
+@pytest.mark.parametrize('value', ['NaN', 'Infinity', '-Infinity', '1e999', '-1e999'])
+@pytest.mark.parametrize('require_complete', [False, True])
+def test_load_rejects_nonfinite_numbers_even_in_unrecognized_fields(tmp_path, value, require_complete):
+    path = tmp_path / 'bad.susp.json'
+    path.write_text('{"schema_version":"1.0","unknown":{"nested":[' + value + ']}}', encoding='utf-8')
+    original = path.read_bytes()
+    with pytest.raises(ProjectIOError) as error:
+        load_project(path, require_complete=require_complete)
+    assert error.value.message_key == 'error.project.invalid_json_values'
+    assert path.read_bytes() == original
+
+
+@pytest.mark.parametrize('value', ['NaN', 'Infinity', '-Infinity', '1e999'])
+def test_load_rejects_numeric_strings_that_convert_to_nonfinite(tmp_path, value):
+    path = tmp_path / 'bad.susp.json'
+    path.write_text(json.dumps({'schema_version': '1.0', 'vehicle': {'mass_kg': value}}), encoding='utf-8')
+    with pytest.raises(ProjectIOError) as error:
+        load_project(path)
+    assert error.value.message_key == 'error.project.bad_structure'
+
+
+@pytest.mark.parametrize('content', [
+    '{"schema_version":"1.0", "schema_version":"0.9"}',
+    '{"schema_version":"1.0", "vehicle":{"mass_kg":1,"mass_kg":2}}',
+    '{"schema_version":"1.0", "snapshots":[{"name":"x","name":"y"}]}',
+])
+def test_load_rejects_duplicate_keys_at_any_depth(tmp_path, content):
+    path = tmp_path / 'duplicate.susp.json'
+    path.write_text(content, encoding='utf-8')
+    with pytest.raises(ProjectIOError) as error:
+        load_project(path)
+    assert error.value.message_key == 'error.project.invalid_json_values'
+    assert path.read_text(encoding='utf-8') == content
+
+
+def test_excessive_json_depth_is_reported_not_raised_raw(tmp_path):
+    path = tmp_path / 'deep.susp.json'
+    path.write_text('{"nested":' + '[' * 3000 + '0' + ']' * 3000 + '}', encoding='utf-8')
+    with pytest.raises(ProjectIOError) as error:
+        load_project(path)
+    assert error.value.message_key == 'error.project.invalid_json_values'
+
+
+@pytest.mark.parametrize('value', [float('nan'), float('inf'), float('-inf')])
+def test_nonfinite_project_does_not_overwrite_existing_file(tmp_path, project, value):
+    path = tmp_path / 'old.susp.json'
+    path.write_bytes(b'precious previous contents')
+    project.path = 'existing-path'
+    project.vehicle.mass_kg = value
+    with pytest.raises(ProjectIOError) as error:
+        save_project(project, path)
+    assert error.value.message_key == 'error.project.invalid_save'
+    assert project.path == 'existing-path'
+    assert path.read_bytes() == b'precious previous contents'
+    assert sorted(p.name for p in tmp_path.iterdir()) == [path.name]
+
+
+def test_nonfinite_nested_snapshot_does_not_overwrite(tmp_path, project):
+    path = save_project(project, tmp_path / 'project')
+    before = path.read_bytes()
+    project.add_snapshot('test')
+    project.snapshots[-1].data['unexpected'] = {'number': float('nan')}
+    with pytest.raises(ProjectIOError) as error:
+        save_project(project, path)
+    assert error.value.message_key == 'error.project.invalid_save'
+    assert path.read_bytes() == before
+
+
+def test_finite_legacy_numeric_strings_and_json_escapes_remain_accepted(tmp_path):
+    path = tmp_path / 'legacy.susp.json'
+    path.write_text('{"schema_version":"0.9","vehicle":{"mass_kg":"1234.5"},'
+                    '"meta":{"name":"NaN и Infinity — текст"}}', encoding='utf-8')
+    result = load_project(path)
+    assert result.vehicle.mass_kg == 1234.5
+    assert result.meta.name == 'NaN и Infinity — текст'
+    saved = save_project(result, tmp_path / 'migrated')
+    assert load_project(saved).vehicle.mass_kg == 1234.5
+
+
+def test_duplicate_decoded_unicode_key_is_rejected(tmp_path):
+    path = tmp_path / 'escaped.susp.json'
+    path.write_text('{"vehicle":{}, "\\u0076ehicle":{}}', encoding='utf-8')
+    with pytest.raises(ProjectIOError) as error:
+        load_project(path)
+    assert error.value.message_key == 'error.project.invalid_json_values'
+
+
+def test_project_size_limit_applies_to_utf8_bytes_before_replacement(tmp_path, project, monkeypatch):
+    from suspensionlab.model import project_io
+
+    project.meta.name = 'тест'
+    target = save_project(project, tmp_path / 'project')
+    before = target.read_bytes()
+    size = len(before)
+    assert size > len(project_to_json(project))
+    monkeypatch.setattr(project_io, 'MAX_PROJECT_BYTES', size)
+    assert load_project(target).meta.name == 'тест'
+    save_project(project, target)  # exact limit is accepted
+    monkeypatch.setattr(project_io, 'MAX_PROJECT_BYTES', size - 1)
+    with pytest.raises(ProjectIOError) as error:
+        load_project(target)
+    assert error.value.message_key == 'error.project.too_large'
+    project.path = 'prior-path'
+    with pytest.raises(ProjectIOError) as error:
+        save_project(project, target)
+    assert error.value.message_key == 'error.project.too_large'
+    assert project.path == 'prior-path' and target.read_bytes() == before
+    assert list(tmp_path.iterdir()) == [target]
+
+
+def test_read_rechecks_size_when_file_grows_after_descriptor_stat(tmp_path, monkeypatch):
+    from suspensionlab.model import project_io
+
+    path = tmp_path / 'growing.susp.json'
+    path.write_bytes(b'{}')
+    monkeypatch.setattr(project_io, 'MAX_PROJECT_BYTES', 3)
+    actual_fstat = project_io.os.fstat
+    def grow(fd):
+        result = actual_fstat(fd)
+        with path.open('ab') as writer:
+            writer.write(b'  ')
+        return result
+    monkeypatch.setattr(project_io.os, 'fstat', grow)
+    with pytest.raises(ProjectIOError) as error:
+        load_project(path)
+    assert error.value.message_key == 'error.project.too_large'
+    assert path.read_bytes() == b'{}  '
+
+
+def test_project_symlink_to_regular_file_still_opens(tmp_path, project):
+    target = save_project(project, tmp_path / 'project')
+    alias = tmp_path / 'alias.susp.json'
+    try:
+        alias.symlink_to(target)
+    except OSError:
+        pytest.skip('Creating symlinks is unavailable')
+    assert load_project(alias).to_dict() == project.to_dict()
+
+
+def test_directory_is_rejected_for_read_and_save(tmp_path, project):
+    target = tmp_path / 'dir.susp.json'
+    target.mkdir()
+    for operation in (lambda: load_project(target), lambda: save_project(project, target)):
+        with pytest.raises(ProjectIOError) as error:
+            operation()
+        assert error.value.message_key == 'error.project.not_regular'
+        assert target.is_dir()
+
+
+def test_posix_fifo_and_fifo_swap_rejected_without_blocking(tmp_path):
+    import os
+    import subprocess
+    import sys
+
+    if not hasattr(os, 'mkfifo'):
+        pytest.skip('FIFO is unavailable')
+    fifo = tmp_path / 'pipe.susp.json'
+    os.mkfifo(fifo)
+    regular = tmp_path / 'swapped.susp.json'
+    regular.write_text('{}', encoding='utf-8')
+    script = '''
+import os, sys
+from pathlib import Path
+from suspensionlab.model import project_io
+from suspensionlab.model.entities import Project
+fifo, regular = map(Path, sys.argv[1:])
+for action in (lambda: project_io.load_project(fifo), lambda: project_io.save_project(Project.create_default(), fifo)):
+    try:
+        action()
+    except project_io.ProjectIOError as e:
+        assert e.message_key == "error.project.not_regular"
+    else:
+        raise AssertionError("FIFO was accepted")
+assert fifo.is_fifo()
+original_open = project_io.os.open
+def swap(path, flags, *args, **kwargs):
+    if Path(path) == regular:
+        regular.rename(regular.with_suffix('.original'))
+        os.mkfifo(regular)
+    return original_open(path, flags, *args, **kwargs)
+project_io.os.open = swap
+try:
+    project_io.load_project(regular)
+except project_io.ProjectIOError as e:
+    assert e.message_key == "error.project.not_regular"
+else:
+    raise AssertionError("swapped FIFO was accepted")
+assert regular.is_fifo()
+'''
+    subprocess.run([sys.executable, '-c', script, str(fifo), str(regular)],
+                   timeout=15, check=True, capture_output=True, text=True)
+    assert regular.with_suffix('.original').read_text(encoding='utf-8') == '{}'
+
+
+def test_actual_64_mib_limit_rejects_large_file_without_changing_it(tmp_path):
+    from suspensionlab.model.project_limits import MAX_PROJECT_BYTES
+
+    path = tmp_path / 'large.susp.json'
+    with path.open('wb') as stream:
+        stream.truncate(MAX_PROJECT_BYTES + 1)
+    with pytest.raises(ProjectIOError) as error:
+        load_project(path)
+    assert error.value.message_key == 'error.project.too_large'
+    assert path.stat().st_size == MAX_PROJECT_BYTES + 1

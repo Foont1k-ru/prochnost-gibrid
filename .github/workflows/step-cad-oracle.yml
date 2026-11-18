@@ -1,0 +1,142 @@
+name: STEP — независимый CAD-эталон
+
+on:
+  push:
+    paths:
+      - 'suspensionlab/suspensionlab/core/spatial_transform.py'
+      - 'suspensionlab/suspensionlab/core/sketch_solid_*.py'
+      - 'suspensionlab/suspensionlab/model/sketch_*.py'
+      - 'suspensionlab/tests/test_sketch_solid.py'
+      - 'suspensionlab/suspensionlab/core/cad_*.py'
+      - 'suspensionlab/suspensionlab/core/step_*.py'
+      - 'suspensionlab/suspensionlab/model/kim_format.py'
+      - 'suspensionlab/suspensionlab/model/welded_arm.py'
+      - 'suspensionlab/suspensionlab/model/bent_tube.py'
+      - 'suspensionlab/suspensionlab/model/rear_tube.py'
+      - 'suspensionlab/suspensionlab/model/joint_concept.py'
+      - 'suspensionlab/suspensionlab/ui/joint_concept_dialog.py'
+      - 'suspensionlab/tests/test_joint_concept_cad.py'
+      - 'suspensionlab/suspensionlab/model/rear_tube_pair.py'
+      - 'suspensionlab/suspensionlab/model/rear_joint_layout.py'
+      - 'suspensionlab/tests/test_rear_joint_layout_cad.py'
+      - 'suspensionlab/suspensionlab/model/rear_pair_snapshot.py'
+      - 'suspensionlab/tests/test_rear_pair_snapshot.py'
+      - 'suspensionlab/suspensionlab/model/front_tube_arm.py'
+      - 'suspensionlab/suspensionlab/model/front_joint_layout.py'
+      - 'suspensionlab/tests/test_front_joint_layout_cad.py'
+      - 'suspensionlab/suspensionlab/model/front_same_pair.py'
+      - 'suspensionlab/tests/test_front_same_pair_cad.py'
+      - 'suspensionlab/suspensionlab/model/front_pair_snapshot.py'
+      - 'suspensionlab/tests/test_front_pair_snapshot.py'
+      - 'suspensionlab/suspensionlab/ui/front_tubes_dialog.py'
+      - 'suspensionlab/tests/test_front_tube_arm_cad.py'
+      - 'suspensionlab/suspensionlab/ui/rear_tube_dialog.py'
+      - 'suspensionlab/tests/test_rear_tube_cad.py'
+      - 'suspensionlab/tests/test_bent_tube.py'
+      - 'suspensionlab/tests/test_kim_cad_prototype.py'
+      - 'suspensionlab/tests/test_weldment_3d_integration.py'
+      - 'suspensionlab/suspensionlab/ui/weldment_3d.py'
+      - 'suspensionlab/suspensionlab/ui/weldment_dialog.py'
+      - 'suspensionlab/suspensionlab/ui/arm_concept_dialog.py'
+      - 'suspensionlab/suspensionlab/ui/bend_editor.py'
+      - 'suspensionlab/tests/test_bent_arm_ui.py'
+      - 'suspensionlab/tests/test_cad_assembly_projection.py'
+      - 'suspensionlab/tests/test_cad_assembly_svg.py'
+      - 'suspensionlab/tests/test_assembly_snapshot_fingerprint.py'
+      - 'suspensionlab/suspensionlab/model/assembly_snapshot_fingerprint.py'
+      - 'suspensionlab/tests/test_cad_projection_layout.py'
+      - 'suspensionlab/suspensionlab/model/cad_projection_layout.py'
+      - 'suspensionlab/suspensionlab/ui/cad_assembly_projection.py'
+      - 'suspensionlab/suspensionlab/export/cad_assembly_svg.py'
+      - 'suspensionlab/tests/test_cad_oracle.py'
+      - 'suspensionlab/tests/test_cad_mesh.py'
+      - 'suspensionlab/tests/test_cad_measurement.py'
+      - 'suspensionlab/tests/test_cad_recovery.py'
+      - 'suspensionlab/tests/test_step_cad_assembly.py'
+      - '.github/workflows/step-cad-oracle.yml'
+  pull_request:
+    paths:
+      - 'suspensionlab/suspensionlab/core/spatial_transform.py'
+      - 'suspensionlab/suspensionlab/core/sketch_solid_*.py'
+      - 'suspensionlab/suspensionlab/model/sketch_*.py'
+      - 'suspensionlab/tests/test_sketch_solid.py'
+      - 'suspensionlab/suspensionlab/core/cad_*.py'
+      - 'suspensionlab/suspensionlab/core/step_*.py'
+      - 'suspensionlab/suspensionlab/model/kim_format.py'
+      - 'suspensionlab/suspensionlab/model/welded_arm.py'
+      - 'suspensionlab/suspensionlab/model/bent_tube.py'
+      - 'suspensionlab/suspensionlab/model/rear_tube.py'
+      - 'suspensionlab/suspensionlab/model/joint_concept.py'
+      - 'suspensionlab/suspensionlab/ui/joint_concept_dialog.py'
+      - 'suspensionlab/tests/test_joint_concept_cad.py'
+      - 'suspensionlab/suspensionlab/model/rear_tube_pair.py'
+      - 'suspensionlab/suspensionlab/model/rear_joint_layout.py'
+      - 'suspensionlab/tests/test_rear_joint_layout_cad.py'
+      - 'suspensionlab/suspensionlab/model/rear_pair_snapshot.py'
+      - 'suspensionlab/tests/test_rear_pair_snapshot.py'
+      - 'suspensionlab/suspensionlab/model/front_tube_arm.py'
+      - 'suspensionlab/suspensionlab/model/front_joint_layout.py'
+      - 'suspensionlab/tests/test_front_joint_layout_cad.py'
+      - 'suspensionlab/suspensionlab/model/front_same_pair.py'
+      - 'suspensionlab/tests/test_front_same_pair_cad.py'
+      - 'suspensionlab/suspensionlab/model/front_pair_snapshot.py'
+      - 'suspensionlab/tests/test_front_pair_snapshot.py'
+      - 'suspensionlab/suspensionlab/ui/front_tubes_dialog.py'
+      - 'suspensionlab/tests/test_front_tube_arm_cad.py'
+      - 'suspensionlab/suspensionlab/ui/rear_tube_dialog.py'
+      - 'suspensionlab/tests/test_rear_tube_cad.py'
+      - 'suspensionlab/tests/test_bent_tube.py'
+      - 'suspensionlab/tests/test_kim_cad_prototype.py'
+      - 'suspensionlab/tests/test_weldment_3d_integration.py'
+      - 'suspensionlab/suspensionlab/ui/weldment_3d.py'
+      - 'suspensionlab/suspensionlab/ui/weldment_dialog.py'
+      - 'suspensionlab/suspensionlab/ui/arm_concept_dialog.py'
+      - 'suspensionlab/suspensionlab/ui/bend_editor.py'
+      - 'suspensionlab/tests/test_bent_arm_ui.py'
+      - 'suspensionlab/tests/test_cad_assembly_projection.py'
+      - 'suspensionlab/tests/test_cad_assembly_svg.py'
+      - 'suspensionlab/tests/test_assembly_snapshot_fingerprint.py'
+      - 'suspensionlab/suspensionlab/model/assembly_snapshot_fingerprint.py'
+      - 'suspensionlab/tests/test_cad_projection_layout.py'
+      - 'suspensionlab/suspensionlab/model/cad_projection_layout.py'
+      - 'suspensionlab/suspensionlab/ui/cad_assembly_projection.py'
+      - 'suspensionlab/suspensionlab/export/cad_assembly_svg.py'
+      - 'suspensionlab/tests/test_cad_oracle.py'
+      - 'suspensionlab/tests/test_cad_mesh.py'
+      - 'suspensionlab/tests/test_cad_measurement.py'
+      - 'suspensionlab/tests/test_cad_recovery.py'
+      - 'suspensionlab/tests/test_step_cad_assembly.py'
+      - '.github/workflows/step-cad-oracle.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  oracle:
+    name: Open CASCADE — сравнение геометрических преобразований
+    runs-on: windows-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: suspensionlab
+    env:
+      PYTHONUTF8: '1'
+      QT_QPA_PLATFORM: offscreen
+      PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Установить независимое CAD-ядро и тестовые зависимости
+        run: python -m pip install numpy==2.4.6 pillow==13.0.0 pytest==9.2.0 pytest-qt==4.5.0 PySide6-Essentials==6.11.3 cadquery-ocp-novtk==8.0.1.1.0
+      - name: Установить приложение для запуска изолированных CAD-процессов
+        run: python -m pip install -e . --no-deps
+      - name: Убедиться, что CAD-ядро загружается
+        run: python -c "from OCP.gp import gp_Ax3, gp_Pnt, gp_Trsf; from PySide6.QtWidgets import QApplication; print('Open CASCADE and Qt ready')"
+      - name: Сверить преобразования и искусственную STEP-сборку
+        run: python -m pytest -p pytestqt.plugin -q tests/test_sketch_solid.py tests/test_weldment_3d_integration.py tests/test_front_joint_layout_cad.py tests/test_front_same_pair_cad.py tests/test_rear_joint_layout_cad.py tests/test_joint_concept_cad.py tests/test_front_tube_arm_cad.py tests/test_rear_tube_cad.py tests/test_cad_assembly_projection.py tests/test_cad_assembly_svg.py tests/test_assembly_snapshot_fingerprint.py tests/test_cad_projection_layout.py tests/test_cad_oracle.py tests/test_cad_mesh.py tests/test_cad_measurement.py tests/test_cad_recovery.py tests/test_step_cad_assembly.py tests/test_kim_cad_prototype.py --junitxml=cad-results.xml
+      - name: Показать ошибки тестов в аннотациях
+        if: failure()
+        run: python scripts/annotate_pytest.py cad-results.xml
