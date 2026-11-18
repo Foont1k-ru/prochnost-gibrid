@@ -731,6 +731,17 @@ class SketchDraftDialog(QDialog):
         self.file_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         files.addWidget(self.file_label, 1)
         layout.addLayout(files)
+        extrusion_options = QHBoxLayout()
+        extrusion_options.addWidget(QLabel("Направление выдавливания:"))
+        self.extrusion_direction = QComboBox()
+        self.extrusion_direction.addItem("В положительную сторону оси", "positive")
+        self.extrusion_direction.addItem("В отрицательную сторону оси", "negative")
+        self.extrusion_direction.addItem("Симметрично относительно плоскости", "symmetric")
+        self.extrusion_direction.setToolTip("XY → ось Z, XZ → ось Y, YZ → ось X. "
+                                            "Симметрично: половина толщины с каждой стороны.")
+        extrusion_options.addWidget(self.extrusion_direction)
+        extrusion_options.addStretch(1)
+        layout.addLayout(extrusion_options)
         row = QHBoxLayout()
         self.plane = QComboBox()
         self.plane.addItems(["XY", "XZ", "YZ"])
@@ -992,7 +1003,7 @@ class SketchDraftDialog(QDialog):
             QMessageBox.warning(self, "Создание 3D STEP", str(exc))
             return
         depth, ok = QInputDialog.getDouble(self, "Выдавливание в STEP",
-            "Глубина в мм вдоль положительной оси, перпендикулярной эскизу. "
+            "Толщина в мм вдоль оси, перпендикулярной эскизу. "
             "Один внешний контур; внутренние контуры станут сквозными отверстиями. "
             "Создаётся отдельное CAD-тело, не связанное с эскизом и проектом.",
             10, 0.001, 1_000_000, 3)
@@ -1005,7 +1016,8 @@ class SketchDraftDialog(QDialog):
         destination = Path(path)
         if not destination.suffix:
             destination = destination.with_suffix(".step")
-        progress = SketchSolidDialog(self._document(), depth, destination, self)
+        progress = SketchSolidDialog(self._document(), depth, destination, self,
+                                     direction=str(self.extrusion_direction.currentData()))
         progress.start()
         progress.exec()
         progress.worker.wait()  # thread must be fully finished before Qt ownership is released
@@ -1033,7 +1045,7 @@ class SketchDraftDialog(QDialog):
             QMessageBox.warning(self, "3D-предпросмотр не создан", str(exc))
             return
         depth, ok = QInputDialog.getDouble(self, "Выдавливание: 3D-предпросмотр",
-            "Глубина в мм вдоль положительной оси, перпендикулярной эскизу. "
+            "Толщина в мм вдоль оси, перпендикулярной эскизу. "
             "Внутренние контуры станут сквозными отверстиями; результат только для просмотра.",
             10, 0.001, 1_000_000, 3)
         if not ok:
@@ -1042,7 +1054,7 @@ class SketchDraftDialog(QDialog):
             self._preview_solid_with_holes(depth)
             return
         try:
-            triangles = extrusion_mesh(self._document(), depth)
+            triangles = extrusion_mesh(self._document(), depth, str(self.extrusion_direction.currentData()))
         except ValueError as exc:
             QMessageBox.warning(self, "3D-предпросмотр не создан", str(exc))
             return
@@ -1056,7 +1068,8 @@ class SketchDraftDialog(QDialog):
 
         try:
             with TemporaryDirectory(prefix="sketch-preview-") as directory:
-                progress = SketchSolidDialog(self._document(), depth, Path(directory) / "preview.step", self)
+                progress = SketchSolidDialog(self._document(), depth, Path(directory) / "preview.step", self,
+                                             direction=str(self.extrusion_direction.currentData()))
                 progress.start()
                 progress.exec()
                 progress.worker.wait()

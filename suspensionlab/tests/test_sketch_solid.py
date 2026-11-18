@@ -320,3 +320,25 @@ def test_nested_and_disjoint_report_clear_reason(tmp_path, cad):
     island = make_entity("circle", (0, 0), (5, 0))
     with pytest.raises(SketchSolidError, match="вложенные острова"):
         SketchSolidJob().run(doc((outer, inner, island)), 2, tmp_path / "invalid.step")
+
+
+@pytest.mark.parametrize("plane,axis", [("XY", 2), ("XZ", 1), ("YZ", 0)])
+@pytest.mark.parametrize("direction,expected", [("positive", (12, 17)), ("negative", (7, 12)),
+                                                 ("symmetric", (9.5, 14.5))])
+@pytest.mark.parametrize("holes", [False, True])
+def test_extrude_direction_step_roundtrip(tmp_path, cad, plane, axis, direction, expected, holes):
+    entities = list(rectangle_entities((0, 0), (100, 50)))
+    if holes:
+        entities.append(make_entity("circle", (25, 25), (35, 25)))
+    target = tmp_path / "direction.step"
+    SketchSolidJob().run(doc(entities, plane, 12), 5, target, direction=direction)
+    _, volume, box = cad(target)
+    assert (box[axis], box[axis + 3]) == pytest.approx(expected, abs=1e-6)
+    assert volume == pytest.approx((5000 - (100 * math.pi if holes else 0)) * 5, rel=1e-9)
+
+
+def test_invalid_direction_is_rejected_without_output(tmp_path):
+    target = tmp_path / "bad.step"
+    with pytest.raises(SketchSolidError, match="направление"):
+        SketchSolidJob().run(doc(rectangle_entities((0, 0), (10, 10))), 5, target, direction="bad")
+    assert not target.exists()

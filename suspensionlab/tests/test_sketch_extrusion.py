@@ -79,3 +79,17 @@ def test_unordered_and_reversed_edges_accepted():
     reverse = lambda e: make_entity("line", e.end, e.start)  # noqa: E731
     mesh = extrusion_mesh(document((reverse(r[2]), r[0], reverse(r[3]), r[1])), 2)
     assert len(mesh) == 12
+
+
+@pytest.mark.parametrize("plane,axis", [("XY", 2), ("XZ", 1), ("YZ", 0)])
+@pytest.mark.parametrize("direction,expected", [("positive", (3, 8)), ("negative", (-2, 3)),
+                                                 ("symmetric", (0.5, 5.5))])
+def test_preview_direction_extents_and_positive_volume(plane, axis, direction, expected):
+    mesh = extrusion_mesh(document(rectangle_entities((0, 0), (10, 20)), plane), 5, direction)
+    assert (mesh[:, :, axis].min(), mesh[:, :, axis].max()) == pytest.approx(expected)
+    assert sum(np.dot(t[0], np.cross(t[1], t[2])) for t in mesh) / 6 == pytest.approx(1000)
+
+
+def test_invalid_extrusion_direction_rejected():
+    with pytest.raises(ValueError, match="направление"):
+        extrusion_mesh(document(rectangle_entities((0, 0), (10, 20))), 5, "bad")

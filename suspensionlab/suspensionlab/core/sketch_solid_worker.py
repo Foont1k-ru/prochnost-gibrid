@@ -10,6 +10,7 @@ from typing import Any
 from ..model.sketch_contours import check_contours
 from ..model.sketch_curves import NUMERIC_EPS_MM, distance, endpoints, point_at
 from ..model.sketch_draft import Entity, Point
+from ..model.sketch_extrude_settings import extrusion_limits
 from ..model.sketch_io import SketchDocument, read_sketch
 
 
@@ -60,11 +61,10 @@ def ordered_contours(entities: tuple[Entity, ...]) -> tuple[tuple[tuple[Entity, 
     return tuple(result)
 
 
-def build_solid(document: SketchDocument, depth: float) -> Any:
+def build_solid(document: SketchDocument, depth: float, direction: str = "positive") -> Any:
     """Тело OCCT с аналитическими рёбрами, без аппроксимации дуг сеткой."""
-    if not math.isfinite(depth) or not 0 < depth <= 1_000_000:
-        raise ValueError("Глубина должна быть больше нуля и не более 1 000 000 мм")
-    if document.plane not in ("XY", "XZ", "YZ") or not math.isfinite(document.offset_mm):
+    start, end = extrusion_limits(document.offset_mm, depth, direction)
+    if document.plane not in ("XY", "XZ", "YZ"):
         raise ValueError("Некорректная плоскость")
     contours = ordered_contours(document.entities)
     from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakeWire
@@ -83,7 +83,7 @@ def build_solid(document: SketchDocument, depth: float) -> Any:
 
     def xyz(point: Point) -> tuple[float, float, float]:
         x, y = point
-        offset = document.offset_mm
+        offset = start
         if document.plane == "XY":
             return x, y, offset
         if document.plane == "XZ":
@@ -167,7 +167,7 @@ def build_solid(document: SketchDocument, depth: float) -> Any:
     if expected <= 1e-12 or not math.isclose(props.Mass(), expected, rel_tol=1e-8, abs_tol=1e-8):
         raise ValueError("Не удалось корректно вычесть отверстия")
     face = builder
-    vec = gp_Vec(*(x * depth for x in normal))
+    vec = gp_Vec(*(x * (end - start) for x in normal))
     prism = BRepPrimAPI_MakePrism(face.Face(), vec, True)
     if not prism.IsDone() or prism.Shape().IsNull() or not BRepCheck_Analyzer(prism.Shape()).IsValid():
         raise ValueError("CAD-ядро не смогло создать корректное тело")
@@ -185,12 +185,12 @@ def build_solid(document: SketchDocument, depth: float) -> Any:
     return solid
 
 
-def write_step(document: SketchDocument, depth: float, output: Path) -> None:
+def write_step(document: SketchDocument, depth: float, output: Path, direction: str = "positive") -> None:
     from OCP.IFSelect import IFSelect_ReturnStatus
     from OCP.Interface import Interface_Static
     from OCP.STEPControl import STEPControl_AsIs, STEPControl_Writer
 
-    solid = build_solid(document, depth)
+    solid = build_solid(document, depth, direction)
     writer = STEPControl_Writer()
     if not Interface_Static.SetCVal_s("write.step.unit", "MM"):
         raise ValueError("Не удалось задать единицы STEP в миллиметрах")
@@ -202,12 +202,12 @@ def write_step(document: SketchDocument, depth: float, output: Path) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
-    if len(args) != 4:
+    if len(args) not in (4, 5):
         return 2
     source, output, report = (Path(x) for x in args[:3])
     try:
         document = read_sketch(source)
-        write_step(document, float(args[3]), output)
+        write_step(document, float(args[3]), output, args[4] if len(args) == 5 else "positive")
         report.write_text(json.dumps({"status": "ok"}), encoding="utf-8")
         return 0
     except (ImportError, OSError):

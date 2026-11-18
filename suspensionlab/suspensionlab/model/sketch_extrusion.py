@@ -1,13 +1,14 @@
 """Ограниченный полигональный 3D-предпросмотр одного контура, не CAD-тело."""
 from __future__ import annotations
 
-from math import ceil, cos, isfinite, pi, sin
+from math import ceil, cos, pi, sin
 
 import numpy as np
 
 from .sketch_contours import check_contours
 from .sketch_curves import NUMERIC_EPS_MM, distance, endpoints, point_at
 from .sketch_draft import Entity, Point
+from .sketch_extrude_settings import extrusion_limits
 from .sketch_io import SketchDocument
 
 MAX_VERTICES = 500
@@ -108,15 +109,14 @@ def _triangulate(points: list[Point]) -> tuple[list[Point], list[tuple[int, int,
     return points, triangles
 
 
-def extrusion_mesh(document: SketchDocument, depth: float) -> np.ndarray:
-    """Только замкнутая сетка для просмотра, глубина вдоль положительной нормали.
+def extrusion_mesh(document: SketchDocument, depth: float, direction: str = "positive") -> np.ndarray:
+    """Только замкнутая сетка для просмотра с выбранным направлением.
 
     Один контур без отверстий; кривые аппроксимируются отрезками по 10°.
     Не создаёт CAD-геометрию, STEP или параметрическую связь.
     """
-    if not isfinite(depth) or not 0 < depth <= 1_000_000:
-        raise ValueError("Глубина должна быть больше нуля и не более 1 000 000 мм")
-    if document.plane not in ("XY", "XZ", "YZ") or not isfinite(document.offset_mm):
+    start, end = extrusion_limits(document.offset_mm, depth, direction)
+    if document.plane not in ("XY", "XZ", "YZ"):
         raise ValueError("Некорректная плоскость эскиза")
     points, caps = _triangulate(_polygon(document.entities))
     def xyz(p: Point, z: float) -> tuple[float, float, float]:
@@ -126,8 +126,8 @@ def extrusion_mesh(document: SketchDocument, depth: float) -> np.ndarray:
         if document.plane == "XZ":
             return x, z, y
         return z, x, y
-    bottom = [xyz(p, document.offset_mm) for p in points]
-    top = [xyz(p, document.offset_mm + depth) for p in points]
+    bottom = [xyz(p, start) for p in points]
+    top = [xyz(p, end) for p in points]
     # XZ has opposite handedness from XY/YZ.
     flip = document.plane == "XZ"
     faces: list[tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]]] = []

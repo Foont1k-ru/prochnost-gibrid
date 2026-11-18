@@ -789,7 +789,7 @@ def test_create_step_ui_uses_snapshot_and_preserves_sketch(qtbot, monkeypatch, t
     snapshot = dialog._document()
     target = tmp_path / "тело.step"
     seen = []
-    def create(_self, document, depth, path):
+    def create(_self, document, depth, path, *, direction="positive"):
         seen.append((document, depth, path))
         path.write_text("fixture", encoding="ascii")
         return path
@@ -828,7 +828,7 @@ def test_solid_dialog_cancel_waits_for_worker_before_closing(qtbot, monkeypatch,
     from suspensionlab.model.sketch_io import SketchDocument
     from suspensionlab.ui.sketch_solid_dialog import SketchSolidDialog
 
-    def slow(job, document, depth, destination):
+    def slow(job, document, depth, destination, *, direction="positive"):
         job._cancelled.wait(5)
         raise SketchSolidError("Построение отменено")
     monkeypatch.setattr(SketchSolidJob, "run", slow)
@@ -859,7 +859,7 @@ def test_hole_preview_uses_temporary_cad_and_preserves_sketch(qtbot, monkeypatch
     original = dialog._document()
     monkeypatch.setattr(QInputDialog, "getDouble", lambda *args, **kwargs: (8, True))
     seen = []
-    def create(_self, document, depth, path):
+    def create(_self, document, depth, path, *, direction="positive"):
         assert document == original and depth == 8
         path.write_text("fixture", encoding="ascii")
         return path
@@ -889,7 +889,7 @@ def test_hole_step_export_accepts_multiple_loops(qtbot, monkeypatch, tmp_path):
     dialog.canvas.draft.add("circle", (30, 25), (40, 25))
     original = dialog._document()
     target = tmp_path / "holes.step"
-    def create(_self, document, depth, path):
+    def create(_self, document, depth, path, *, direction="positive"):
         assert document == original and depth == 8
         path.write_text("fixture", encoding="ascii")
         return path
@@ -900,3 +900,69 @@ def test_hole_step_export_accepts_multiple_loops(qtbot, monkeypatch, tmp_path):
     dialog._export_solid_step()
     assert target.exists() and dialog._document() == original
     dialog._saved = original
+
+
+@pytest.mark.parametrize("direction", ["negative", "symmetric"])
+def test_extrude_direction_used_for_preview_and_export(qtbot, monkeypatch, tmp_path, direction):
+    from PySide6.QtWidgets import QFileDialog, QInputDialog
+
+    from suspensionlab.core.sketch_solid_job import SketchSolidJob
+    from suspensionlab.ui.sketch_draft_dialog import SketchExtrusionPreview
+
+    dialog = SketchDraftDialog()
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog.tool.setCurrentIndex(3)
+    dialog.canvas.add_point((0, 0))
+    dialog.canvas.add_point((50, 25))
+    dialog.extrusion_direction.setCurrentIndex(dialog.extrusion_direction.findData(direction))
+    snapshot = dialog._document()
+    target = tmp_path / "body.step"
+    seen = []
+    def create(_self, document, depth, path, *, direction="positive"):
+        seen.append((document, depth, direction))
+        path.write_text("fixture", encoding="ascii")
+        return path
+    triangles = []
+    monkeypatch.setattr(SketchSolidJob, "run", create)
+    monkeypatch.setattr(QInputDialog, "getDouble", lambda *args, **kwargs: (10, True))
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *args, **kwargs: (str(target), ""))
+    monkeypatch.setattr(QMessageBox, "information", lambda *args: None)
+    monkeypatch.setattr(SketchExtrusionPreview, "exec", lambda preview: triangles.append(preview.view.mesh.triangles))
+    dialog._extrude_preview()
+    dialog._export_solid_step()
+    assert seen == [(snapshot, 10, direction)]
+    expected = (-10, 0) if direction == "negative" else (-5, 5)
+    assert (triangles[0][:, :, 2].min(), triangles[0][:, :, 2].max()) == pytest.approx(expected)
+    assert dialog._document() == snapshot
+    dialog._saved = snapshot
+
+
+def test_hole_preview_uses_selected_direction(qtbot, monkeypatch):
+    from PySide6.QtWidgets import QInputDialog
+
+    from suspensionlab.core.sketch_solid_job import SketchSolidJob
+    from suspensionlab.ui.cad_preview_dialog import CadPreviewDialog
+
+    dialog = SketchDraftDialog()
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog.tool.setCurrentIndex(3)
+    dialog.canvas.add_point((0, 0))
+    dialog.canvas.add_point((100, 50))
+    dialog.canvas.draft.add("circle", (30, 25), (40, 25))
+    dialog.extrusion_direction.setCurrentIndex(dialog.extrusion_direction.findData("symmetric"))
+    snapshot = dialog._document()
+    seen = []
+    def create(_self, document, depth, path, *, direction="positive"):
+        seen.append((document, depth, direction))
+        path.write_text("fixture", encoding="ascii")
+        return path
+    monkeypatch.setattr(SketchSolidJob, "run", create)
+    monkeypatch.setattr(QInputDialog, "getDouble", lambda *args, **kwargs: (8, True))
+    monkeypatch.setattr(CadPreviewDialog, "load_file", lambda _self, path: None)
+    monkeypatch.setattr(CadPreviewDialog, "exec", lambda _self: 0)
+    dialog._extrude_preview()
+    assert seen == [(snapshot, 8, "symmetric")]
+    assert dialog._document() == snapshot
+    dialog._saved = snapshot

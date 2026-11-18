@@ -15,14 +15,15 @@ class _SolidWorker(QThread):
     completed = Signal(object)
     failed = Signal(str)
 
-    def __init__(self, document: SketchDocument, depth: float, destination: Path, parent: QWidget) -> None:
+    def __init__(self, document: SketchDocument, depth: float, destination: Path, parent: QWidget,
+                 direction: str = "positive") -> None:
         super().__init__(parent)
-        self.document, self.depth, self.destination = document, depth, destination
+        self.document, self.depth, self.destination, self.direction = document, depth, destination, direction
         self.job = SketchSolidJob()
 
     def run(self) -> None:
         try:
-            self.completed.emit(self.job.run(self.document, self.depth, self.destination))
+            self.completed.emit(self.job.run(self.document, self.depth, self.destination, direction=self.direction))
         except SketchSolidError as exc:
             self.failed.emit(str(exc))
         except Exception:
@@ -31,7 +32,7 @@ class _SolidWorker(QThread):
 
 class SketchSolidDialog(QDialog):
     def __init__(self, document: SketchDocument, depth: float, destination: Path,
-                 parent: QWidget | None = None) -> None:
+                 parent: QWidget | None = None, *, direction: str = "positive") -> None:
         super().__init__(parent)
         self.setWindowTitle("Создание CAD-тела")
         self.setModal(True)
@@ -49,7 +50,7 @@ class SketchSolidDialog(QDialog):
         self.cancel_button = QPushButton("Отменить построение")
         self.cancel_button.clicked.connect(self._cancel)
         layout.addWidget(self.cancel_button)
-        self.worker = _SolidWorker(document, depth, destination, self)
+        self.worker = _SolidWorker(document, depth, destination, self, direction)
         self.worker.completed.connect(self._completed)
         self.worker.failed.connect(self._failed)
         self.worker.finished.connect(self._finished)

@@ -142,10 +142,12 @@ def run_cad_check() -> None:
         holes_path = Path(directory) / "тело с отверстием.step"
         hole = make_entity("circle", (25., 25.), (35., 25.))
         hole_doc = SketchDocument("XZ", 12., (*doc.entities, hole))
-        SketchSolidJob().run(hole_doc, 5., holes_path)
+        SketchSolidJob().run(hole_doc, 5., holes_path, direction="symmetric")
         holes_mesh = CadJob().run(holes_path, 0.2, timeout=90)
-        _require(holes_mesh.face_count == 7 and holes_mesh.skipped_faces == 0,
-                 "В собранном приложении недоступно STEP-тело со сквозным отверстием")
+        _require(holes_mesh.face_count == 7 and holes_mesh.skipped_faces == 0 and
+                 np.allclose(holes_mesh.triangles.reshape(-1, 3).min(axis=0), (0., 9.5, 0.), atol=1e-6, rtol=0) and
+                 np.allclose(holes_mesh.triangles.reshape(-1, 3).max(axis=0), (100., 14.5, 50.), atol=1e-6, rtol=0),
+                 "В собранном приложении недоступно симметричное STEP-тело со сквозным отверстием")
 
     # 3D труб проверяется именно из собранного приложения, включая повторный
     # запуск замороженного исполняемого файла как CAD-процесса и Qt-отрисовку.
