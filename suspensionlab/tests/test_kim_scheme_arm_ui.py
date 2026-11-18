@@ -207,7 +207,6 @@ def test_bushing_parameter_validation_keeps_dialog_open(qtbot, monkeypatch):
     parent = QWidget()
     qtbot.addWidget(parent)
     d = BushingParametersDialog(None, parent)
-    qtbot.addWidget(d)
     d.show()
     assert d.axis.currentData() == 'x'
     warnings = []
