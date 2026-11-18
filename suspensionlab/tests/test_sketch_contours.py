@@ -210,3 +210,17 @@ def test_near_concentric_arc_secants_are_not_mistaken_for_endpoint_tangency(monk
     monkeypatch.setattr(sketch_contours, "intersections", unstable)
     assert sketch_contours._arc_pair_conflict(first, second, 0.01)
     assert called
+
+
+def test_ordered_contour_indices_are_stable_and_include_all_elements():
+    from suspensionlab.model.sketch_contours import ordered_contour_indices
+    from suspensionlab.model.sketch_draft import make_entity, rectangle_entities
+
+    rect = rectangle_entities((0, 0), (100, 50))
+    reversed_line = make_entity("line", rect[2].end, rect[2].start)
+    hole = make_entity("circle", (25, 25), (30, 25))
+    entities = (hole, reversed_line, rect[0], rect[3], rect[1])
+    contours = ordered_contour_indices(entities)
+    assert contours[0] == ((0, False),)
+    assert {i for i, _ in contours[1]} == {1, 2, 3, 4}
+    assert len({i for contour in contours for i, _ in contour}) == len(entities)

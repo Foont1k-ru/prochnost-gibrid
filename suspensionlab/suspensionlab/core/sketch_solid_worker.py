@@ -7,11 +7,21 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from ..model.sketch_contours import check_contours
-from ..model.sketch_curves import NUMERIC_EPS_MM, distance, endpoints, point_at
+from ..model.sketch_contours import ordered_contour_indices
+from ..model.sketch_curves import point_at
 from ..model.sketch_draft import Entity, Point
-from ..model.sketch_extrude_settings import extrusion_limits, hole_entry_side, validate_hole_depth
+from ..model.sketch_extrude_settings import (
+    HoleOverride,
+    extrusion_limits,
+    hole_entry_side,
+    validate_hole_depth,
+    validate_hole_overrides,
+)
 from ..model.sketch_io import SketchDocument, read_sketch
+
+
+class HoleOverrideError(ValueError):
+    """Параметры назначены внешнему контуру или дважды одному отверстию."""
 
 
 class ContourLayoutError(ValueError):
@@ -27,49 +37,23 @@ def ordered_contour(entities: tuple[Entity, ...]) -> tuple[tuple[Entity, bool], 
 
 
 def ordered_contours(entities: tuple[Entity, ...]) -> tuple[tuple[tuple[Entity, bool], ...], ...]:
-    """Разделяет проверенные замкнутые компоненты; вложенность проверяет CAD-ядро."""
-    report = check_contours(entities)
-    if report.total_issues or not report.closed_loops:
-        raise ValueError("Нужны замкнутые контуры без разрывов, пересечений и касаний")
-    remaining = set(range(len(entities)))
-    result: list[tuple[tuple[Entity, bool], ...]] = []
-    while remaining:
-        first = min(remaining)
-        if entities[first].kind == "circle":
-            remaining.remove(first)
-            result.append(((entities[first], False),))
-            continue
-        start = endpoints(entities[first])[0]
-        current = start
-        ordered: list[tuple[Entity, bool]] = []
-        while True:
-            matches = ([(first, 0)] if not ordered else
-                       [(i, side) for i in sorted(remaining) for side, p in enumerate(endpoints(entities[i]))
-                        if distance(current, p) <= NUMERIC_EPS_MM])
-            if len(matches) != 1:
-                raise ValueError("Не удалось однозначно упорядочить контур")
-            index, side = matches[0]
-            remaining.remove(index)
-            entity = entities[index]
-            ordered.append((entity, side == 1))
-            current = endpoints(entity)[1 - side]
-            if distance(current, start) <= NUMERIC_EPS_MM:
-                break
-        result.append(tuple(ordered))
-    if len(result) != report.closed_loops:
-        raise ValueError("Не удалось разделить контуры")
-    return tuple(result)
+    """Совместимый вид без индексов; вложенность проверяет CAD-ядро."""
+    return tuple(tuple((entities[index], reverse) for index, reverse in contour)
+                 for contour in ordered_contour_indices(entities))
 
 
 def build_solid(document: SketchDocument, depth: float, direction: str = "positive", hole_depth: float = 0,
-                hole_side: str = "auto") -> Any:
+                hole_side: str = "auto", hole_overrides: tuple[HoleOverride, ...] = ()) -> Any:
     """Тело OCCT с аналитическими рёбрами, без аппроксимации дуг сеткой."""
     start, end = extrusion_limits(document.offset_mm, depth, direction)
     entry_side = hole_entry_side(direction, hole_side)
     if document.plane not in ("XY", "XZ", "YZ"):
         raise ValueError("Некорректная плоскость")
-    contours = ordered_contours(document.entities)
+    indexed_contours = ordered_contour_indices(document.entities)
+    contours = tuple(tuple((document.entities[index], reverse) for index, reverse in contour)
+                     for contour in indexed_contours)
     validate_hole_depth(depth, hole_depth, has_holes=len(contours) > 1)
+    validate_hole_overrides(depth, direction, hole_overrides, len(document.entities))
     from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
     from OCP.BRepBuilderAPI import (
         BRepBuilderAPI_MakeEdge,
@@ -164,6 +148,16 @@ def build_solid(document: SketchDocument, depth: float, direction: str = "positi
     if len(outer) != 1 or any(len(parents) != 1 or parents[0] != outer[0]
                               for i, parents in enumerate(containers) if i != outer[0]):
         raise ContourLayoutError("Нужен один внешний контур с отверстиями внутри; отдельные детали и вложенные острова не поддерживаются")
+    # A selected element identifies its entire loop. The CAD classifier must
+    # reject the external boundary and two settings for the same loop.
+    settings: dict[int, tuple[float, str]] = {}
+    by_element = {index: i for i, contour in enumerate(indexed_contours) for index, _ in contour}
+    for element_index, override_depth, override_side in hole_overrides:
+        loop = by_element[element_index]
+        if loop == outer[0] or loop in settings:
+            raise HoleOverrideError("Настройте разные внутренние контуры, не внешний")
+        settings[loop] = (override_depth, hole_entry_side(direction, override_side))
+    hole_settings = {i: settings.get(i, (hole_depth, entry_side)) for i in range(len(contours)) if i != outer[0]}
     builder = BRepBuilderAPI_MakeFace(faces[outer[0]])
     for i, wire in enumerate(wires):
         if i != outer[0]:
@@ -175,28 +169,29 @@ def build_solid(document: SketchDocument, depth: float, direction: str = "positi
     expected = areas[outer[0]] - sum(area for i, area in enumerate(areas) if i != outer[0])
     if expected <= 1e-12 or not math.isclose(props.Mass(), expected, rel_tol=1e-8, abs_tol=1e-8):
         raise ValueError("Не удалось корректно вычесть отверстия")
-    # Through holes use a single face. Blind pockets cut the outer prism from
-    # the chosen side of the normal axis. All pockets share one depth and side.
+    # Fast path for all-through profiles; mixed or blind pockets use cuts.
     vec = gp_Vec(*(x * (end - start) for x in normal))
-    base_face = faces[outer[0]] if hole_depth > 0 else builder.Face()
+    all_through = all(item[0] == 0 for item in hole_settings.values())
+    base_face = builder.Face() if all_through else faces[outer[0]]
     prism = BRepPrimAPI_MakePrism(base_face, vec, True)
     if not prism.IsDone() or prism.Shape().IsNull() or not BRepCheck_Analyzer(prism.Shape()).IsValid():
         raise ValueError("CAD-ядро не смогло создать корректное тело")
     solid = prism.Shape()
-    if hole_depth > 0:
+    if not all_through:
         for i, pocket_face in enumerate(faces):
             if i == outer[0]:
                 continue
-            # A cutter starting at the lower coordinate removes inward from
-            # that side; the shifted cutter removes inward from the upper side.
-            shift = depth - hole_depth if entry_side == "positive" else 0.
+            configured_depth, configured_side = hole_settings[i]
+            cut_depth = configured_depth or depth
+            # Through cutters occupy the full body regardless of entry side.
+            shift = depth - cut_depth if configured_side == "positive" else 0.
             if shift:
                 transform = gp_Trsf()
                 transform.SetTranslation(gp_Vec(*(x * shift for x in normal)))
                 pocket_shape = BRepBuilderAPI_Transform(pocket_face, transform, True).Shape()
             else:
                 pocket_shape = pocket_face
-            cutter = BRepPrimAPI_MakePrism(pocket_shape, gp_Vec(*(x * hole_depth for x in normal)), True)
+            cutter = BRepPrimAPI_MakePrism(pocket_shape, gp_Vec(*(x * cut_depth for x in normal)), True)
             if not cutter.IsDone() or cutter.Shape().IsNull():
                 raise ValueError("CAD-ядро не смогло построить объём отверстия")
             cut = BRepAlgoAPI_Cut(solid, cutter.Shape())
@@ -214,20 +209,20 @@ def build_solid(document: SketchDocument, depth: float, direction: str = "positi
     BRepGProp.VolumeProperties_s(solid, volume)
     if not math.isfinite(volume.Mass()) or volume.Mass() <= 1e-12:
         raise ValueError("Объём тела нулевой или недопустим")
-    hole_area = sum(area for i, area in enumerate(areas) if i != outer[0])
-    expected_volume = areas[outer[0]] * depth - hole_area * (hole_depth or depth)
+    removed_volume = sum(areas[i] * (config[0] or depth) for i, config in hole_settings.items())
+    expected_volume = areas[outer[0]] * depth - removed_volume
     if not math.isclose(volume.Mass(), expected_volume, rel_tol=1e-8, abs_tol=1e-8):
         raise ValueError("Объём тела не соответствует глубине отверстий")
     return solid
 
 
 def write_step(document: SketchDocument, depth: float, output: Path, direction: str = "positive", hole_depth: float = 0,
-               hole_side: str = "auto") -> None:
+               hole_side: str = "auto", hole_overrides: tuple[HoleOverride, ...] = ()) -> None:
     from OCP.IFSelect import IFSelect_ReturnStatus
     from OCP.Interface import Interface_Static
     from OCP.STEPControl import STEPControl_AsIs, STEPControl_Writer
 
-    solid = build_solid(document, depth, direction, hole_depth, hole_side)
+    solid = build_solid(document, depth, direction, hole_depth, hole_side, hole_overrides)
     writer = STEPControl_Writer()
     if not Interface_Static.SetCVal_s("write.step.unit", "MM"):
         raise ValueError("Не удалось задать единицы STEP в миллиметрах")
@@ -239,17 +234,28 @@ def write_step(document: SketchDocument, depth: float, output: Path, direction: 
 
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
-    if len(args) not in (4, 5, 6, 7):
+    if len(args) not in (4, 5, 6, 7, 8):
         return 2
     source, output, report = (Path(x) for x in args[:3])
     try:
         document = read_sketch(source)
+        overrides = ()
+        if len(args) == 8:
+            path = Path(args[7])
+            if path.stat().st_size > 64_000:
+                raise ValueError("Слишком большой список отверстий")
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(data, list):
+                raise ValueError("Некорректный список отверстий")
+            overrides = tuple(data)
         write_step(document, float(args[3]), output, args[4] if len(args) >= 5 else "positive",
-                   float(args[5]) if len(args) >= 6 else 0, args[6] if len(args) == 7 else "auto")
+                   float(args[5]) if len(args) >= 6 else 0, args[6] if len(args) >= 7 else "auto", overrides)
         report.write_text(json.dumps({"status": "ok"}), encoding="utf-8")
         return 0
     except (ImportError, OSError):
         code = "missing_cad"
+    except HoleOverrideError:
+        code = "invalid_hole_override"
     except ContourLayoutError:
         code = "contour_layout"
     except ValueError:

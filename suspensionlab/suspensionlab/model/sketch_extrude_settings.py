@@ -38,3 +38,25 @@ def hole_entry_side(direction: str, side: str = "auto") -> str:
     if side in ("negative", "positive"):
         return side
     raise ValueError("Некорректная сторона входа глухих отверстий")
+
+
+# (zero-based element index, 0 for through or blind depth, entry side).
+HoleOverride = tuple[int, float, str]
+
+
+def validate_hole_overrides(thickness: float, direction: str, overrides: tuple[HoleOverride, ...],
+                            entity_count: int) -> None:
+    if len(overrides) > min(entity_count, 300):
+        raise ValueError("Слишком много индивидуальных настроек отверстий")
+    seen: set[int] = set()
+    for item in overrides:
+        if not isinstance(item, (list, tuple)) or len(item) != 3:
+            raise ValueError("Некорректные настройки отверстий")
+        index, depth, side = item
+        if isinstance(index, bool) or not isinstance(index, int) or not 0 <= index < entity_count or index in seen:
+            raise ValueError("Некорректный или повторный элемент отверстия")
+        if isinstance(depth, bool) or not isinstance(depth, (float, int)):
+            raise ValueError("Некорректная глубина отверстия")
+        validate_hole_depth(thickness, depth)
+        hole_entry_side(direction, side)
+        seen.add(index)

@@ -11,7 +11,13 @@ import threading
 from contextlib import suppress
 from pathlib import Path
 
-from ..model.sketch_extrude_settings import extrusion_limits, hole_entry_side, validate_hole_depth
+from ..model.sketch_extrude_settings import (
+    HoleOverride,
+    extrusion_limits,
+    hole_entry_side,
+    validate_hole_depth,
+    validate_hole_overrides,
+)
 from ..model.sketch_io import SketchDocument, SketchIOError, write_new_sketch
 
 MAX_STEP_BYTES = 100 * 1024 * 1024
@@ -37,11 +43,12 @@ class SketchSolidJob:
                 with suppress(OSError):
                     self._process.kill()
 
-    def run(self, document: SketchDocument, depth: float, destination: str | Path, *, timeout: float = 90, direction: str = "positive", hole_depth: float = 0, hole_side: str = "auto") -> Path:
+    def run(self, document: SketchDocument, depth: float, destination: str | Path, *, timeout: float = 90, direction: str = "positive", hole_depth: float = 0, hole_side: str = "auto", hole_overrides: tuple[HoleOverride, ...] = ()) -> Path:
         try:
             extrusion_limits(document.offset_mm, depth, direction)
             validate_hole_depth(depth, hole_depth)
             hole_entry_side(direction, hole_side)
+            validate_hole_overrides(depth, direction, hole_overrides, len(document.entities))
         except (ValueError, TypeError) as exc:
             raise SketchSolidError(str(exc)) from exc
         target = Path(destination)
@@ -57,6 +64,9 @@ class SketchSolidJob:
                 work = Path(directory)
                 write_new_sketch(work / "source.slsketch", document)
                 args = ["source.slsketch", "result.step", "report.json", str(depth), direction, str(hole_depth), hole_side]
+                if hole_overrides:
+                    (work / "holes.json").write_text(json.dumps(hole_overrides, allow_nan=False), encoding="utf-8")
+                    args.append("holes.json")
                 if getattr(sys, "frozen", False):
                     command = [sys.executable, "--sketch-solid-worker", *args]
                     environment = None
@@ -96,6 +106,7 @@ class SketchSolidJob:
                 if code != 0 or state.get("status") != "ok":
                     messages = {"missing_cad": "CAD-ядро недоступно в этой сборке",
                                 "invalid_shape": "CAD-ядро не смогло построить корректное тело по этим контурам",
+                                "invalid_hole_override": "Индивидуальные настройки должны относиться к разным внутренним контурам, а не к внешней границе",
                                 "contour_layout": "Нужен один внешний контур с отверстиями внутри; отдельные детали и вложенные острова не поддерживаются",
                                 "unexpected": "Ошибка CAD-ядра при построении тела"}
                     raise SketchSolidError(messages.get(str(state.get("code")), "CAD-процесс завершился с ошибкой"))

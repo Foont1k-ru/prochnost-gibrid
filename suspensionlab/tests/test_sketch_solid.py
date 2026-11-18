@@ -463,3 +463,65 @@ def test_explicit_side_does_not_change_through_holes(tmp_path, cad, side):
     path = tmp_path / "through.step"
     SketchSolidJob().run(shape, 10, path, hole_side=side)
     assert cad(path)[1] == pytest.approx((5000 - 100 * math.pi) * 10)
+
+
+@pytest.mark.parametrize("plane,axis", [("XY", 2), ("XZ", 1), ("YZ", 0)])
+@pytest.mark.parametrize("direction,start,end", [("positive", 12, 22), ("negative", 2, 12),
+                                                  ("symmetric", 7, 17)])
+def test_individual_holes_through_and_opposite_blind_sides(tmp_path, cad, plane, axis, direction, start, end):
+    from OCP.BRepClass3d import BRepClass3d_SolidClassifier
+    from OCP.gp import gp_Pnt
+    from OCP.TopAbs import TopAbs_State
+
+    rect = rectangle_entities((0, 0), (120, 60))
+    through = make_entity("circle", (20, 30), (25, 30))
+    bottom = make_entity("circle", (50, 30), (58, 30))
+    pocket = rectangle_entities((80, 20), (100, 40))
+    # Through default, explicit near hole and selected element inside a 4-edge loop.
+    entities = (*rect, through, bottom, *pocket)
+    overrides = ((5, 3., "negative"), (8, 4., "positive"))
+    target = tmp_path / "multiple.step"
+    SketchSolidJob().run(doc(entities, plane, 12), 10, target, direction=direction, hole_overrides=overrides)
+    solid, volume, bounds = cad(target)
+    assert (bounds[axis], bounds[axis + 3]) == pytest.approx((start, end), abs=1e-6)
+    assert volume == pytest.approx(120*60*10 - math.pi*25*10 - math.pi*64*3 - 400*4, rel=1e-9)
+    def state(x, y, coord):
+        p = (x, y, coord) if plane == "XY" else (x, coord, y) if plane == "XZ" else (coord, x, y)
+        return BRepClass3d_SolidClassifier(solid, gp_Pnt(*p), 1e-7).State()
+    assert state(20, 30, start + 1) == state(20, 30, end - 1) == TopAbs_State.TopAbs_OUT
+    assert state(50, 30, start + 1) == TopAbs_State.TopAbs_OUT
+    assert state(50, 30, end - 1) == TopAbs_State.TopAbs_IN
+    assert state(90, 30, start + 1) == TopAbs_State.TopAbs_IN
+    assert state(90, 30, end - 1) == TopAbs_State.TopAbs_OUT
+    assert state(70, 30, start + 1) == TopAbs_State.TopAbs_IN
+
+
+@pytest.mark.parametrize("overrides", [((0, 3., "auto"),), ((4, 3., "auto"), (5, 4., "auto"))])
+def test_external_or_repeated_loop_overrides_cannot_publish(tmp_path, cad, overrides):
+    outer = rectangle_entities((0, 0), (100, 50))
+    hole = rectangle_entities((30, 15), (50, 35))
+    path = tmp_path / "invalid.step"
+    with pytest.raises(SketchSolidError, match="внутренним контурам"):
+        SketchSolidJob().run(doc((*outer, *hole)), 10, path, hole_overrides=overrides)
+    assert not path.exists() and not list(tmp_path.glob(".sketch-solid-*"))
+
+
+@pytest.mark.parametrize("overrides", [((99, 2., "auto"),), ((4, 10., "auto"),), ((4, -1., "auto"),),
+                                       ((4, float("nan"), "auto"),), ((4, 2., "bad"),),
+                                       ((4, 2., "auto"), (4, 3., "auto"))])
+def test_invalid_individual_hole_settings_are_rejected_before_file(tmp_path, overrides):
+    circle = make_entity("circle", (20, 20), (25, 20))
+    target = tmp_path / "bad.step"
+    with pytest.raises(SketchSolidError):
+        SketchSolidJob().run(doc((*rectangle_entities((0, 0), (50, 50)), circle)), 10, target,
+                             hole_overrides=overrides)
+    assert not target.exists()
+
+
+def test_individual_overrides_can_replace_blind_default_with_through(tmp_path, cad):
+    outer = rectangle_entities((0, 0), (100, 50))
+    a = make_entity("circle", (25, 25), (30, 25))
+    b = make_entity("circle", (75, 25), (80, 25))
+    target = tmp_path / "default-blind.step"
+    SketchSolidJob().run(doc((*outer, a, b)), 10, target, hole_depth=3, hole_overrides=((4, 0, "auto"),))
+    assert cad(target)[1] == pytest.approx(50_000 - math.pi*25*(10+3), rel=1e-9)

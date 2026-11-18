@@ -789,7 +789,7 @@ def test_create_step_ui_uses_snapshot_and_preserves_sketch(qtbot, monkeypatch, t
     snapshot = dialog._document()
     target = tmp_path / "тело.step"
     seen = []
-    def create(_self, document, depth, path, *, direction="positive", hole_depth=0, hole_side="auto"):
+    def create(_self, document, depth, path, *, direction="positive", hole_depth=0, hole_side="auto", hole_overrides=()):
         seen.append((document, depth, path))
         path.write_text("fixture", encoding="ascii")
         return path
@@ -828,7 +828,7 @@ def test_solid_dialog_cancel_waits_for_worker_before_closing(qtbot, monkeypatch,
     from suspensionlab.model.sketch_io import SketchDocument
     from suspensionlab.ui.sketch_solid_dialog import SketchSolidDialog
 
-    def slow(job, document, depth, destination, *, direction="positive", hole_depth=0, hole_side="auto"):
+    def slow(job, document, depth, destination, *, direction="positive", hole_depth=0, hole_side="auto", hole_overrides=()):
         job._cancelled.wait(5)
         raise SketchSolidError("Построение отменено")
     monkeypatch.setattr(SketchSolidJob, "run", slow)
@@ -859,7 +859,7 @@ def test_hole_preview_uses_temporary_cad_and_preserves_sketch(qtbot, monkeypatch
     original = dialog._document()
     monkeypatch.setattr(QInputDialog, "getDouble", lambda *args, **kwargs: (8, True))
     seen = []
-    def create(_self, document, depth, path, *, direction="positive", hole_depth=0, hole_side="auto"):
+    def create(_self, document, depth, path, *, direction="positive", hole_depth=0, hole_side="auto", hole_overrides=()):
         assert document == original and depth == 8
         path.write_text("fixture", encoding="ascii")
         return path
@@ -889,7 +889,7 @@ def test_hole_step_export_accepts_multiple_loops(qtbot, monkeypatch, tmp_path):
     dialog.canvas.draft.add("circle", (30, 25), (40, 25))
     original = dialog._document()
     target = tmp_path / "holes.step"
-    def create(_self, document, depth, path, *, direction="positive", hole_depth=0, hole_side="auto"):
+    def create(_self, document, depth, path, *, direction="positive", hole_depth=0, hole_side="auto", hole_overrides=()):
         assert document == original and depth == 8
         path.write_text("fixture", encoding="ascii")
         return path
@@ -919,7 +919,7 @@ def test_extrude_direction_used_for_preview_and_export(qtbot, monkeypatch, tmp_p
     snapshot = dialog._document()
     target = tmp_path / "body.step"
     seen = []
-    def create(_self, document, depth, path, *, direction="positive", hole_depth=0, hole_side="auto"):
+    def create(_self, document, depth, path, *, direction="positive", hole_depth=0, hole_side="auto", hole_overrides=()):
         seen.append((document, depth, direction))
         path.write_text("fixture", encoding="ascii")
         return path
@@ -954,7 +954,7 @@ def test_hole_preview_uses_selected_direction(qtbot, monkeypatch):
     dialog.extrusion_direction.setCurrentIndex(dialog.extrusion_direction.findData("symmetric"))
     snapshot = dialog._document()
     seen = []
-    def create(_self, document, depth, path, *, direction="positive", hole_depth=0, hole_side="auto"):
+    def create(_self, document, depth, path, *, direction="positive", hole_depth=0, hole_side="auto", hole_overrides=()):
         seen.append((document, depth, direction))
         path.write_text("fixture", encoding="ascii")
         return path
@@ -985,7 +985,7 @@ def test_blind_holes_preview_and_export_use_same_depth(qtbot, monkeypatch, tmp_p
     dialog.extrusion_direction.setCurrentIndex(dialog.extrusion_direction.findData("negative"))
     original = dialog._document()
     seen = []
-    def create(_self, document, depth, path, *, direction="positive", hole_depth=0, hole_side="auto"):
+    def create(_self, document, depth, path, *, direction="positive", hole_depth=0, hole_side="auto", hole_overrides=()):
         seen.append((document, depth, direction, hole_depth))
         path.write_text("fixture", encoding="ascii")
         return path
@@ -1051,7 +1051,7 @@ def test_hole_entry_side_ui_tracks_axis_and_is_shared_by_preview_and_export(qtbo
     dialog.canvas.draft.add("circle", (30, 25), (40, 25))
     snapshot = dialog._document()
     seen = []
-    def create(_self, document, depth, path, *, direction="positive", hole_depth=0, hole_side="auto"):
+    def create(_self, document, depth, path, *, direction="positive", hole_depth=0, hole_side="auto", hole_overrides=()):
         seen.append((document, depth, direction, hole_depth, hole_side))
         path.write_text("fixture", encoding="ascii")
         return path
@@ -1071,3 +1071,100 @@ def test_hole_entry_side_ui_tracks_axis_and_is_shared_by_preview_and_export(qtbo
     dialog.hole_depth.setValue(3)
     assert dialog.hole_side.isEnabled() and dialog.hole_side.currentData() == "negative"
     dialog._saved = snapshot
+
+
+def test_individual_hole_settings_mouse_selection_preview_export_and_reset(qtbot, monkeypatch, tmp_path):
+    from PySide6.QtWidgets import QFileDialog, QInputDialog
+
+    from suspensionlab.core.sketch_solid_job import SketchSolidJob
+    from suspensionlab.ui.cad_preview_dialog import CadPreviewDialog
+
+    dialog = SketchDraftDialog()
+    qtbot.addWidget(dialog)
+    dialog.show()
+    canvas = dialog.canvas
+    dialog.tool.setCurrentIndex(3)
+    canvas.add_point((0, 0))
+    canvas.add_point((100, 50))
+    canvas.draft.add("circle", (20, 25), (25, 25))
+    canvas.draft.add("circle", (65, 25), (70, 25))
+    snapshot = dialog._document()
+    dialog.tool.setCurrentIndex(2)
+    qtbot.mouseClick(canvas, Qt.MouseButton.LeftButton, pos=canvas.to_screen((25, 25)).toPoint())
+    assert canvas.selected == 4
+    dialog.hole_depth.setValue(4)
+    dialog.hole_side.setCurrentIndex(dialog.hole_side.findData("positive"))
+    qtbot.mouseClick(dialog.assign_hole, Qt.MouseButton.LeftButton)
+    assert dialog._hole_overrides == {4: (4., "positive")}
+    qtbot.mouseClick(canvas, Qt.MouseButton.LeftButton, pos=canvas.to_screen((70, 25)).toPoint())
+    assert canvas.selected == 5
+    dialog.hole_depth.setValue(0)
+    qtbot.mouseClick(dialog.assign_hole, Qt.MouseButton.LeftButton)
+    assert dialog._hole_overrides == {4: (4., "positive"), 5: (0., "positive")}
+    dialog.hole_depth.setValue(2)
+    target = tmp_path / "mixed.step"
+    seen = []
+    def create(_self, document, depth, path, *, direction="positive", hole_depth=0, hole_side="auto", hole_overrides=()):
+        seen.append((document, depth, hole_depth, hole_overrides))
+        path.write_text("fixture", encoding="ascii")
+        return path
+    monkeypatch.setattr(SketchSolidJob, "run", create)
+    monkeypatch.setattr(QInputDialog, "getDouble", lambda *args, **kwargs: (10, True))
+    monkeypatch.setattr(CadPreviewDialog, "load_file", lambda _self, path: None)
+    monkeypatch.setattr(CadPreviewDialog, "exec", lambda _self: 0)
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *args, **kwargs: (str(target), ""))
+    monkeypatch.setattr(QMessageBox, "information", lambda *args: None)
+    dialog._extrude_preview()
+    dialog._export_solid_step()
+    expected = ((4, 4., "positive"), (5, 0., "positive"))
+    assert seen == [(snapshot, 10, 2, expected)] * 2 and target.exists()
+    assert dialog._document() == snapshot
+    dialog.hole_override_list.setCurrentIndex(dialog.hole_override_list.findData(4))
+    qtbot.mouseClick(dialog.remove_hole_override, Qt.MouseButton.LeftButton)
+    assert dialog._hole_overrides == {5: (0., "positive")}
+    canvas.draft.add("line", (150, 0), (160, 0))
+    canvas.changed.emit()
+    assert not dialog._hole_overrides and "сброшены" in dialog.status.text()
+    dialog._saved = dialog._document()
+
+
+def test_individual_hole_settings_reset_when_opening_same_document(qtbot):
+    dialog = SketchDraftDialog()
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog.tool.setCurrentIndex(3)
+    dialog.canvas.add_point((0, 0))
+    dialog.canvas.add_point((100, 50))
+    dialog.canvas.draft.add("circle", (25, 25), (30, 25))
+    dialog.canvas.selected = 4
+    dialog.hole_depth.setValue(3)
+    dialog._assign_hole_override()
+    assert dialog._hole_overrides
+    snapshot = dialog._document()
+    dialog._load_document(snapshot, None)
+    assert not dialog._hole_overrides and dialog._document() == snapshot
+    dialog._saved = snapshot
+
+
+def test_individual_override_bad_depth_stops_before_export(qtbot, monkeypatch):
+    from PySide6.QtWidgets import QFileDialog, QInputDialog
+
+    dialog = SketchDraftDialog()
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog.tool.setCurrentIndex(3)
+    dialog.canvas.add_point((0, 0))
+    dialog.canvas.add_point((100, 50))
+    dialog.canvas.draft.add("circle", (25, 25), (30, 25))
+    dialog.canvas.selected = 4
+    dialog.hole_depth.setValue(11)
+    dialog._assign_hole_override()
+    dialog.hole_depth.setValue(0)
+    warnings = []
+    monkeypatch.setattr(QInputDialog, "getDouble", lambda *args, **kwargs: (10, True))
+    monkeypatch.setattr(QMessageBox, "warning", lambda *args: warnings.append(args))
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *args, **kwargs: pytest.fail("unexpected file dialog"))
+    dialog._extrude_preview()
+    dialog._export_solid_step()
+    assert len(warnings) == 2 and "глубин" in str(warnings).lower()
+    dialog._saved = dialog._document()

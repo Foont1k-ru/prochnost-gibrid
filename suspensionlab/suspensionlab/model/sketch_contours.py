@@ -274,3 +274,38 @@ def check_contours(entities: tuple[Entity, ...], tolerance: float = 0.01) -> Con
         loops = len({root(i) for i, entity in enumerate(entities) if entity.kind in ("line", "arc")})
         loops += sum(entity.kind == "circle" for entity in entities)
     return ContourReport(tolerance, tuple(found), total, loops)
+
+
+def ordered_contour_indices(entities: tuple[Entity, ...]) -> tuple[tuple[tuple[int, bool], ...], ...]:
+    """Проверяет и упорядочивает компоненты, сохраняя исходные номера элементов."""
+    report = check_contours(entities)
+    if report.total_issues or not report.closed_loops:
+        raise ValueError("Нужны замкнутые контуры без разрывов, пересечений и касаний")
+    remaining = set(range(len(entities)))
+    result: list[tuple[tuple[int, bool], ...]] = []
+    while remaining:
+        first = min(remaining)
+        if entities[first].kind == "circle":
+            remaining.remove(first)
+            result.append(((first, False),))
+            continue
+        start = endpoints(entities[first])[0]
+        current = start
+        ordered: list[tuple[int, bool]] = []
+        while True:
+            matches = ([(first, 0)] if not ordered else
+                       [(i, side) for i in sorted(remaining) for side, p in enumerate(endpoints(entities[i]))
+                        if distance(current, p) <= NUMERIC_EPS_MM])
+            if len(matches) != 1:
+                raise ValueError("Не удалось однозначно упорядочить контур")
+            index, side = matches[0]
+            remaining.remove(index)
+            entity = entities[index]
+            ordered.append((index, side == 1))
+            current = endpoints(entity)[1 - side]
+            if distance(current, start) <= NUMERIC_EPS_MM:
+                break
+        result.append(tuple(ordered))
+    if len(result) != report.closed_loops:
+        raise ValueError("Не удалось разделить контуры")
+    return tuple(result)

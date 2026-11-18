@@ -35,7 +35,7 @@ from ..model.sketch_construction import (
     tangent_circles,
     trim_entity,
 )
-from ..model.sketch_contours import ContourIssue, check_contours
+from ..model.sketch_contours import ContourIssue, check_contours, ordered_contour_indices
 from ..model.sketch_draft import (
     LIMIT_MM,
     Dimension,
@@ -52,7 +52,7 @@ from ..model.sketch_draft import (
     rectangle_entities,
 )
 from ..model.sketch_dxf import SketchDxfError, write_new_dxf
-from ..model.sketch_extrude_settings import hole_entry_side, validate_hole_depth
+from ..model.sketch_extrude_settings import HoleOverride, hole_entry_side, validate_hole_depth, validate_hole_overrides
 from ..model.sketch_extrusion import extrusion_mesh
 from ..model.sketch_io import SUFFIX, SketchDocument, SketchIOError, read_sketch, write_new_sketch
 
@@ -714,6 +714,8 @@ class SketchDraftDialog(QDialog):
         super().__init__(parent)
         self._allow_close = False
         self._path: Path | None = None
+        self._hole_overrides: dict[int, tuple[float, str]] = {}
+        self._hole_override_snapshot: tuple[Entity, ...] | None = None
         self.setWindowTitle("Плоский эскиз — отдельный документ")
         self.resize(1100, 750)
         layout = QVBoxLayout(self)
@@ -748,20 +750,34 @@ class SketchDraftDialog(QDialog):
         self.hole_depth.setSuffix(" мм")
         self.hole_depth.setSpecialValueText("Сквозные")
         self.hole_depth.setToolTip("0 — сквозные; положительная глубина меньше толщины — глухие. "
-                                   "Все отверстия имеют одну глубину. Для симметрии вход с отрицательной стороны оси.")
+                                   "Это глубина по умолчанию. Выбранному контуру можно назначить отдельную глубину.")
         extrusion_options.addWidget(self.hole_depth)
         extrusion_options.addWidget(QLabel("Вход глухих:"))
         self.hole_side = QComboBox()
         self.hole_side.addItem("Авто", "auto")
         self.hole_side.addItem("− ось", "negative")
         self.hole_side.addItem("+ ось", "positive")
-        self.hole_side.setToolTip("С какой поверхности детали идут все глухие отверстия. "
+        self.hole_side.setToolTip("С какой поверхности по умолчанию идут глухие отверстия. "
                                   "Авто: со стороны эскиза, для симметрии — с отрицательной стороны оси. "
                                   "При сквозных отверстиях выбор не влияет на результат.")
         self.hole_side.setEnabled(False)
         extrusion_options.addWidget(self.hole_side)
         extrusion_options.addStretch(1)
         layout.addLayout(extrusion_options)
+        per_hole = QHBoxLayout()
+        self.assign_hole = QPushButton("Назначить выбранному контуру")
+        self.assign_hole.setToolTip("Выберите элемент внутреннего контура; текущая глубина и сторона сохранятся для него. "
+                                    "Затем настройки выше применяются к остальным контурам по умолчанию.")
+        self.hole_override_list = QComboBox()
+        self.hole_override_list.setMinimumWidth(210)
+        self.remove_hole_override = QPushButton("Убрать настройку")
+        self.remove_hole_override.setEnabled(False)
+        per_hole.addWidget(self.assign_hole)
+        per_hole.addWidget(self.hole_override_list)
+        per_hole.addWidget(self.remove_hole_override)
+        per_hole.addWidget(QLabel("Временно: не сохраняются; сбрасываются при изменении геометрии"))
+        per_hole.addStretch(1)
+        layout.addLayout(per_hole)
         row = QHBoxLayout()
         self.plane = QComboBox()
         self.plane.addItems(["XY", "XZ", "YZ"])
@@ -876,6 +892,8 @@ class SketchDraftDialog(QDialog):
         export.clicked.connect(self._export_dxf)
         preview_3d.clicked.connect(self._extrude_preview)
         solid_step.clicked.connect(self._export_solid_step)
+        self.assign_hole.clicked.connect(self._assign_hole_override)
+        self.remove_hole_override.clicked.connect(self._remove_hole_override)
         self.plane.currentIndexChanged.connect(self._reference_changed)
         self.plane_offset.valueChanged.connect(self._reference_changed)
         self.tool.currentIndexChanged.connect(self._set_tool)
@@ -901,6 +919,7 @@ class SketchDraftDialog(QDialog):
         self.arc_angle.valueChanged.connect(self._arc_angle_changed)
         self.dimension_style.currentIndexChanged.connect(self._dimension_style_changed)
         self.canvas.position.connect(self._position)
+        self._render_hole_overrides()
         self._refresh()
 
     def _document(self) -> SketchDocument:
@@ -911,6 +930,9 @@ class SketchDraftDialog(QDialog):
         return self._document() != self._saved or self.canvas.pending is not None
 
     def _refresh(self, *_args: object) -> None:
+        if self._hole_overrides and self._hole_override_snapshot != tuple(self.canvas.draft.entities):
+            self._clear_hole_overrides()
+            self.status.setText("Геометрия изменилась: индивидуальные настройки отверстий сброшены")
         if (self.canvas.diagnostic_snapshot is not None and
                 self.canvas.diagnostic_snapshot != tuple(self.canvas.draft.entities)):
             self._clear_diagnostics()
@@ -918,6 +940,7 @@ class SketchDraftDialog(QDialog):
         self.plane_offset.setEnabled(not self.canvas.plane_locked)
         selected = self.canvas.selected is not None
         self.edit_button.setEnabled(selected)
+        self.assign_hole.setEnabled(selected)
         self.delete_button.setEnabled(selected)
         self.add_button.setEnabled(self.canvas.kind in ("line", "circle", "rectangle", "chain", "measure", "arc"))
         name = str(self._path) if self._path else "Новый эскиз"
@@ -1021,6 +1044,71 @@ class SketchDraftDialog(QDialog):
         self.hole_side.setItemText(2, f"Со стороны +{axis}")
         self.hole_side.setEnabled(self.hole_depth.value() > 0)
 
+    def _render_hole_overrides(self) -> None:
+        selected = self.hole_override_list.currentData()
+        self.hole_override_list.clear()
+        if not self._hole_overrides:
+            self.hole_override_list.addItem("Индивидуальных настроек нет", None)
+        else:
+            axis = {"XY": "Z", "XZ": "Y", "YZ": "X"}[self.plane.currentText()]
+            for index, (depth, side) in sorted(self._hole_overrides.items()):
+                desc = "сквозное" if depth == 0 else f"{depth:g} мм, " + (
+                    "авто" if side == "auto" else f"{'+' if side == 'positive' else '−'}{axis}")
+                self.hole_override_list.addItem(f"Контур (первый элемент {index + 1}): {desc}", index)
+            at = self.hole_override_list.findData(selected)
+            if at >= 0:
+                self.hole_override_list.setCurrentIndex(at)
+        self.remove_hole_override.setEnabled(bool(self._hole_overrides))
+
+    def _clear_hole_overrides(self) -> None:
+        self._hole_overrides.clear()
+        self._hole_override_snapshot = None
+        self._render_hole_overrides()
+
+    def _assign_hole_override(self) -> None:
+        selected = self.canvas.selected
+        if selected is None:
+            QMessageBox.warning(self, "Настройка отверстия", "Выберите элемент внутреннего замкнутого контура.")
+            return
+        if self.canvas.pending is not None or self.canvas.construction_indices or self.canvas.dimension_target is not None:
+            QMessageBox.warning(self, "Настройка отверстия", "Завершите действие или нажмите Esc.")
+            return
+        try:
+            entities = tuple(self.canvas.draft.entities)
+            if self._hole_overrides and self._hole_override_snapshot != entities:
+                self._clear_hole_overrides()
+                raise ValueError("Эскиз изменился: настройки отверстий сброшены, назначьте их заново")
+            contours = ordered_contour_indices(entities)
+            if len(contours) < 2:
+                raise ValueError("Нужен внешний контур и хотя бы один внутренний контур отверстия")
+            loop = next(contour for contour in contours if any(index == selected for index, _ in contour))
+            key = min(index for index, _ in loop)
+        except (ValueError, StopIteration) as exc:
+            QMessageBox.warning(self, "Настройка отверстия", str(exc) or "Выбранный элемент не входит в контур")
+            return
+        self._hole_overrides[key] = (self.hole_depth.value(), str(self.hole_side.currentData()))
+        self._hole_override_snapshot = entities
+        self._render_hole_overrides()
+        self.hole_override_list.setCurrentIndex(self.hole_override_list.findData(key))
+        self._message("Настройка назначена контуру; при построении CAD проверит, что это внутреннее отверстие")
+
+    def _remove_hole_override(self) -> None:
+        key = self.hole_override_list.currentData()
+        if isinstance(key, int) and key in self._hole_overrides:
+            del self._hole_overrides[key]
+            if not self._hole_overrides:
+                self._hole_override_snapshot = None
+            self._render_hole_overrides()
+            self._message("Для контура восстановлены общие настройки")
+
+    def _hole_override_values(self, depth: float) -> tuple[HoleOverride, ...]:
+        entities = tuple(self.canvas.draft.entities)
+        if self._hole_overrides and self._hole_override_snapshot != entities:
+            raise ValueError("Эскиз изменился: заново назначьте настройки отверстий")
+        overrides = tuple((i, value, side) for i, (value, side) in sorted(self._hole_overrides.items()))
+        validate_hole_overrides(depth, str(self.extrusion_direction.currentData()), overrides, len(entities))
+        return overrides
+
     def _export_solid_step(self) -> None:
         from .sketch_solid_dialog import SketchSolidDialog
 
@@ -1044,6 +1132,9 @@ class SketchDraftDialog(QDialog):
             return
         try:
             validate_hole_depth(depth, self.hole_depth.value(), has_holes=report.closed_loops > 1)
+            overrides = self._hole_override_values(depth)
+            if overrides and report.closed_loops < 2:
+                raise ValueError("Индивидуальные настройки требуют внутреннего контура отверстия")
         except ValueError as exc:
             QMessageBox.warning(self, "Создание 3D STEP", str(exc))
             return
@@ -1056,7 +1147,7 @@ class SketchDraftDialog(QDialog):
             destination = destination.with_suffix(".step")
         progress = SketchSolidDialog(self._document(), depth, destination, self,
                                      direction=str(self.extrusion_direction.currentData()), hole_depth=self.hole_depth.value(),
-                                     hole_side=str(self.hole_side.currentData()))
+                                     hole_side=str(self.hole_side.currentData()), hole_overrides=overrides)
         progress.start()
         progress.exec()
         progress.worker.wait()  # thread must be fully finished before Qt ownership is released
@@ -1091,11 +1182,14 @@ class SketchDraftDialog(QDialog):
             return
         try:
             validate_hole_depth(depth, self.hole_depth.value(), has_holes=report.closed_loops > 1)
+            overrides = self._hole_override_values(depth)
+            if overrides and report.closed_loops < 2:
+                raise ValueError("Индивидуальные настройки требуют внутреннего контура отверстия")
         except ValueError as exc:
             QMessageBox.warning(self, "3D-предпросмотр не создан", str(exc))
             return
         if report.closed_loops > 1:
-            self._preview_solid_with_holes(depth)
+            self._preview_solid_with_holes(depth, overrides)
             return
         try:
             triangles = extrusion_mesh(self._document(), depth, str(self.extrusion_direction.currentData()))
@@ -1106,7 +1200,7 @@ class SketchDraftDialog(QDialog):
         preview.exec()
         preview.deleteLater()
 
-    def _preview_solid_with_holes(self, depth: float) -> None:
+    def _preview_solid_with_holes(self, depth: float, overrides: tuple[HoleOverride, ...] = ()) -> None:
         from .cad_preview_dialog import CadPreviewDialog
         from .sketch_solid_dialog import SketchSolidDialog
 
@@ -1114,7 +1208,7 @@ class SketchDraftDialog(QDialog):
             with TemporaryDirectory(prefix="sketch-preview-") as directory:
                 progress = SketchSolidDialog(self._document(), depth, Path(directory) / "preview.step", self,
                                              direction=str(self.extrusion_direction.currentData()), hole_depth=self.hole_depth.value(),
-                                             hole_side=str(self.hole_side.currentData()))
+                                             hole_side=str(self.hole_side.currentData()), hole_overrides=overrides)
                 progress.start()
                 progress.exec()
                 progress.worker.wait()
@@ -1357,6 +1451,7 @@ class SketchDraftDialog(QDialog):
         return answer == QMessageBox.StandardButton.No
 
     def _load_document(self, doc: SketchDocument, path: Path | None) -> None:
+        self._clear_hole_overrides()
         self._clear_diagnostics()
         self.canvas.draft = SketchDraft(doc.entities, doc.dimensions)
         self.canvas.pending = None
