@@ -25,7 +25,7 @@ def test_pyside_dependency_is_selected_for_each_supported_python():
     project = tomllib.loads((Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(encoding="utf-8"))
     requirements = [Requirement(s) for s in project["project"]["dependencies"]]
     qt = [r for r in requirements if r.name.lower() == "pyside6-essentials"]
-    for version, expected in (("3.11", "==6.11.3"), ("3.12", "==6.12.0"), ("3.13", "==6.12.0")):
+    for version, expected in (("3.11", "==6.11.3"), ("3.12", "==6.11.3"), ("3.13", "==6.12.0")):
         env = default_environment() | {"python_version": version}
         selected = [str(r.specifier) for r in qt if r.marker is None or r.marker.evaluate(env)]
         assert selected == [expected]

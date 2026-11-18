@@ -11,9 +11,10 @@ requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "SuspensionLab" }]
 dependencies = [
-    # PYSIDE-3474: 6.12.0 corrupts singleton refcounts on CPython 3.11.
-    "PySide6-Essentials==6.11.3; python_version < '3.12'",
-    "PySide6-Essentials==6.12.0; python_version >= '3.12'",
+    # 6.12.0 corrupts refcounts on 3.11; Windows frozen smoke also crashes on 3.12.
+    # The earlier version passed a small comparison, not a proof of a fix.
+    "PySide6-Essentials==6.11.3; python_version < '3.13'",
+    "PySide6-Essentials==6.12.0; python_version >= '3.13'",
     "numpy==2.4.6",
     "pillow==13.0.0",
     "scipy==1.16.3",
