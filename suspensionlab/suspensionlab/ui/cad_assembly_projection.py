@@ -1,16 +1,25 @@
 """Фоновая CAD-проекция с изоляцией, отменой и защитой от старых ответов."""
 from __future__ import annotations
 
+from collections.abc import Callable
 from copy import deepcopy
+from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import QLineF, QRectF, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QColor, QPainter, QPen
-from PySide6.QtWidgets import QCheckBox, QLabel, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QCheckBox, QFileDialog, QLabel, QMessageBox, QPushButton, QVBoxLayout, QWidget
 
 from ..core.cad_assembly_projection_job import CadAssemblyProjection, CadAssemblyProjectionJob
 from ..core.cad_transport import CadPreviewError
-from ..model.cad_projection_layout import ProjectionLayout, format_reference_length, projection_layout
+from ..export.cad_assembly_svg import SvgProjectionError, write_new_projection_svg
+from ..model.cad_projection_layout import (
+    ProjectionLayout,
+    dimension_segments,
+    format_reference_length,
+    projection_layout,
+    reference_caption,
+)
 
 
 class ProjectionCanvas(QWidget):
@@ -54,37 +63,19 @@ class ProjectionCanvas(QWidget):
     def _draw_dimensions(self, painter: QPainter, frame: ProjectionLayout, left: float, width: float) -> None:
         """Показывает общие габариты CAD-тел, не размеры деталей или отверстий."""
         x1, ybottom = frame.screen(frame.u_min, frame.v_min)
-        x2, ytop = frame.screen(frame.u_max, frame.v_max)
-        x1, x2 = left + x1, left + x2
-        dim_y, dim_x = ybottom + 13., x1 - 13.
+        _, ytop = frame.screen(frame.u_max, frame.v_max)
+        dim_y, dim_x = ybottom + 13., left + x1 - 13.
         painter.setPen(QPen(QColor('#9b5016'), 1.0))
-        # Extension lines end at the CAD bounding box, including hidden geometry.
-        for x in (x1, x2):
-            painter.drawLine(QLineF(x, ybottom + 2., x, dim_y + 3.))
-        for y in (ytop, ybottom):
-            painter.drawLine(QLineF(dim_x - 3., y, x1 - 2., y))
-        painter.drawLine(QLineF(x1, dim_y, x2, dim_y))
-        painter.drawLine(QLineF(dim_x, ytop, dim_x, ybottom))
-        # Arrowheads, kept small enough for narrow projected spans.
-        arrow_h = min(5., max(0., (x2 - x1) / 3.))
-        arrow_v = min(5., max(0., (ybottom - ytop) / 3.))
-        for dy in (-2., 2.):
-            painter.drawLine(QLineF(x1, dim_y, x1 + arrow_h, dim_y + dy))
-            painter.drawLine(QLineF(x2, dim_y, x2 - arrow_h, dim_y + dy))
-        for dx in (-2., 2.):
-            painter.drawLine(QLineF(dim_x, ytop, dim_x + dx, ytop + arrow_v))
-            painter.drawLine(QLineF(dim_x, ybottom, dim_x + dx, ybottom - arrow_v))
-        u_axis, v_axis = frame.plane[0], frame.plane[1]
-        u_size, v_size = format_reference_length(frame.width_mm), format_reference_length(frame.height_mm)
-        u_prefix, v_prefix = ('' if u_size.startswith('<') else '≈ '), ('' if v_size.startswith('<') else '≈ ')
+        for x_start, y_start, x_end, y_end in dimension_segments(frame):
+            painter.drawLine(QLineF(left + x_start, y_start, left + x_end, y_end))
         painter.drawText(QRectF(left + 2., dim_y + 3., width - 4., 19.),
                          int(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop),
-                         f'{u_axis} {u_prefix}{u_size} мм')
+                         reference_caption(frame.plane[0], frame.width_mm))
         painter.save()
         painter.translate(dim_x - 7., (ytop + ybottom) / 2.)
         painter.rotate(-90.)
         painter.drawText(QRectF(-(self.height() - 50.) / 2., -10., self.height() - 50., 18.),
-                         int(Qt.AlignmentFlag.AlignCenter), f'{v_axis} {v_prefix}{v_size} мм')
+                         int(Qt.AlignmentFlag.AlignCenter), reference_caption(frame.plane[1], frame.height_mm))
         painter.restore()
 
 
@@ -107,8 +98,9 @@ class _ProjectionReader(QThread):
 
 
 class CadAssemblyProjectionView(QWidget):
-    def __init__(self, parent: QWidget) -> None:
+    def __init__(self, parent: QWidget, *, is_current: Callable[[dict[str, Any]], bool] | None = None) -> None:
         super().__init__(parent)
+        self._is_current = is_current
         self._document: dict[str, Any] | None = None
         self._pending: dict[str, Any] | None = None
         self._worker: _ProjectionReader | None = None
@@ -144,6 +136,14 @@ class CadAssemblyProjectionView(QWidget):
         self.bounds.setWordWrap(True)
         self.bounds.setTextFormat(Qt.TextFormat.PlainText)
         layout.addWidget(self.bounds)
+        self.export_button = QPushButton('Сохранить предварительные виды в новый SVG…')
+        self.export_button.setEnabled(False)
+        self.export_button.clicked.connect(self._export_svg)
+        layout.addWidget(self.export_button)
+        self.export_status = QLabel()
+        self.export_status.setWordWrap(True)
+        self.export_status.setTextFormat(Qt.TextFormat.PlainText)
+        layout.addWidget(self.export_status)
         self.retry = QPushButton('Повторить построение')
         self.retry.setEnabled(False)
         self.retry.clicked.connect(self._schedule)
@@ -162,6 +162,8 @@ class CadAssemblyProjectionView(QWidget):
         self.canvas.projection = None
         self.canvas.update()
         self.bounds.clear()
+        self.export_status.clear()
+        self.export_button.setEnabled(False)
         self.retry.setEnabled(False)
         if self._worker is not None:
             self._worker.job.cancel()
@@ -200,6 +202,7 @@ class CadAssemblyProjectionView(QWidget):
         self.bounds.setText('Справочные габариты CAD-тел, мм (в осях кузова; округление 0,1 мм):\n'
                             + '  •  '.join(rows) + '\nНе размеры для изготовления и не допуски.')
         self.retry.setEnabled(True)
+        self.export_button.setEnabled(True)
         self.status.setText('Актуально для текущего снимка .kima. '
                             'Совпадение с текущим проектом проверяется отдельно ниже.')
 
@@ -214,9 +217,39 @@ class CadAssemblyProjectionView(QWidget):
         self.canvas.projection = None
         self.canvas.update()
         self.bounds.clear()
+        self.export_status.clear()
+        self.export_button.setEnabled(False)
         self.retry.setEnabled(self.enable.isChecked() and self._document is not None)
         self.status.setText(f'Проекции не построены: {reasons.get(code, "ошибка построения")}. '
                             'Сборка не изменена; условные виды доступны отдельно.')
+
+    def _export_svg(self) -> None:
+        projection = self.canvas.projection
+        document = deepcopy(self._document)
+        token, dimensions = self.generation, self.show_dimensions.isChecked()
+        if (self._closed or not self.enable.isChecked() or projection is None or document is None or
+                (self._is_current is not None and not self._is_current(document))):
+            return
+        selected, _ = QFileDialog.getSaveFileName(
+            self, 'Сохранить новый предварительный SVG', 'виды-сборки.svg', 'SVG (*.svg)',
+            options=QFileDialog.Option.DontConfirmOverwrite)
+        if not selected:
+            return
+        path = Path(selected)
+        if path.suffix.lower() != '.svg':
+            path = path.with_name(path.name + '.svg')
+        try:
+            if (self._closed or not self.enable.isChecked() or self.generation != token or
+                    self.canvas.projection is not projection or self._document != document or
+                    self.show_dimensions.isChecked() != dimensions or
+                    (self._is_current is not None and not self._is_current(document))):
+                raise SvgProjectionError('changed during export')
+            write_new_projection_svg(path, projection, document['version'], dimensions=dimensions)
+        except (SvgProjectionError, OSError, TypeError, ValueError, OverflowError, KeyError):
+            QMessageBox.warning(self, 'Экспорт SVG', 'Не удалось создать новый SVG: выберите другое имя или '
+                                'повторите экспорт после перестроения. Существующие файлы не изменены.')
+            return
+        self.export_status.setText(f'Создан отдельный SVG: {path}. Сборка и проект автоматически не сохранены.')
 
     def _finished(self) -> None:
         worker, self._worker = self._worker, None

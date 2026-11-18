@@ -82,6 +82,7 @@ def run_cad_check() -> None:
     from .core.cad_assembly_projection_job import CadAssemblyProjectionJob
     from .core.cad_recovery import recover_revolution_face
     from .core.cad_transport import CadJob
+    from .export.cad_assembly_svg import write_new_projection_svg
     from .model.entities import Project
     from .model.scheme_arm_assembly import make_plate, make_scheme_arm_assembly, set_assembly_plate
 
@@ -109,6 +110,10 @@ def run_cad_check() -> None:
     _require(recover_revolution_face(face, 10.) is not None, "Восстановление тестовой поверхности недоступно")
 
     with TemporaryDirectory(prefix="suspensionlab-cad-check-") as directory:
+        svg = Path(directory) / "виды.svg"
+        write_new_projection_svg(svg, projection, assembly['version'], dimensions=True)
+        _require('НЕ ПРОИЗВОДСТВЕННЫЙ ЧЕРТЁЖ' in svg.read_text(encoding='utf-8'),
+                 "В собранном приложении недоступен SVG предварительных CAD-видов")
         path = Path(directory) / "fixture.step"
         unicode_path = Path(directory) / "проверка сборки.step"
         writer = STEPControl_Writer()

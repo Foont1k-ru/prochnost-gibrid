@@ -61,3 +61,27 @@ def format_reference_length(value: float) -> str:
     if not math.isfinite(value) or value <= 0:
         raise ValueError('invalid reference length')
     return '<0.1' if value < 0.05 else f'{value:.1f}'
+
+
+def reference_caption(axis: str, value: float) -> str:
+    if axis not in ('X', 'Y', 'Z'):
+        raise ValueError('invalid axis')
+    number = format_reference_length(value)
+    return f'{axis} {"" if number.startswith("<") else "≈ "}{number} мм'
+
+
+def dimension_segments(frame: ProjectionLayout) -> tuple[tuple[float, float, float, float], ...]:
+    """Линии и стрелки габарита в координатах одного вида, без подписей."""
+    x1, ybottom = frame.screen(frame.u_min, frame.v_min)
+    x2, ytop = frame.screen(frame.u_max, frame.v_max)
+    dim_y, dim_x = ybottom + 13., x1 - 13.
+    segments = [(x1, ybottom + 2., x1, dim_y + 3.), (x2, ybottom + 2., x2, dim_y + 3.),
+                (dim_x - 3., ytop, x1 - 2., ytop), (dim_x - 3., ybottom, x1 - 2., ybottom),
+                (x1, dim_y, x2, dim_y), (dim_x, ytop, dim_x, ybottom)]
+    arrow_h, arrow_v = min(5., max(0., (x2 - x1) / 3.)), min(5., max(0., (ybottom - ytop) / 3.))
+    for dy in (-2., 2.):
+        segments.extend(((x1, dim_y, x1 + arrow_h, dim_y + dy), (x2, dim_y, x2 - arrow_h, dim_y + dy)))
+    for dx in (-2., 2.):
+        segments.extend(((dim_x, ytop, dim_x + dx, ytop + arrow_v),
+                         (dim_x, ybottom, dim_x + dx, ybottom - arrow_v)))
+    return tuple(segments)

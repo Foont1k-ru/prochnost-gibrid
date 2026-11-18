@@ -689,3 +689,90 @@ def test_cad_projection_error_preserves_schematic_views(qtbot, monkeypatch):
     assert d.cad_views.retry.isEnabled() and d.cad_views.canvas.projection is None
     d._saved = deepcopy(d.document)
     d.close()
+
+
+def test_cad_svg_export_current_snapshot_no_overwrite_and_toggle(qtbot, tmp_path, monkeypatch):
+    from xml.etree import ElementTree as ET
+
+    from suspensionlab.core.cad_assembly_projection_job import CadAssemblyProjection
+
+    c = AppController()
+    doc = make_doc(c)
+    d = SchemeArmAssemblyDialog(c, doc)
+    qtbot.addWidget(d)
+    d._saved = deepcopy(d.document)
+    view = d.cad_views
+    assert not view.export_button.isEnabled()
+    view.enable.setChecked(True)
+    view._timer.stop()
+    projection = CadAssemblyProjection((((0., 0., 1., 1.),),) * 3, (0., 0., 0., 2., 3., 4.))
+    view._completed(view.generation, projection)
+    assert view.export_button.isEnabled()
+    view.show_dimensions.setChecked(False)
+    target = tmp_path / 'виды.svg'
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args, **kwargs: (str(target), ''))
+    warnings = []
+    monkeypatch.setattr(QMessageBox, 'warning', lambda *args: warnings.append(args))
+    before_project = deepcopy(c.project.to_dict())
+    view._export_svg()
+    root = ET.fromstring(target.read_bytes())
+    assert len(root.findall('.//{http://www.w3.org/2000/svg}path')) == 3
+    assert 'НЕ ПРОИЗВОДСТВЕННЫЙ ЧЕРТЁЖ' in ' '.join(root.itertext())
+    assert 'Создан отдельный SVG' in view.export_status.text()
+    content = target.read_bytes()
+    view._export_svg()
+    assert warnings and target.read_bytes() == content
+    assert d.document == doc and c.project.to_dict() == before_project and not c.dirty
+    d.close()
+
+
+def test_cad_svg_export_refuses_document_change_during_dialog(qtbot, tmp_path, monkeypatch):
+    from suspensionlab.core.cad_assembly_projection_job import CadAssemblyProjection
+    from suspensionlab.model.scheme_arm_assembly import set_assembly_axis
+
+    c = AppController()
+    d = SchemeArmAssemblyDialog(c, make_doc(c))
+    qtbot.addWidget(d)
+    d._saved = deepcopy(d.document)
+    view = d.cad_views
+    view.enable.setChecked(True)
+    view._timer.stop()
+    view._completed(view.generation, CadAssemblyProjection((((0., 0., 1., 1.),),) * 3,
+                                                              (0., 0., 0., 2., 3., 4.)))
+    target = tmp_path / 'race.svg'
+    def choose(*args, **kwargs):
+        # Simulates a modal race even before _show_document updates the view.
+        d.document = set_assembly_axis(d.document, 'z')
+        d._saved = deepcopy(d.document)
+        return str(target), ''
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', choose)
+    warnings = []
+    monkeypatch.setattr(QMessageBox, 'warning', lambda *args: warnings.append(args))
+    view._export_svg()
+    assert warnings and not target.exists()
+    d.close()
+
+
+def test_cad_svg_export_refuses_dimension_toggle_during_dialog(qtbot, tmp_path, monkeypatch):
+    from suspensionlab.core.cad_assembly_projection_job import CadAssemblyProjection
+
+    c = AppController()
+    d = SchemeArmAssemblyDialog(c, make_doc(c))
+    qtbot.addWidget(d)
+    d._saved = deepcopy(d.document)
+    view = d.cad_views
+    view.enable.setChecked(True)
+    view._timer.stop()
+    view._completed(view.generation, CadAssemblyProjection((((0., 0., 1., 1.),),) * 3,
+                                                              (0., 0., 0., 2., 3., 4.)))
+    target = tmp_path / 'toggle.svg'
+    def choose(*args, **kwargs):
+        view.show_dimensions.setChecked(False)
+        return str(target), ''
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', choose)
+    warnings = []
+    monkeypatch.setattr(QMessageBox, 'warning', lambda *args: warnings.append(args))
+    view._export_svg()
+    assert warnings and not target.exists()
+    assert view.canvas.projection is not None  # Toggle is display-only.
+    d.close()

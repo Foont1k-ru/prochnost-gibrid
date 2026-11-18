@@ -57,3 +57,20 @@ def test_reference_rounding_does_not_claim_a_positive_dimension_is_zero():
     for invalid in (0., -1., math.inf, math.nan):
         with pytest.raises(ValueError):
             format_reference_length(invalid)
+
+
+def test_dimension_segments_share_layout_axes_and_reference_captions():
+    from suspensionlab.model.cad_projection_layout import dimension_segments, reference_caption
+
+    frame = projection_layout((4., -3., 11., 6., 2., 18.), 'XZ', 200., 280.)
+    x1, ybottom = frame.screen(4., 11.)
+    x2, ytop = frame.screen(6., 18.)
+    segments = dimension_segments(frame)
+    assert len(segments) == 14
+    assert segments[4] == pytest.approx((x1, ybottom + 13, x2, ybottom + 13))
+    assert segments[5] == pytest.approx((x1 - 13, ytop, x1 - 13, ybottom))
+    assert reference_caption('X', frame.width_mm) == 'X ≈ 2.0 мм'
+    assert reference_caption('Z', frame.height_mm) == 'Z ≈ 7.0 мм'
+    assert reference_caption('Y', 0.02) == 'Y <0.1 мм'
+    with pytest.raises(ValueError):
+        reference_caption('Q', 1.)

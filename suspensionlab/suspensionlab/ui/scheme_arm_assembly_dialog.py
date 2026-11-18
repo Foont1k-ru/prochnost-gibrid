@@ -236,7 +236,7 @@ class SchemeArmAssemblyDialog(QDialog):
         self.tabs.addTab(self.three_d, '3D — предварительная сборка')
         self.views = SchemeAssemblyViews(self.tabs)
         self.tabs.addTab(self.views, 'Виды и размеры — условно')
-        self.cad_views = CadAssemblyProjectionView(self.tabs)
+        self.cad_views = CadAssemblyProjectionView(self.tabs, is_current=lambda candidate: candidate == self.document)
         self.tabs.addTab(self.cad_views, 'CAD-проекции — предварительно')
         layout.addWidget(self.tabs, 1)
         self.source_status = QLabel()
