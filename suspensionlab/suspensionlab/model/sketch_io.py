@@ -70,13 +70,13 @@ def _parse(value: Any) -> SketchDocument:
         raise SketchIOError("Некорректная структура эскиза")
     version = value.get("version")
     expected = {"format", "version", "units", "plane", "offset_mm", "entities"}
-    if version in ("3", "4", "5", "6"):
+    if version in ("3", "4", "5", "6", "7"):
         expected.add("dimensions")
-    if version == "6":
+    if version in ("6", "7"):
         expected.add("extrusion")
     if set(value) != expected:
         raise SketchIOError("Некорректная структура эскиза")
-    if value["format"] != "suspensionlab-sketch" or version not in ("1", "2", "3", "4", "5", "6") or value["units"] != "mm":
+    if value["format"] != "suspensionlab-sketch" or version not in ("1", "2", "3", "4", "5", "6", "7") or value["units"] != "mm":
         raise SketchIOError("Неподдерживаемая версия или единицы")
     plane = value["plane"]
     if plane not in ("XY", "XZ", "YZ"):
@@ -95,7 +95,7 @@ def _parse(value: Any) -> SketchDocument:
         if kind not in ("line", "circle", "arc"):
             raise SketchIOError("Неизвестный элемент")
         if kind == "arc":
-            if version not in ("2", "3", "4", "5", "6") or set(item) != {"kind", "start", "end", "sweep_deg"}:
+            if version not in ("2", "3", "4", "5", "6", "7") or set(item) != {"kind", "start", "end", "sweep_deg"}:
                 raise SketchIOError("Неподдерживаемая дуга")
             sweep = _number(item["sweep_deg"])
         else:
@@ -104,7 +104,7 @@ def _parse(value: Any) -> SketchDocument:
             sweep = None
         entities.append(make_entity(cast(Kind, kind), _point(item["start"]), _point(item["end"]), sweep))
     dimensions: list[Dimension] = []
-    if version in ("3", "4", "5", "6"):
+    if version in ("3", "4", "5", "6", "7"):
         items = value["dimensions"]
         if not isinstance(items, list) or len(items) > MAX_DIMENSIONS:
             raise SketchIOError("Некорректное количество размеров")
@@ -113,19 +113,22 @@ def _parse(value: Any) -> SketchDocument:
                 raise SketchIOError("Некорректный размер")
             fields = {"entity_index", "position", "mode"}
             if item.get("mode") == "between":
-                if version not in ("5", "6"):
+                if version not in ("5", "6", "7"):
                     raise SketchIOError("Угол между отрезками требует версию 5")
                 fields.add("other_index")
             if set(item) != fields:
                 raise SketchIOError("Некорректный размер")
-            if item["mode"] == "inclination" and version not in ("4", "5", "6"):
+            if item["mode"] == "inclination" and version not in ("4", "5", "6", "7"):
                 raise SketchIOError("Наклон отрезка требует версию 4 или 5")
             dimensions.append(validate_dimension(Dimension(item["entity_index"], _point(item["position"]),
                                                            item["mode"], item.get("other_index")), tuple(entities)))
     extrusion = ExtrusionSettings()
-    if version == "6":
+    if version in ("6", "7"):
         settings = value["extrusion"]
-        if not isinstance(settings, dict) or set(settings) != {"direction", "hole_depth", "hole_side", "hole_overrides"}:
+        expected_settings = {"direction", "hole_depth", "hole_side", "hole_overrides"}
+        if version == "7":
+            expected_settings.add("thickness_mm")
+        if not isinstance(settings, dict) or set(settings) != expected_settings:
             raise SketchIOError("Некорректные настройки выдавливания")
         direction, side = settings["direction"], settings["hole_side"]
         hole_entry_side(direction, side)
@@ -157,7 +160,10 @@ def _parse(value: Any) -> SketchDocument:
                 seen.add(index)
             if [item[0] for item in overrides] != sorted(seen):
                 raise SketchIOError("Настройки отверстий должны быть упорядочены")
-        extrusion = ExtrusionSettings(direction, stored_depth(settings["hole_depth"]), side, tuple(overrides))
+        thickness = _number(settings["thickness_mm"]) if version == "7" else 10.0
+        if not 0.001 <= thickness <= LIMIT_MM or round(thickness, 3) != thickness:
+            raise SketchIOError("Толщина должна быть от 0,001 до 1 000 000 мм с точностью до 0,001 мм")
+        extrusion = ExtrusionSettings(direction, stored_depth(settings["hole_depth"]), side, tuple(overrides), thickness)
     return SketchDocument(plane, offset, tuple(entities), tuple(dimensions), extrusion)
 
 
@@ -169,22 +175,25 @@ def _as_data(document: SketchDocument) -> dict[str, Any]:
             item["sweep_deg"] = entity.sweep_deg
         items.append(item)
     data: dict[str, Any] = {"format": "suspensionlab-sketch",
-                            "version": ("6" if document.extrusion != ExtrusionSettings() else
+                            "version": ("7" if document.extrusion.thickness_mm != 10.0 else
+                                        "6" if document.extrusion != ExtrusionSettings() else
                                         "5" if any(d.mode == "between" for d in document.dimensions) else
                                         "4" if any(d.mode == "inclination" for d in document.dimensions) else
                                         "3" if document.dimensions else "2" if any(e.kind == "arc" for e in document.entities) else "1"),
                             "units": "mm", "plane": document.plane, "offset_mm": document.offset_mm,
                             "entities": items}
-    if document.dimensions or data["version"] == "6":
+    if document.dimensions or data["version"] in ("6", "7"):
         data["dimensions"] = [{"entity_index": d.entity_index, "position": list(d.position), "mode": d.mode,
                                **({"other_index": d.other_index} if d.mode == "between" else {})}
                               for d in document.dimensions]
-    if data["version"] == "6":
+    if data["version"] in ("6", "7"):
         settings = document.extrusion
         data["extrusion"] = {"direction": settings.direction, "hole_depth": settings.hole_depth,
                              "hole_side": settings.hole_side,
                              "hole_overrides": [{"entity_index": i, "depth": depth, "side": side}
                                                 for i, depth, side in settings.hole_overrides]}
+        if data["version"] == "7":
+            data["extrusion"]["thickness_mm"] = settings.thickness_mm
     _parse(data)
     return data
 

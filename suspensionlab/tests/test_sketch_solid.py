@@ -534,15 +534,15 @@ def test_saved_extrusion_settings_reach_real_cad_worker_after_reopen(tmp_path, c
     outer = rectangle_entities((0, 0), (100, 50))
     a = make_entity("circle", (25, 25), (30, 25))
     b = make_entity("circle", (75, 25), (80, 25))
-    settings = ExtrusionSettings("symmetric", 3, "positive", ((4, 0., "auto"),))
+    settings = ExtrusionSettings("symmetric", 3, "positive", ((4, 0., "auto"),), 8.)
     original = SketchDocument("XY", 12, (*outer, a, b), (), settings)
     path = tmp_path / "saved.slsketch"
     write_new_sketch(path, original)
     restored = read_sketch(path)
     cfg = restored.extrusion
     target = tmp_path / "restored.step"
-    SketchSolidJob().run(restored, 10, target, direction=cfg.direction, hole_depth=cfg.hole_depth,
+    SketchSolidJob().run(restored, cfg.thickness_mm, target, direction=cfg.direction, hole_depth=cfg.hole_depth,
                          hole_side=cfg.hole_side, hole_overrides=cfg.hole_overrides)
     _, volume, bounds = cad(target)
-    assert (bounds[2], bounds[5]) == pytest.approx((7, 17), abs=1e-6)
-    assert volume == pytest.approx(50_000 - math.pi * 25 * (10 + 3), rel=1e-9)
+    assert (bounds[2], bounds[5]) == pytest.approx((8, 16), abs=1e-6)
+    assert volume == pytest.approx(40_000 - math.pi * 25 * (8 + 3), rel=1e-9)

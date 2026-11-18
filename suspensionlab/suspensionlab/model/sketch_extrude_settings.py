@@ -65,8 +65,9 @@ def validate_hole_overrides(thickness: float, direction: str, overrides: tuple[H
 
 @dataclass(frozen=True)
 class ExtrusionSettings:
-    """Сохраняемые настройки; толщина задаётся отдельно при построении."""
+    """Сохраняемые настройки выдавливания и отверстий."""
     direction: str = "positive"
     hole_depth: float = 0.0
     hole_side: str = "auto"
     hole_overrides: tuple[HoleOverride, ...] = ()
+    thickness_mm: float = 10.0

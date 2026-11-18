@@ -208,3 +208,52 @@ def test_version_six_keeps_arcs_and_both_angle_dimensions(tmp_path):
     write_new_sketch(path, doc)
     assert json.loads(path.read_text(encoding="utf-8"))["version"] == "6"
     assert read_sketch(path) == doc
+
+
+@pytest.mark.parametrize("thickness", [0.001, 8.125, 1_000_000])
+def test_thickness_version_seven_roundtrip(tmp_path, thickness):
+    doc = extrusion_document()
+    doc = replace(doc, extrusion=replace(doc.extrusion, thickness_mm=thickness))
+    path = tmp_path / "thickness.slsketch"
+    write_new_sketch(path, doc)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["version"] == "7" and data["extrusion"]["thickness_mm"] == thickness
+    assert read_sketch(path) == doc
+
+
+def test_v6_restores_thickness_default_and_old_versions_remain_unchanged(tmp_path):
+    doc = extrusion_document()
+    path = tmp_path / "v6.slsketch"
+    write_new_sketch(path, doc)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["version"] == "6" and "thickness_mm" not in data["extrusion"]
+    assert read_sketch(path).extrusion.thickness_mm == 10
+    # A version 6 file cannot silently contain a version 7 field.
+    data["extrusion"]["thickness_mm"] = 12
+    path.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(SketchIOError):
+        read_sketch(path)
+
+
+@pytest.mark.parametrize("bad", [0, -1, 0.0001, 2.0001, 1_000_001, True, None, "4", float("nan"), float("inf")])
+def test_version_seven_rejects_invalid_thickness(tmp_path, bad):
+    doc = extrusion_document()
+    doc = replace(doc, extrusion=replace(doc.extrusion, thickness_mm=12))
+    path = tmp_path / "bad.slsketch"
+    write_new_sketch(path, doc)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["extrusion"]["thickness_mm"] = bad
+    path.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(SketchIOError):
+        read_sketch(path)
+
+
+def test_version_seven_rejects_missing_thickness(tmp_path):
+    doc = extrusion_document()
+    path = tmp_path / "missing.slsketch"
+    write_new_sketch(path, replace(doc, extrusion=replace(doc.extrusion, thickness_mm=12)))
+    data = json.loads(path.read_text(encoding="utf-8"))
+    del data["extrusion"]["thickness_mm"]
+    path.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(SketchIOError):
+        read_sketch(path)

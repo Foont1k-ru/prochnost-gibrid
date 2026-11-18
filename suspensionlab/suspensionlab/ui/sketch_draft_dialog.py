@@ -771,6 +771,14 @@ class SketchDraftDialog(QDialog):
         extrusion_options.addStretch(1)
         layout.addLayout(extrusion_options)
         per_hole = QHBoxLayout()
+        per_hole.addWidget(QLabel("Толщина 3D:"))
+        self.extrusion_thickness = QDoubleSpinBox()
+        self.extrusion_thickness.setDecimals(3)
+        self.extrusion_thickness.setRange(0.001, 1_000_000)
+        self.extrusion_thickness.setValue(10)
+        self.extrusion_thickness.setSuffix(" мм")
+        self.extrusion_thickness.setToolTip("Общая толщина для 3D-предпросмотра и STEP. Сохраняется в эскизе.")
+        per_hole.addWidget(self.extrusion_thickness)
         self.assign_hole = QPushButton("Назначить выбранному контуру")
         self.assign_hole.setToolTip("Выберите элемент внутреннего контура; текущая глубина и сторона сохранятся для него. "
                                     "Затем настройки выше применяются к остальным контурам по умолчанию.")
@@ -904,6 +912,7 @@ class SketchDraftDialog(QDialog):
         self.plane_offset.valueChanged.connect(self._reference_changed)
         self.extrusion_direction.currentIndexChanged.connect(self._refresh)
         self.hole_depth.valueChanged.connect(self._refresh)
+        self.extrusion_thickness.valueChanged.connect(self._refresh)
         self.hole_side.currentIndexChanged.connect(self._refresh)
         self.tool.currentIndexChanged.connect(self._set_tool)
         self.snap.toggled.connect(self._set_snap)
@@ -936,7 +945,8 @@ class SketchDraftDialog(QDialog):
                               tuple(self.canvas.draft.dimensions),
                               ExtrusionSettings(str(self.extrusion_direction.currentData()), self.hole_depth.value(),
                                                 str(self.hole_side.currentData()),
-                                                tuple((i, depth, side) for i, (depth, side) in sorted(self._hole_overrides.items()))))
+                                                tuple((i, depth, side) for i, (depth, side) in sorted(self._hole_overrides.items())),
+                                                self.extrusion_thickness.value()))
 
     def _dirty(self) -> bool:
         return self._document() != self._saved or self.canvas.pending is not None
@@ -1135,13 +1145,8 @@ class SketchDraftDialog(QDialog):
         except ValueError as exc:
             QMessageBox.warning(self, "Создание 3D STEP", str(exc))
             return
-        depth, ok = QInputDialog.getDouble(self, "Выдавливание в STEP",
-            "Толщина в мм вдоль оси, перпендикулярной эскизу. "
-            "Один внешний контур; внутренние контуры станут отверстиями выбранной глубины. "
-            "Создаётся отдельное CAD-тело, не связанное с эскизом и проектом.",
-            10, 0.001, 1_000_000, 3)
-        if not ok:
-            return
+        self.extrusion_thickness.interpretText()
+        depth = self.extrusion_thickness.value()
         try:
             validate_hole_depth(depth, self.hole_depth.value(), has_holes=report.closed_loops > 1)
             overrides = self._hole_override_values(depth)
@@ -1186,12 +1191,8 @@ class SketchDraftDialog(QDialog):
         except ValueError as exc:
             QMessageBox.warning(self, "3D-предпросмотр не создан", str(exc))
             return
-        depth, ok = QInputDialog.getDouble(self, "Выдавливание: 3D-предпросмотр",
-            "Толщина в мм вдоль оси, перпендикулярной эскизу. "
-            "Внутренние контуры станут отверстиями выбранной глубины; результат только для просмотра.",
-            10, 0.001, 1_000_000, 3)
-        if not ok:
-            return
+        self.extrusion_thickness.interpretText()
+        depth = self.extrusion_thickness.value()
         try:
             validate_hole_depth(depth, self.hole_depth.value(), has_holes=report.closed_loops > 1)
             overrides = self._hole_override_values(depth)
@@ -1400,6 +1401,8 @@ class SketchDraftDialog(QDialog):
         if self.canvas.pending is not None or self.canvas.construction_indices or self.canvas.dimension_target is not None:
             QMessageBox.warning(self, "Незавершённый элемент", "Завершите действие или нажмите Esc, затем сохраните эскиз.")
             return False
+        self.extrusion_thickness.interpretText()
+        self.hole_depth.interpretText()
         self._refresh()  # Never serialize stale element indices.
         suggested = str(self._path.with_name(self._path.stem + "-новый" + SUFFIX)) if self._path else "эскиз.slsketch"
         path, _ = QFileDialog.getSaveFileName(self, "Сохранить новый эскиз", suggested,
@@ -1480,6 +1483,7 @@ class SketchDraftDialog(QDialog):
         settings = doc.extrusion
         self.extrusion_direction.setCurrentIndex(self.extrusion_direction.findData(settings.direction))
         self.hole_depth.setValue(settings.hole_depth)
+        self.extrusion_thickness.setValue(settings.thickness_mm)
         self.hole_side.setCurrentIndex(self.hole_side.findData(settings.hole_side))
         self._hole_overrides = {i: (depth, side) for i, depth, side in settings.hole_overrides}
         self._hole_override_snapshot = tuple(doc.entities) if self._hole_overrides else None
