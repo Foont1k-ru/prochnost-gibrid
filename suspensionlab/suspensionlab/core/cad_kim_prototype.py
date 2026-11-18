@@ -59,6 +59,15 @@ def build_part(document: dict[str, Any]) -> Any:
     from OCP.TopoDS import TopoDS_Compound
 
     geometry = document["geometry"]
+    if geometry["kind"] == "prototype_bushing_housing":
+        length = float(geometry["length_mm"])
+        axis = gp_Ax2(gp_Pnt(0, 0, -length / 2), gp_Dir(0, 0, 1))
+        outside = BRepPrimAPI_MakeCylinder(axis, float(geometry["outer_radius_mm"]), length).Shape()
+        bore = BRepPrimAPI_MakeCylinder(axis, float(geometry["bore_radius_mm"]), length).Shape()
+        cut = BRepAlgoAPI_Cut(outside, bore)
+        if not cut.IsDone() or cut.Shape().IsNull():
+            raise RuntimeError("could not build housing part")
+        return cut.Shape()
     if geometry["kind"] == "prototype_arm_bent_tube":
         return _build_bent_tube(geometry)
     if geometry["kind"] == "prototype_cylinder":
@@ -106,7 +115,7 @@ def build_part(document: dict[str, Any]) -> Any:
 def build_assembly(document: dict[str, Any]) -> Any:
     """Создаёт соединение перенесённых экземпляров, не связывая их со схемой."""
     _assembly(document)
-    if document["version"] in ("0.2", "0.3", "0.4", "0.5", "0.6", "0.7", "0.8", "0.9", "0.10", "0.11", "0.12", "0.13", "0.14"):
+    if document["version"] in ("0.2", "0.3", "0.4", "0.5", "0.6", "0.7", "0.8", "0.9", "0.10", "0.11", "0.12", "0.13", "0.14", "0.15"):
         raise ValueError("incomplete weldment: use the explicitly partial tube preview")
     from OCP.BRep import BRep_Builder
     from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
@@ -352,4 +361,35 @@ def build_rear_joint_layout_preview(document: dict[str, Any]) -> Any:
             if placed.IsNull():
                 raise RuntimeError('joint placement failed')
             builder.Add(compound, placed)
+    return compound
+
+
+def build_scheme_arm_assembly_preview(document: dict[str, Any]) -> Any:
+    """Две встроенные трубы и два размещённых корпуса без объединения."""
+    import math
+
+    from OCP.BRep import BRep_Builder
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
+    from OCP.gp import gp_Ax1, gp_Dir, gp_Pnt, gp_Trsf, gp_Vec
+    from OCP.TopoDS import TopoDS_Compound
+
+    from ..model.scheme_arm_assembly import validate_scheme_arm_assembly
+
+    validate_scheme_arm_assembly(document)
+    builder, compound = BRep_Builder(), TopoDS_Compound()
+    builder.MakeCompound(compound)
+    for part in document['parts'][:2]:
+        builder.Add(compound, build_part(part))
+    points = document['parts'][0]['geometry']['source']['coordinates_mm']
+    for part, point in zip(document['parts'][2:], points[:2], strict=True):
+        transform = gp_Trsf()
+        if document['axis'] == 'x':
+            transform.SetRotation(gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(0, 1, 0)), math.pi / 2)
+        elif document['axis'] == 'y':
+            transform.SetRotation(gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(1, 0, 0)), -math.pi / 2)
+        transform.SetTranslationPart(gp_Vec(*point))
+        placed = BRepBuilderAPI_Transform(build_part(part), transform, True).Shape()
+        if placed.IsNull():
+            raise RuntimeError('housing placement failed')
+        builder.Add(compound, placed)
     return compound

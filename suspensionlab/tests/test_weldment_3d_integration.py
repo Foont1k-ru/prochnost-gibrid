@@ -688,3 +688,30 @@ def test_scheme_part_housings_real_3d_rebuild_and_reopen(qtbot, tmp_path, monkey
     qtbot.waitUntil(lambda: reopened.three_d._view.mesh is not None and reopened.save_copy.isEnabled(), timeout=45000)
     assert reopened.three_d.shutdown()
     reopened.close()
+
+
+def test_scheme_assembly_real_3d_save_and_reopen(qtbot, tmp_path, monkeypatch):
+    from suspensionlab.model.kim_format import read_document
+    from suspensionlab.model.scheme_arm_assembly import make_scheme_arm_assembly
+    from suspensionlab.ui.scheme_arm_assembly_dialog import SchemeArmAssemblyDialog
+
+    c = AppController()
+    doc = make_scheme_arm_assembly(c.project, 12, 2, {'axis': 'x', 'outer_radius_mm': 14,
+                                                        'bore_radius_mm': 7, 'length_mm': 24})
+    d = SchemeArmAssemblyDialog(c, doc)
+    qtbot.addWidget(d)
+    d.three_d._enable.setChecked(True)
+    assert not d.save_copy.isEnabled()
+    qtbot.waitUntil(lambda: d.three_d._view.mesh is not None and d.save_copy.isEnabled(), timeout=45000)
+    path = tmp_path / 'arm.kima'
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(path), ''))
+    d._save_copy()
+    assert read_document(path, 'assembly') == doc
+    assert d.three_d.shutdown()
+    d.close()
+    reopened = SchemeArmAssemblyDialog(c, read_document(path, 'assembly'), path)
+    qtbot.addWidget(reopened)
+    reopened.three_d._enable.setChecked(True)
+    qtbot.waitUntil(lambda: reopened.three_d._view.mesh is not None and reopened.save_copy.isEnabled(), timeout=45000)
+    assert reopened.three_d.shutdown()
+    reopened.close()

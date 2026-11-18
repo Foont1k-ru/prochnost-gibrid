@@ -158,6 +158,47 @@ class MainWindow(QMainWindow):
         dialog.exec()
         dialog.deleteLater()
 
+    def _new_scheme_arm_assembly(self) -> None:
+        from copy import deepcopy
+
+        from ..model.kim_format import KimFormatError
+        from ..model.scheme_arm_assembly import make_scheme_arm_assembly
+        from .scheme_arm_assembly_dialog import NewAssemblyParametersDialog, SchemeArmAssemblyDialog
+
+        before = deepcopy(self.controller.project.to_dict())
+        parameters = NewAssemblyParametersDialog(self)
+        if parameters.exec() != QDialog.DialogCode.Accepted:
+            return
+        try:
+            if before != self.controller.project.to_dict():
+                raise KimFormatError('project changed during input')
+            radius, wall = parameters.tube_values()
+            doc = make_scheme_arm_assembly(self.controller.project, radius, wall, parameters.values())
+        except (KimFormatError, TypeError, ValueError, OverflowError):
+            QMessageBox.warning(self, 'Новая сборка', 'Схема несовместима, данные некорректны или проект изменился.')
+            return
+        dialog = SchemeArmAssemblyDialog(self.controller, doc, parent=self)
+        dialog.exec()
+        dialog.deleteLater()
+
+    def _open_scheme_arm_assembly(self) -> None:
+        from ..model.kim_format import KimFormatError, read_document
+        from ..model.scheme_arm_assembly import validate_scheme_arm_assembly
+        from .scheme_arm_assembly_dialog import SchemeArmAssemblyDialog
+
+        selected, _ = QFileDialog.getOpenFileName(self, 'Открыть сборку рычага', '', 'Сборка KIMA (*.kima)')
+        if not selected:
+            return
+        try:
+            doc = read_document(selected, 'assembly')
+            validate_scheme_arm_assembly(doc)
+            dialog = SchemeArmAssemblyDialog(self.controller, doc, Path(selected), self)
+        except (KimFormatError, OSError, TypeError, ValueError, OverflowError):
+            QMessageBox.warning(self, 'Открытие сборки', 'Нужна предварительная сборка .kima 0.15; файл не изменён.')
+            return
+        dialog.exec()
+        dialog.deleteLater()
+
     def _open_step_inventory(self) -> None:
         StepInventoryDialog(self).exec()
 
@@ -337,7 +378,11 @@ class MainWindow(QMainWindow):
         self.action_sketch_draft = QAction("Плоский эскиз (отдельный документ)", self)
         self.action_sketch_draft.triggered.connect(self._open_sketch_draft)
 
-        self.action_scheme_arm_part = QAction("Эксперимент: открыть схему и 3D-заготовку .kim…", self)
+        self.action_new_scheme_assembly = QAction("Эксперимент: новая сборка рычага из деталей…", self)
+        self.action_new_scheme_assembly.triggered.connect(self._new_scheme_arm_assembly)
+        self.action_open_scheme_assembly = QAction("Эксперимент: открыть сборку рычага из деталей .kima…", self)
+        self.action_open_scheme_assembly.triggered.connect(self._open_scheme_arm_assembly)
+        self.action_scheme_arm_part = QAction("Прежний эксперимент: открыть схему и заготовку .kim…", self)
         self.action_scheme_arm_part.triggered.connect(self._open_scheme_arm_part)
 
         self.action_niva_arms = QAction(tr("niva_arms.menu"), self)
@@ -446,6 +491,8 @@ class MainWindow(QMainWindow):
         menu_file.addAction(self.action_front_tubes)
         menu_file.addAction(self.action_rear_tube)
         menu_file.addAction(self.action_arm_concept)
+        menu_file.addAction(self.action_new_scheme_assembly)
+        menu_file.addAction(self.action_open_scheme_assembly)
         menu_file.addAction(self.action_scheme_arm_part)
         menu_file.addAction(self.action_weldment)
         menu_file.addAction(self.action_recover_autosave)

@@ -326,3 +326,57 @@ def test_scheme_arm_bushing_housings_axis_center_volume_and_mesh_after_rebuild(t
     mesh = WeldmentCadJob().run(updated)
     assert len(mesh.triangles) and mesh.skipped_faces == mesh.recovered_faces == 0
     assert read_document(source, 'part') == doc
+
+
+@pytest.mark.parametrize('axis', ['x', 'y', 'z'])
+def test_separate_parts_and_assembly_preview_are_consistent(tmp_path, axis):
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.GeomAbs import GeomAbs_SurfaceType
+    from OCP.TopAbs import TopAbs_ShapeEnum
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    from suspensionlab.core.cad_kim_prototype import build_scheme_arm_assembly_preview
+    from suspensionlab.core.cad_weldment_job import WeldmentCadJob
+    from suspensionlab.model.entities import Project
+    from suspensionlab.model.scheme_arm_assembly import make_scheme_arm_assembly, rebuild_scheme_arm_assembly
+
+    p = Project.create_default()
+    for code, xyz in {'lca_f_in': (0, 0, 0), 'lca_r_in': (100, 0, 20), 'lbj': (0, 100, 40)}.items():
+        point = p.front.hardpoints[code]
+        point.x, point.y, point.z = xyz
+    doc = make_scheme_arm_assembly(p, 10, 2, {'axis': axis, 'outer_radius_mm': 14,
+                                               'bore_radius_mm': 7, 'length_mm': 24})
+    path = tmp_path / 'arm.kima'
+    write_document(path, 'assembly', doc, overwrite=False)
+    p.front.hardpoints['lca_f_in'].x += 20
+    updated = rebuild_scheme_arm_assembly(read_document(path, 'assembly'), p)
+    shape = build_scheme_arm_assembly_preview(updated)
+    assert BRepCheck_Analyzer(shape).IsValid()
+    solids, exp = [], TopExp_Explorer(shape, TopAbs_ShapeEnum.TopAbs_SOLID)
+    while exp.More():
+        solids.append(exp.Current())
+        exp.Next()
+    assert len(solids) == 4
+    expected = {'x': (1, 0, 0), 'y': (0, 1, 0), 'z': (0, 0, 1)}[axis]
+    for i, solid in enumerate(solids):
+        assert volume(solid) == pytest.approx(volume(build_part(updated['parts'][i])), rel=1e-7)
+        if i < 2:
+            continue
+        props = GProp_GProps()
+        BRepGProp.VolumeProperties_s(solid, props)
+        center = props.CentreOfMass()
+        assert (center.X(), center.Y(), center.Z()) == pytest.approx(
+            updated['parts'][0]['geometry']['source']['coordinates_mm'][i-2], abs=1e-6)
+        faces, cylinders = TopExp_Explorer(solid, TopAbs_ShapeEnum.TopAbs_FACE), 0
+        while faces.More():
+            face = BRepAdaptor_Surface(TopoDS.Face(faces.Current()))
+            if face.GetType() == GeomAbs_SurfaceType.GeomAbs_Cylinder:
+                d = face.Cylinder().Axis().Direction()
+                assert tuple(abs(v) for v in (d.X(), d.Y(), d.Z())) == pytest.approx(expected, abs=1e-7)
+                cylinders += 1
+            faces.Next()
+        assert cylinders == 2
+    mesh = WeldmentCadJob().run(updated)
+    assert len(mesh.triangles) and mesh.skipped_faces == mesh.recovered_faces == 0
+    assert read_document(path, 'assembly') == doc

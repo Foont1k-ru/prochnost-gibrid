@@ -18,6 +18,7 @@ from .cad_kim_prototype import (
     build_rear_joint_layout_preview,
     build_rear_pair_preview,
     build_rear_tube_preview,
+    build_scheme_arm_assembly_preview,
     build_weldment_tubes_preview,
 )
 from .cad_mesh import MAX_COORDINATE
@@ -48,7 +49,9 @@ def create_mesh(path: Path, deviation: float) -> tuple[np.ndarray, int]:
 
 
 def _build_assembly_preview(doc):
-    if doc["version"] == "0.10":
+    if doc["version"] == "0.15":
+        shape = build_scheme_arm_assembly_preview(doc)
+    elif doc["version"] == "0.10":
         shape = build_rear_joint_layout_preview(doc)
     elif doc["version"] in ("0.9", "0.12", "0.13", "0.14"):
         shape = build_front_joint_layout_preview(doc)

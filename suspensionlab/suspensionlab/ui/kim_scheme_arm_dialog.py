@@ -98,10 +98,10 @@ class KimSchemeArmDialog(QDialog):
         self.document = deepcopy(document)
         self._saved = deepcopy(document)
         self._preview_doc: dict[str, Any] | None = None
-        self.setWindowTitle("Экспериментальная деталь .kim — схема и 3D-заготовка")
+        self.setWindowTitle("Прежний эксперимент .kim — несколько тел в одном файле")
         self.resize(780, 750)
         layout = QVBoxLayout(self)
-        notice = QLabel("Снимок схемы и две прямые трубы; можно добавить два условных полых корпуса втулок. "
+        notice = QLabel("Прежний эксперимент: несколько тел в одном .kim, не сборка из отдельных деталей. Для новой работы используйте сборку .kima. Снимок схемы и две прямые трубы; можно добавить два условных полых корпуса втулок. "
                         "Это отдельные пересекающиеся тела без подрезки и соединения. Покупных сайлентблоков, "
                         "шаровой, сварки, чертежа, истории 3D и проверки прочности нет. Это не готовая деталь.")
         notice.setWordWrap(True)
