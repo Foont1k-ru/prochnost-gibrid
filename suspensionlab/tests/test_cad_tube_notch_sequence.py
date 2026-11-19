@@ -56,7 +56,7 @@ def test_three_cuts_match_independent_finite_shapes():
     doc = document()
     initial = deepcopy(doc)
     order = ['housing_front', 'ball_plate', 'tube_rear']
-    result = notch_tube_sequence(doc, 'tube_front', order)
+    result = notch_tube_sequence(doc, 'tube_front', order, capture_stages=True)
     assert doc == initial and order == ['housing_front', 'ball_plate', 'tube_rear']
     assert BRepCheck_Analyzer(result.shape).IsValid()
     assert [step.cutter_id for step in result.steps] == order
@@ -74,8 +74,15 @@ def test_three_cuts_match_independent_finite_shapes():
     plate = cut(plate_box, cylinder((0, 70, -2.5), (0, 0, 1), 9.5, 5))
     other_tube = cylinder((100, 100, 0), (-1, 0, 0), 10, 100)
     reference = original
-    for cutter in (housing, plate, other_tube):
+    for index, cutter in enumerate((housing, plate, other_tube)):
+        before_volume = volume(reference)
         reference = cut(reference, cutter)
+        after_volume = volume(reference)
+        step = result.steps[index]
+        assert step.input_volume_mm3 == pytest.approx(before_volume, rel=1e-7)
+        assert step.remaining_volume_mm3 == pytest.approx(after_volume, rel=1e-7)
+        assert step.removed_volume_mm3 == pytest.approx(before_volume - after_volume, rel=1e-6)
+        assert volume(result.stage_shapes[index]) == pytest.approx(after_volume, rel=1e-7)
         intersection = BRepAlgoAPI_Common(result.shape, cutter)
         assert intersection.IsDone() and volume(intersection.Shape()) == pytest.approx(0, abs=1e-5)
     assert volume(cut(result.shape, reference)) == pytest.approx(0, abs=1e-4)

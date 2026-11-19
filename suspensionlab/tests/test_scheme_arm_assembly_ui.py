@@ -1238,7 +1238,8 @@ def test_notch_sequence_order_changes_invalidate_stale_results(qtbot, monkeypatc
                 assert release.wait(5)
             bounds = (0., 0., 0., 2., 3., 4.) if cutters[0] == 'tube_rear' else (0., 0., 0., 9., 9., 9.)
             before = CadAssemblyProjection(lines, bounds)
-            return SequencePreview(before, tuple(SequenceStagePreview(c, before, before, before) for c in cutters))
+            return SequencePreview(before, tuple(SequenceStagePreview(c, before, before, before, 10 - i, 9 - i, 1)
+                                                 for i, c in enumerate(cutters)))
         def cancel(self):
             pass  # Force an obsolete reply after cancellation.
 
@@ -1304,6 +1305,7 @@ def test_notch_sequence_reports_failing_step_and_never_shows_partial(qtbot, monk
     qtbot.waitUntil(lambda: 'Шаг 2' in view.status.text(), timeout=5000)
     assert 'Задний корпус' in view.status.text() and 'пересечения' in view.status.text()
     assert 'Частичный результат не показан' in view.status.text() and view.canvas.result is None
+    assert not view.volumes.text()
     assert view.retry.isEnabled() and d.document == original
     d._saved = deepcopy(d.document)
     d.close()
@@ -1326,7 +1328,7 @@ def test_notch_sequence_rejects_snapshot_changed_without_refresh(qtbot):
     token = view.generation
     d.document['scheme']['front_axle']['arb']['enabled'] = 1
     p = CadAssemblyProjection((((0., 0., 1., 1.),),) * 3, (0., 0., 0., 2., 3., 4.))
-    view._completed(token, SequencePreview(p, (SequenceStagePreview('housing_front', p, p, p),)))
+    view._completed(token, SequencePreview(p, (SequenceStagePreview('housing_front', p, p, p, 10, 9, 1),)))
     assert view.canvas.result is None and 'снимок изменился' in view.status.text()
     d._saved = deepcopy(d.document)
     d.close()
@@ -1383,8 +1385,8 @@ def test_notch_sequence_switches_stages_without_new_calculation(qtbot, monkeypat
     class FakeJob:
         def run(self, doc, tube, cutters):
             calls.append((tube, cutters))
-            return SequencePreview(before, (SequenceStagePreview(cutters[0], first, before, first),
-                                            SequenceStagePreview(cutters[1], final, first, final)))
+            return SequencePreview(before, (SequenceStagePreview(cutters[0], first, before, first, 100, 90, 10),
+                                            SequenceStagePreview(cutters[1], final, first, final, 90, 70, 20)))
         def cancel(self):
             pass
 
@@ -1404,12 +1406,14 @@ def test_notch_sequence_switches_stages_without_new_calculation(qtbot, monkeypat
     qtbot.waitUntil(lambda: view.canvas.result is not None, timeout=5000)
     assert view.stage.isEnabled() and view.stage.count() == 2 and view.stage.currentIndex() == 1
     assert 'итог' in view.stage.currentText() and 'шага 2 из 2' in view.status.text()
+    assert 'до шага 90; после 70; удалено на шаге 20; всего по этот шаг включительно 30' in view.volumes.text()
     assert view.canvas.result.after is final and view.canvas.after_title == 'Шаг 2'
     final_image = view.canvas.grab().toImage()
     generation = view.generation
     view.stage.setCurrentIndex(0)
     assert view.canvas.result.before is before and view.canvas.result.after is first
     assert view.canvas.after_title == 'Шаг 1' and 'шага 1 из 2' in view.status.text()
+    assert 'до шага 100; после 90; удалено на шаге 10; всего по этот шаг включительно 10' in view.volumes.text()
     assert 'Передний корпус' in view.status.text()
     assert view.generation == generation and calls == [('tube_front', ('housing_front', 'tube_rear'))]
     assert view.canvas.grab().toImage() != final_image
@@ -1421,6 +1425,7 @@ def test_notch_sequence_switches_stages_without_new_calculation(qtbot, monkeypat
     assert view.canvas.result.before is first and view.canvas.result.after is final
     assert 'предыдущие резы уже учтены' in view.status.text()
     assert view.canvas.before_title == 'До 2' and view.canvas.after_title == 'После 2'
+    assert 'до шага 90; после 70; удалено на шаге 20; всего по этот шаг включительно 30' in view.volumes.text()
     assert view.generation == generation and len(calls) == 1
     view.show_pair.setChecked(False)
     assert view.canvas.tube_only and view.canvas.result.tube_before is before
@@ -1429,6 +1434,7 @@ def test_notch_sequence_switches_stages_without_new_calculation(qtbot, monkeypat
     assert view.generation == generation and view.canvas.plane == 'XZ'
     view.enable.setChecked(False)
     assert view.canvas.result is None and view.stage.count() == 0 and not view.stage.isEnabled()
+    assert not view.volumes.text()
     d._saved = deepcopy(d.document)
     d.close()
 
@@ -1444,7 +1450,7 @@ def test_notch_sequence_stage_change_rejects_silently_changed_snapshot(qtbot, mo
     p = CadAssemblyProjection((((0., 0., 1., 1.),),) * 3, (0., 0., 0., 2., 3., 4.))
     class FakeJob:
         def run(self, doc, tube, cutters):
-            return SequencePreview(p, tuple(SequenceStagePreview(c, p, p, p) for c in cutters))
+            return SequencePreview(p, tuple(SequenceStagePreview(c, p, p, p, 10 - i, 9 - i, 1) for i, c in enumerate(cutters)))
         def cancel(self):
             pass
     monkeypatch.setattr(tube_notch_sequence_preview, 'SequencePreviewJob', FakeJob)
@@ -1467,5 +1473,6 @@ def test_notch_sequence_stage_change_rejects_silently_changed_snapshot(qtbot, mo
         view.plane.setCurrentIndex(1)
     assert view.canvas.result is None and 'снимок изменился' in view.status.text()
     assert view.stage.count() == 0 and not view.stage.isEnabled()
+    assert not view.volumes.text()
     d._saved = deepcopy(d.document)
     d.close()

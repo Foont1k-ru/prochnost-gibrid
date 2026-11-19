@@ -44,6 +44,9 @@ def project_notch_sequence(document: dict[str, Any], tube_id: str, cutter_ids: l
         pair_bounds = bounds_for_shape(pair_before)
         stages.append({'cutter': step.cutter_id, 'projection': project(shape, bounds),
                        'pair_before': project(pair_before, pair_bounds),
-                       'pair_after': project(pair_after, pair_bounds)})
+                       'pair_after': project(pair_after, pair_bounds),
+                       'input_volume_mm3': step.input_volume_mm3,
+                       'remaining_volume_mm3': step.remaining_volume_mm3,
+                       'removed_volume_mm3': step.removed_volume_mm3})
         previous = shape
     return {'before': before_projection, 'stages': stages}

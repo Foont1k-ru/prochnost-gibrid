@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import csv
 import json
+import math
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -127,7 +128,11 @@ def run_cad_check() -> None:
     _require([stage.cutter_id for stage in sequence.stages] == ['housing_front', 'tube_rear'] and
              all(stage.projection.bounds_mm == sequence.before.bounds_mm and
                  stage.pair_before.bounds_mm == stage.pair_after.bounds_mm and
-                 all(stage.pair_before.views) and all(stage.pair_after.views) for stage in sequence.stages) and
+                 all(stage.pair_before.views) and all(stage.pair_after.views) and
+                 stage.input_volume_mm3 > stage.remaining_volume_mm3 > 0 and stage.removed_volume_mm3 > 0
+                 for stage in sequence.stages) and
+             math.isclose(sequence.stages[0].remaining_volume_mm3, sequence.stages[1].input_volume_mm3,
+                          rel_tol=1e-8) and
              sequence.before.bounds_mm == sequence.after.bounds_mm and
              any(a != b for a, b in zip(sequence.before.views, sequence.after.views, strict=True)),
              "В собранном приложении недоступен предварительный просмотр нескольких резов")

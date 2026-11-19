@@ -35,12 +35,15 @@ def projection():
 
 def test_parser_rejects_malformed_inconsistent_or_unsafe_results():
     order = ('housing_front', 'tube_rear')
-    def stage(cutter):
-        return {'cutter': cutter, 'projection': projection(), 'pair_before': projection(), 'pair_after': projection()}
-    valid = {'before': projection(), 'stages': [stage(cutter) for cutter in order]}
+    def stage(cutter, initial, remaining):
+        return {'cutter': cutter, 'projection': projection(), 'pair_before': projection(), 'pair_after': projection(),
+                'input_volume_mm3': initial, 'remaining_volume_mm3': remaining,
+                'removed_volume_mm3': initial - remaining}
+    valid = {'before': projection(), 'stages': [stage(order[0], .9, .7), stage(order[1], .7, .5)]}
     result = parse_sequence_preview(valid, order)
     assert result.before.bounds_mm == result.after.bounds_mm
     assert tuple(x.cutter_id for x in result.stages) == order
+    assert result.stages[0].input_volume_mm3 == .9 and result.stages[1].remaining_volume_mm3 == .5
     invalid = [{}, {'before': projection()}, {**valid, 'extra': 1},
                {**valid, 'stages': []}, {**valid, 'stages': list(reversed(valid['stages']))},
                {**valid, 'stages': [*valid['stages'], valid['stages'][0]]}]
@@ -55,6 +58,23 @@ def test_parser_rejects_malformed_inconsistent_or_unsafe_results():
         extra = deepcopy(valid)
         extra['stages'][1].pop(key)
         invalid.append(extra)
+    for key in ('input_volume_mm3', 'remaining_volume_mm3', 'removed_volume_mm3'):
+        for value in (True, None, '0.1', 0, -1, float('nan'), float('inf'), 10**400, 2):
+            bad = deepcopy(valid)
+            bad['stages'][1][key] = value
+            invalid.append(bad)
+        missing = deepcopy(valid)
+        del missing['stages'][1][key]
+        invalid.append(missing)
+    mismatch = deepcopy(valid)
+    mismatch['stages'][1]['removed_volume_mm3'] = .01
+    invalid.append(mismatch)
+    mismatch = deepcopy(valid)
+    mismatch['stages'][1].update(input_volume_mm3=.8, remaining_volume_mm3=.5, removed_volume_mm3=.3)
+    invalid.append(mismatch)
+    mismatch = deepcopy(valid)
+    mismatch['stages'][1].update(input_volume_mm3=.5, remaining_volume_mm3=.7, removed_volume_mm3=.2)
+    invalid.append(mismatch)
     too_many = deepcopy(valid)
     too_many['stages'][1]['pair_after']['views']['XY'] = [[0, 0, 1, 1]] * 30001
     invalid.append(too_many)
@@ -197,6 +217,11 @@ def test_isolated_real_cad_process_projects_complete_sequence(tube, order, rear)
     assert all(stage.projection.bounds_mm == result.before.bounds_mm for stage in result.stages)
     assert all(all(stage.projection.views) for stage in result.stages)
     assert all(stage.pair_before.bounds_mm == stage.pair_after.bounds_mm for stage in result.stages)
+    assert all(stage.input_volume_mm3 > stage.remaining_volume_mm3 > 0 and
+               stage.removed_volume_mm3 == pytest.approx(stage.input_volume_mm3 - stage.remaining_volume_mm3)
+               for stage in result.stages)
+    assert all(a.remaining_volume_mm3 == pytest.approx(b.input_volume_mm3, rel=1e-8)
+               for a, b in zip(result.stages, result.stages[1:], strict=False))
     assert all(all(stage.pair_before.views) and all(stage.pair_after.views) for stage in result.stages)
     assert all(result.before.views) and all(result.after.views)
     assert any(a != b for a, b in zip(result.before.views, result.after.views, strict=True))
@@ -218,6 +243,9 @@ def test_isolated_real_cad_process_projects_complete_sequence(tube, order, rear)
         from suspensionlab.core.cad_tube_notch import notch_tube_against_housing
 
         first_cut = notch_tube_against_housing(doc, tube, 'housing_front')
+        assert result.stages[0].input_volume_mm3 == pytest.approx(first_cut.original_volume_mm3, rel=1e-8)
+        assert result.stages[0].remaining_volume_mm3 == pytest.approx(first_cut.remaining_volume_mm3, rel=1e-8)
+        assert result.stages[0].removed_volume_mm3 == pytest.approx(first_cut.removed_volume_mm3, rel=1e-8)
         builder, pair = BRep_Builder(), TopoDS_Compound()
         builder.MakeCompound(pair)
         builder.Add(pair, first_cut.shape)
@@ -271,7 +299,9 @@ def test_sequence_parser_limits_total_segments_across_pairs():
                       'XZ': [[0, 0, 1, 1]], 'YZ': [[0, 0, 1, 1]]},
             'bounds_mm': [0, 0, 0, 1, 1, 1]}
     value = {'before': many, 'stages': [
-        {'cutter': cutter, 'projection': many, 'pair_before': many, 'pair_after': many} for cutter in order]}
+        {'cutter': cutter, 'projection': many, 'pair_before': many, 'pair_after': many,
+         'input_volume_mm3': initial, 'remaining_volume_mm3': remaining, 'removed_volume_mm3': initial - remaining}
+        for cutter, initial, remaining in zip(order, (.9, .7), (.7, .5), strict=True)]}
     with pytest.raises(CadPreviewError, match='output'):
         parse_sequence_preview(value, order)
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import subprocess
 import sys
@@ -32,6 +33,9 @@ class SequenceStagePreview:
     projection: CadAssemblyProjection
     pair_before: CadAssemblyProjection
     pair_after: CadAssemblyProjection
+    input_volume_mm3: float
+    remaining_volume_mm3: float
+    removed_volume_mm3: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,10 +61,24 @@ def parse_sequence_preview(value: Any, order: tuple[str, ...]) -> SequencePrevie
         raise CadPreviewError('output')
     before = parse_projection(value['before'])
     total_segments = sum(len(lines) for lines in before.views)
+    # The initial tube must fit within its 3D bounds; allow tiny numerical error.
+    bounds = before.bounds_mm
+    max_volume = math.prod(bounds[i + 3] - bounds[i] for i in range(3)) * (1 + 1e-6)
     stages: list[SequenceStagePreview] = []
     for item, cutter in zip(value['stages'], order, strict=True):
-        if (not isinstance(item, dict) or set(item) != {'cutter', 'projection', 'pair_before', 'pair_after'} or
-                item['cutter'] != cutter):
+        keys = {'cutter', 'projection', 'pair_before', 'pair_after',
+                'input_volume_mm3', 'remaining_volume_mm3', 'removed_volume_mm3'}
+        if not isinstance(item, dict) or set(item) != keys or item['cutter'] != cutter:
+            raise CadPreviewError('output')
+        volumes = [item[key] for key in ('input_volume_mm3', 'remaining_volume_mm3', 'removed_volume_mm3')]
+        try:
+            if any(type(v) not in (int, float) or not math.isfinite(v) or v <= 0 or v > max_volume for v in volumes):
+                raise CadPreviewError('output')
+            initial, remaining, removed = (float(v) for v in volumes)
+        except OverflowError as error:
+            raise CadPreviewError('output') from error
+        if (remaining >= initial or not math.isclose(initial - remaining, removed, rel_tol=1e-8) or
+                (stages and not math.isclose(initial, stages[-1].remaining_volume_mm3, rel_tol=1e-8))):
             raise CadPreviewError('output')
         projection = parse_projection(item['projection'])
         pair_before, pair_after = parse_projection(item['pair_before']), parse_projection(item['pair_after'])
@@ -68,7 +86,7 @@ def parse_sequence_preview(value: Any, order: tuple[str, ...]) -> SequencePrevie
         if (total_segments > MAX_SEQUENCE_SEGMENTS or projection.bounds_mm != before.bounds_mm or
                 pair_before.bounds_mm != pair_after.bounds_mm):
             raise CadPreviewError('output')
-        stages.append(SequenceStagePreview(cutter, projection, pair_before, pair_after))
+        stages.append(SequenceStagePreview(cutter, projection, pair_before, pair_after, initial, remaining, removed))
     return SequencePreview(before, tuple(stages))
 
 

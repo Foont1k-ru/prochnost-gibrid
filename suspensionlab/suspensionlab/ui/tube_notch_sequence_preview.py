@@ -122,6 +122,10 @@ class TubeNotchSequencePreviewView(QWidget):
         self.status.setWordWrap(True)
         self.status.setTextFormat(Qt.TextFormat.PlainText)
         layout.addWidget(self.status)
+        self.volumes = QLabel('')
+        self.volumes.setWordWrap(True)
+        self.volumes.setTextFormat(Qt.TextFormat.PlainText)
+        layout.addWidget(self.volumes)
         self.canvas = NotchCanvas(self)
         self.canvas.tube_only = True
         layout.addWidget(self.canvas, 1)
@@ -175,6 +179,12 @@ class TubeNotchSequencePreviewView(QWidget):
         self.canvas.before_title = f'До {index + 1}' if self.show_pair.isChecked() else 'Исходная'
         self.canvas.after_title = f'После {index + 1}' if self.show_pair.isChecked() else f'Шаг {index + 1}'
         self.canvas.update()
+        total_removed = result.stages[0].input_volume_mm3 - stage.remaining_volume_mm3
+        self.volumes.setText(
+            f'Объём трубы, оценка CAD (мм³): до шага {stage.input_volume_mm3:.6g}; '
+            f'после {stage.remaining_volume_mm3:.6g}; удалено на шаге {stage.removed_volume_mm3:.6g}; '
+            f'всего по этот шаг включительно {total_removed:.6g}. '
+            'Без учёта сварки и припусков; это не оценка прочности или пригодности к изготовлению.')
         self._display_status()
 
     def _display_status(self) -> None:
@@ -219,6 +229,7 @@ class TubeNotchSequencePreviewView(QWidget):
             self.stage.blockSignals(was_blocked)
         self.stage.setEnabled(False)
         self.canvas.result = None
+        self.volumes.clear()
         self.canvas.update()
 
     def _schedule(self, *_args: object) -> None:
