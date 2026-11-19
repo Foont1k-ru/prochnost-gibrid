@@ -34,6 +34,7 @@ on:
       - 'suspensionlab/tests/test_rear_tube_cad.py'
       - 'suspensionlab/tests/test_bent_tube.py'
       - 'suspensionlab/tests/test_kim_cad_prototype.py'
+      - 'suspensionlab/tests/test_cad_tube_notch.py'
       - 'suspensionlab/tests/test_weldment_3d_integration.py'
       - 'suspensionlab/suspensionlab/ui/weldment_3d.py'
       - 'suspensionlab/suspensionlab/ui/weldment_dialog.py'
@@ -87,6 +88,7 @@ on:
       - 'suspensionlab/tests/test_rear_tube_cad.py'
       - 'suspensionlab/tests/test_bent_tube.py'
       - 'suspensionlab/tests/test_kim_cad_prototype.py'
+      - 'suspensionlab/tests/test_cad_tube_notch.py'
       - 'suspensionlab/tests/test_weldment_3d_integration.py'
       - 'suspensionlab/suspensionlab/ui/weldment_3d.py'
       - 'suspensionlab/suspensionlab/ui/weldment_dialog.py'
@@ -136,7 +138,7 @@ jobs:
       - name: Убедиться, что CAD-ядро загружается
         run: python -c "from OCP.gp import gp_Ax3, gp_Pnt, gp_Trsf; from PySide6.QtWidgets import QApplication; print('Open CASCADE and Qt ready')"
       - name: Сверить преобразования и искусственную STEP-сборку
-        run: python -m pytest -p pytestqt.plugin -q tests/test_sketch_solid.py tests/test_weldment_3d_integration.py tests/test_front_joint_layout_cad.py tests/test_front_same_pair_cad.py tests/test_rear_joint_layout_cad.py tests/test_joint_concept_cad.py tests/test_front_tube_arm_cad.py tests/test_rear_tube_cad.py tests/test_cad_assembly_projection.py tests/test_cad_assembly_svg.py tests/test_assembly_snapshot_fingerprint.py tests/test_assembly_material_estimate.py tests/test_cad_projection_layout.py tests/test_cad_oracle.py tests/test_cad_mesh.py tests/test_cad_measurement.py tests/test_cad_recovery.py tests/test_step_cad_assembly.py tests/test_kim_cad_prototype.py --junitxml=cad-results.xml
+        run: python -m pytest -p pytestqt.plugin -q tests/test_sketch_solid.py tests/test_weldment_3d_integration.py tests/test_front_joint_layout_cad.py tests/test_front_same_pair_cad.py tests/test_rear_joint_layout_cad.py tests/test_joint_concept_cad.py tests/test_front_tube_arm_cad.py tests/test_rear_tube_cad.py tests/test_cad_assembly_projection.py tests/test_cad_assembly_svg.py tests/test_assembly_snapshot_fingerprint.py tests/test_assembly_material_estimate.py tests/test_cad_projection_layout.py tests/test_cad_oracle.py tests/test_cad_mesh.py tests/test_cad_measurement.py tests/test_cad_recovery.py tests/test_step_cad_assembly.py tests/test_kim_cad_prototype.py tests/test_cad_tube_notch.py --junitxml=cad-results.xml
       - name: Показать ошибки тестов в аннотациях
         if: failure()
         run: python scripts/annotate_pytest.py cad-results.xml
