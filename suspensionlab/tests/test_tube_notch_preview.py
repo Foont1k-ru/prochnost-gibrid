@@ -300,3 +300,22 @@ def test_real_isolated_preview_changes_with_housing_clearance():
     assert zero.tube_after.bounds_mm == clearance.tube_after.bounds_mm
     assert zero.tube_after.views != clearance.tube_after.views
     assert doc == original
+
+
+def test_ring_template_housing_clearance_preview():
+    """Проверка на распространяемом учебном шаблоне, не на реальном изделии."""
+    pytest.importorskip('OCP', reason='Опциональное CAD-ядро', exc_type=ImportError)
+    from suspensionlab.model.templates import load_template
+
+    project = load_template('ring')
+    project_before = deepcopy(project.to_dict())
+    doc = make_scheme_arm_assembly(project, 12., 2., {'axis': 'x', 'outer_radius_mm': 14.,
+                                                      'bore_radius_mm': 7., 'length_mm': 24.})
+    snapshot = deepcopy(doc)
+    zero = TubeNotchPreviewJob().run(doc, 'tube_front', 'housing_front', radial_clearance_mm=0., timeout=90)
+    spaced = TubeNotchPreviewJob().run(doc, 'tube_front', 'housing_front', radial_clearance_mm=2., timeout=90)
+    assert zero.tube_before == spaced.tube_before
+    assert zero.tube_before.bounds_mm == zero.tube_after.bounds_mm == spaced.tube_after.bounds_mm
+    assert zero.tube_before.views != zero.tube_after.views
+    assert zero.tube_after.views != spaced.tube_after.views
+    assert doc == snapshot and project.to_dict() == project_before
