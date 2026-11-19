@@ -35,7 +35,7 @@ def test_two_real_cad_workers_rebuild_then_close(qtbot):
         dialog.three_d._enable.setChecked(True)
         _start_now(dialog.three_d)
     try:
-        qtbot.waitUntil(lambda: all(_running_process(d.three_d) for d in dialogs), timeout=20000, interval=10)
+        qtbot.waitUntil(lambda: all(_running_process(d.three_d) for d in dialogs), timeout=20000)
         print('PHASE: both real CAD subprocesses active; invalidate', flush=True)
         previous = [d.three_d.generation for d in dialogs]
         for dialog in dialogs:
@@ -44,7 +44,7 @@ def test_two_real_cad_workers_rebuild_then_close(qtbot):
             assert dialog.three_d._view.mesh is None and dialog.three_d.generation > previous.pop(0)
         qtbot.waitUntil(lambda: all(d.three_d._view.mesh is not None and d.three_d.can_save() and d.three_d._worker is None
                                    for d in dialogs),
-                        timeout=90000, interval=25)
+                        timeout=90000)
         for dialog in dialogs:
             panel = dialog.three_d
             assert dialog.document['axis'] == panel._document['axis'] == 'z'
@@ -54,7 +54,7 @@ def test_two_real_cad_workers_rebuild_then_close(qtbot):
         for dialog in dialogs:
             dialog.axis.setCurrentIndex(dialog.axis.findData('x'))
             _start_now(dialog.three_d)
-        qtbot.waitUntil(lambda: all(_running_process(d.three_d) for d in dialogs), timeout=20000, interval=10)
+        qtbot.waitUntil(lambda: all(_running_process(d.three_d) for d in dialogs), timeout=20000)
         print('PHASE: close both windows while real CAD subprocesses active', flush=True)
         for dialog in dialogs:
             dialog._saved = deepcopy(dialog.document)  # avoid a modal confirmation in the diagnostic
