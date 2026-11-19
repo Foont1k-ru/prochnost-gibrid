@@ -50,12 +50,15 @@ def notch_tube_against_housing(document: dict[str, Any], tube_id: str, housing_i
     if tube_id not in ('tube_front', 'tube_rear') or housing_id not in ('housing_front', 'housing_rear'):
         raise TubeNotchError('unsupported_pair')
 
+    tube = build_part(document['parts'][('tube_front', 'tube_rear').index(tube_id)])
+    return _cut_tube(tube, _housing_envelope(document, housing_id), tube_id, housing_id)
+
+
+def _housing_envelope(document: dict[str, Any], housing_id: str) -> Any:
     from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder
     from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt
 
-    tube_index = ('tube_front', 'tube_rear').index(tube_id)
     housing_index = ('housing_front', 'housing_rear').index(housing_id)
-    tube = build_part(document['parts'][tube_index])
     geometry = document['parts'][housing_index + 2]['geometry']
     centre = document['parts'][0]['geometry']['source']['coordinates_mm'][housing_index]
     directions = {'x': (1., 0., 0.), 'y': (0., 1., 0.), 'z': (0., 0., 1.)}
@@ -64,7 +67,7 @@ def notch_tube_against_housing(document: dict[str, Any], tube_id: str, housing_i
     start = [float(centre[i]) - direction[i] * length / 2 for i in range(3)]
     cutter = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(*start), gp_Dir(*direction)),
                                       float(geometry['outer_radius_mm']), length).Shape()
-    return _cut_tube(tube, cutter, tube_id, housing_id)
+    return cutter
 
 
 def notch_tube_against_plate(document: dict[str, Any], tube_id: str) -> TubeNotch:
@@ -96,18 +99,22 @@ def notch_tube_against_tube(document: dict[str, Any], tube_id: str, cutter_id: s
     if tube_id == cutter_id:
         raise TubeNotchError('same_tube')
 
+    target = build_part(document['parts'][tubes.index(tube_id)])
+    return _cut_tube(target, _tube_envelope(document, cutter_id), tube_id, cutter_id)
+
+
+def _tube_envelope(document: dict[str, Any], cutter_id: str) -> Any:
     from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder
     from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt
 
-    target = build_part(document['parts'][tubes.index(tube_id)])
-    geometry = document['parts'][tubes.index(cutter_id)]['geometry']
+    geometry = document['parts'][('tube_front', 'tube_rear').index(cutter_id)]['geometry']
     points = geometry['source']['coordinates_mm']
     start = points[0 if geometry['leg'] == 'front' else 1]
     end = points[2]
     direction = [float(end[i]) - float(start[i]) for i in range(3)]
     envelope = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(*map(float, start)), gp_Dir(*direction)),
                                         float(geometry['radius_mm']), math.dist(start, end)).Shape()
-    return _cut_tube(target, envelope, tube_id, cutter_id)
+    return envelope
 
 
 def _cut_tube(tube: Any, cutter: Any, tube_id: str, cutter_id: str) -> TubeNotch:
