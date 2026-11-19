@@ -373,6 +373,25 @@ def build_rear_joint_layout_preview(document: dict[str, Any]) -> Any:
     return compound
 
 
+def _place_scheme_arm_housing(part: dict[str, Any], point: Any, axis: str) -> Any:
+    """Разместить валидированный корпус в системе снимка сборки."""
+    import math
+
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
+    from OCP.gp import gp_Ax1, gp_Dir, gp_Pnt, gp_Trsf, gp_Vec
+
+    transform = gp_Trsf()
+    if axis == 'x':
+        transform.SetRotation(gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(0, 1, 0)), math.pi / 2)
+    elif axis == 'y':
+        transform.SetRotation(gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(1, 0, 0)), -math.pi / 2)
+    transform.SetTranslationPart(gp_Vec(*point))
+    placed = BRepBuilderAPI_Transform(build_part(part), transform, True).Shape()
+    if placed.IsNull():
+        raise RuntimeError('housing placement failed')
+    return placed
+
+
 def build_scheme_arm_assembly_preview(document: dict[str, Any]) -> Any:
     """Две встроенные трубы и два размещённых корпуса без объединения."""
     import math
@@ -391,16 +410,7 @@ def build_scheme_arm_assembly_preview(document: dict[str, Any]) -> Any:
         builder.Add(compound, build_part(part))
     points = document['parts'][0]['geometry']['source']['coordinates_mm']
     for part, point in zip(document['parts'][2:4], points[:2], strict=True):
-        transform = gp_Trsf()
-        if document['axis'] == 'x':
-            transform.SetRotation(gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(0, 1, 0)), math.pi / 2)
-        elif document['axis'] == 'y':
-            transform.SetRotation(gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(1, 0, 0)), -math.pi / 2)
-        transform.SetTranslationPart(gp_Vec(*point))
-        placed = BRepBuilderAPI_Transform(build_part(part), transform, True).Shape()
-        if placed.IsNull():
-            raise RuntimeError('housing placement failed')
-        builder.Add(compound, placed)
+        builder.Add(compound, _place_scheme_arm_housing(part, point, document['axis']))
     if document['version'] == '0.16':
         placement = document['plate_placement']
         transform = gp_Trsf()

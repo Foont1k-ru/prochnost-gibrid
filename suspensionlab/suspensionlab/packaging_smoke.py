@@ -82,6 +82,7 @@ def run_cad_check() -> None:
     from .core.cad_assembly_projection_job import CadAssemblyProjectionJob
     from .core.cad_recovery import recover_revolution_face
     from .core.cad_transport import CadJob
+    from .core.cad_tube_notch_job import TubeNotchPreviewJob
     from .export.cad_assembly_svg import write_new_projection_svg
     from .model.assembly_snapshot_fingerprint import assembly_snapshot_fingerprint
     from .model.entities import Project
@@ -96,6 +97,19 @@ def run_cad_check() -> None:
     _require(len(projection.views) == 3 and all(len(lines) > 4 for lines in projection.views) and
              all(projection.bounds_mm[i] < projection.bounds_mm[i + 3] for i in range(3)),
              "В собранном приложении недоступны CAD-проекции предварительной сборки")
+
+    notch_project = Project.create_default()
+    for key, coords in {'lca_f_in': (0., 0., 0.), 'lca_r_in': (100., 0., 0.),
+                        'lbj': (0., 100., 0.)}.items():
+        point = notch_project.front.hardpoints[key]
+        point.x, point.y, point.z = coords
+    notch_assembly = make_scheme_arm_assembly(notch_project, 10., 2.,
+                                              {'axis': 'x', 'outer_radius_mm': 14.,
+                                               'bore_radius_mm': 7., 'length_mm': 24.})
+    notch = TubeNotchPreviewJob().run(notch_assembly, 'tube_front', 'housing_front')
+    _require(notch.before.bounds_mm == notch.after.bounds_mm and
+             any(a != b for a, b in zip(notch.before.views, notch.after.views, strict=True)),
+             "В собранном приложении недоступен предварительный просмотр подрезки")
 
     # Искусственная поверхность с единственным круговым контуром, как отдельный
     # тест наличия кода восстановления в собранной программе.

@@ -47,6 +47,7 @@ from .cad_assembly_projection import CadAssemblyProjectionView
 from .controller import AppController
 from .kim_scheme_arm_dialog import BushingParametersDialog
 from .scheme_assembly_views import SchemeAssemblyViews
+from .tube_notch_preview import TubeNotchPreviewView
 from .weldment_3d import Weldment3D
 
 
@@ -242,6 +243,10 @@ class SchemeArmAssemblyDialog(QDialog):
             self.tabs, is_current=lambda candidate: candidate == self.document and
             assembly_snapshot_fingerprint(candidate) == assembly_snapshot_fingerprint(self.document))
         self.tabs.addTab(self.cad_views, 'CAD-проекции — предварительно')
+        self.notch_preview = TubeNotchPreviewView(
+            self.tabs, is_current=lambda candidate: candidate == self.document and
+            assembly_snapshot_fingerprint(candidate) == assembly_snapshot_fingerprint(self.document))
+        self.tabs.addTab(self.notch_preview, 'Подрезка — предварительно')
         self.material_estimate = AssemblyMaterialEstimate(
             self.tabs, is_current=lambda candidate: candidate == self.document and
             assembly_snapshot_fingerprint(candidate) == assembly_snapshot_fingerprint(self.document))
@@ -305,6 +310,7 @@ class SchemeArmAssemblyDialog(QDialog):
     def _show_document(self) -> None:
         self.views.set_document(self.document)
         self.cad_views.set_document(self.document)
+        self.notch_preview.set_document(self.document)
         self.material_estimate.set_document(self.document)
         project = Project.from_dict(self.document['scheme'])
         geometry = self.document['parts'][0]['geometry']
@@ -554,12 +560,14 @@ class SchemeArmAssemblyDialog(QDialog):
         return answer == QMessageBox.StandardButton.Yes and self.document == original
 
     def reject(self) -> None:
-        if self._confirm_close() and self.three_d.shutdown() and self.cad_views.shutdown():
+        if (self._confirm_close() and self.three_d.shutdown() and self.cad_views.shutdown() and
+                self.notch_preview.shutdown()):
             self.views.shutdown()
             super().reject()
 
     def closeEvent(self, event: QCloseEvent) -> None:
-        if self._confirm_close() and self.three_d.shutdown() and self.cad_views.shutdown():
+        if (self._confirm_close() and self.three_d.shutdown() and self.cad_views.shutdown() and
+                self.notch_preview.shutdown()):
             self.views.shutdown()
             super().reject()
             event.accept()
