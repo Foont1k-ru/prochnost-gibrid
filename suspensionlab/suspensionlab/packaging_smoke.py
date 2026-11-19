@@ -83,6 +83,7 @@ def run_cad_check() -> None:
     from .core.cad_recovery import recover_revolution_face
     from .core.cad_transport import CadJob
     from .core.cad_tube_notch_job import TubeNotchPreviewJob
+    from .core.cad_tube_notch_sequence_job import SequencePreviewJob
     from .export.cad_assembly_svg import write_new_projection_svg
     from .model.assembly_snapshot_fingerprint import assembly_snapshot_fingerprint
     from .model.entities import Project
@@ -122,6 +123,10 @@ def run_cad_check() -> None:
     _require(tube_notch.before.bounds_mm == tube_notch.after.bounds_mm and
              any(a != b for a, b in zip(tube_notch.before.views, tube_notch.after.views, strict=True)),
              "В собранном приложении недоступен предварительный просмотр подрезки по другой трубе")
+    sequence = SequencePreviewJob().run(notch_assembly, 'tube_front', ['housing_front', 'tube_rear'])
+    _require(sequence.before.bounds_mm == sequence.after.bounds_mm and
+             any(a != b for a, b in zip(sequence.before.views, sequence.after.views, strict=True)),
+             "В собранном приложении недоступен предварительный просмотр нескольких резов")
 
     # Искусственная поверхность с единственным круговым контуром, как отдельный
     # тест наличия кода восстановления в собранной программе.

@@ -45,6 +45,10 @@ def main() -> int:
         from suspensionlab.core.cad_assembly_projection_worker import main as projection_main
 
         return projection_main(sys.argv[2:])
+    if 7 <= len(sys.argv) <= 10 and sys.argv[1] == "--tube-notch-sequence-worker":
+        from suspensionlab.core.cad_tube_notch_sequence_worker import main as sequence_main
+
+        return sequence_main(sys.argv[2:])
     if len(sys.argv) == 7 and sys.argv[1] == "--tube-notch-worker":
         from suspensionlab.core.cad_tube_notch_worker import main as notch_main
 

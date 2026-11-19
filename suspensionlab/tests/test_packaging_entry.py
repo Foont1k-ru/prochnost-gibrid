@@ -119,3 +119,15 @@ def test_assembly_projection_worker_is_dispatched_before_gui(monkeypatch) -> Non
     monkeypatch.setitem(sys.modules, 'suspensionlab.core.cad_assembly_projection_worker', worker)
     monkeypatch.setattr(sys, 'argv', ['app', '--assembly-projection-worker', 'source', 'output', 'report'])
     assert packaging_entry.main() == 19 and called == [['source', 'output', 'report']]
+
+
+def test_sequence_worker_routes_one_to_four_cutters_before_gui(monkeypatch) -> None:
+    worker = ModuleType('suspensionlab.core.cad_tube_notch_sequence_worker')
+    called: list[list[str]] = []
+    worker.main = lambda args: called.append(args) or 29  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, 'suspensionlab.core.cad_tube_notch_sequence_worker', worker)
+    cutters = ['housing_front', 'housing_rear', 'ball_plate', 'tube_rear']
+    for count in range(1, 5):
+        args = ['source', 'output', 'report', 'tube_front', *cutters[:count]]
+        monkeypatch.setattr(sys, 'argv', ['app', '--tube-notch-sequence-worker', *args])
+        assert packaging_entry.main() == 29 and called[-1] == args

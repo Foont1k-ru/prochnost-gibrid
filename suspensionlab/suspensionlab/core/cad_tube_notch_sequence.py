@@ -51,24 +51,7 @@ def notch_tube_sequence(document: dict[str, Any], tube_id: str, cutter_ids: list
     Это внутренний CAD-код: использовать только в изолированном процессе.
     """
     snapshot = deepcopy(document)
-    validate_scheme_arm_assembly(snapshot)
-    if tube_id not in TUBES:
-        raise TubeNotchError('unsupported_pair')
-    if type(cutter_ids) not in (list, tuple) or not 1 <= len(cutter_ids) <= MAX_CUTS:
-        raise TubeNotchError('invalid_sequence')
-    order = tuple(cutter_ids)
-    seen: set[str] = set()
-    # Fail before doing any CAD work for invalid or unavailable selections.
-    for index, cutter in enumerate(order):
-        if type(cutter) is not str or cutter not in CUTTERS:
-            raise TubeNotchSequenceError('unsupported_pair', index, str(cutter))
-        if cutter == tube_id:
-            raise TubeNotchSequenceError('same_tube', index, cutter)
-        if cutter in seen:
-            raise TubeNotchSequenceError('duplicate_cutter', index, cutter)
-        if cutter == 'ball_plate' and snapshot['version'] != '0.16':
-            raise TubeNotchSequenceError('missing_plate', index, cutter)
-        seen.add(cutter)
+    order = validate_notch_sequence(snapshot, tube_id, cutter_ids)
 
     current = build_part(snapshot['parts'][TUBES.index(tube_id)])
     steps: list[NotchStep] = []
@@ -107,3 +90,28 @@ def notch_tube_sequence(document: dict[str, Any], tube_id: str, cutter_ids: list
         if not 0 <= remaining <= tolerance:
             raise TubeNotchSequenceError('invalid_result', index, order[index])
     return TubeNotchSequence(tube_id, current, tuple(steps))
+
+
+def validate_notch_sequence(document: dict[str, Any], tube_id: str, cutter_ids: list[str] | tuple[str, ...]
+                            ) -> tuple[str, ...]:
+    """Проверить выбор целиком до запуска CAD; порядок важен."""
+    validate_scheme_arm_assembly(document)
+    if tube_id not in TUBES:
+        raise TubeNotchError('unsupported_pair')
+    if type(cutter_ids) not in (list, tuple) or not 1 <= len(cutter_ids) <= MAX_CUTS:
+        raise TubeNotchError('invalid_sequence')
+    order = tuple(cutter_ids)
+    seen: set[str] = set()
+    # Fail before doing any CAD work for invalid or unavailable selections.
+    for index, cutter in enumerate(order):
+        if type(cutter) is not str or cutter not in CUTTERS:
+            raise TubeNotchSequenceError('unsupported_pair', index, str(cutter))
+        if cutter == tube_id:
+            raise TubeNotchSequenceError('same_tube', index, cutter)
+        if cutter in seen:
+            raise TubeNotchSequenceError('duplicate_cutter', index, cutter)
+        if cutter == 'ball_plate' and document['version'] != '0.16':
+            raise TubeNotchSequenceError('missing_plate', index, cutter)
+        seen.add(cutter)
+
+    return order
