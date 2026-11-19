@@ -180,3 +180,38 @@ def test_isolated_plate_preview_and_missing_plate():
     for candidate, reason in ((no_overlap, 'no_overlap'), (split, 'empty_or_split')):
         with pytest.raises(CadPreviewError, match=reason):
             TubeNotchPreviewJob().run(candidate, 'tube_front', 'ball_plate', timeout=60)
+
+
+def test_tube_self_cut_is_rejected_without_starting_process(monkeypatch):
+    from suspensionlab.core import cad_tube_notch_job
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError('same-tube cut must not start a worker')
+    monkeypatch.setattr(cad_tube_notch_job.subprocess, 'Popen', forbidden)
+    for tube in ('tube_front', 'tube_rear'):
+        with pytest.raises(CadPreviewError, match='same_tube'):
+            TubeNotchPreviewJob().run(document(), tube, tube)
+
+
+@pytest.mark.parametrize(('tube', 'cutter'), [('tube_front', 'tube_rear'), ('tube_rear', 'tube_front')])
+def test_isolated_tube_to_tube_preview(tube, cutter):
+    pytest.importorskip('OCP', reason='Опциональное CAD-ядро', exc_type=ImportError)
+    doc = document()
+    original = deepcopy(doc)
+    result = TubeNotchPreviewJob().run(doc, tube, cutter, timeout=60)
+    assert result.before.bounds_mm == result.after.bounds_mm
+    assert all(result.before.views) and all(result.after.views)
+    assert any(a != b for a, b in zip(result.before.views, result.after.views, strict=True))
+    assert doc == original
+
+
+def test_isolated_tube_to_tube_refuses_butt_contact():
+    pytest.importorskip('OCP', reason='Опциональное CAD-ядро', exc_type=ImportError)
+    project = Project.create_default()
+    for code, xyz in {'lca_f_in': (0, 0, 0), 'lca_r_in': (0, 200, 0), 'lbj': (0, 100, 0)}.items():
+        point = project.front.hardpoints[code]
+        point.x, point.y, point.z = xyz
+    doc = make_scheme_arm_assembly(project, 10, 2, {'axis': 'x', 'outer_radius_mm': 14,
+                                                      'bore_radius_mm': 7, 'length_mm': 24})
+    with pytest.raises(CadPreviewError, match='no_overlap'):
+        TubeNotchPreviewJob().run(doc, 'tube_front', 'tube_rear', timeout=60)

@@ -158,3 +158,69 @@ def test_plate_absence_tangency_and_split_rejected():
         notch_tube_against_plate(plate_document('y', (0, -50, 0), hole=5, thickness=500), 'tube_front')
     with pytest.raises(TubeNotchError, match='unsupported_pair'):
         notch_tube_against_plate(plate_document(), 'housing_front')
+
+
+def test_tube_cut_uses_finite_outer_envelope_not_hollow_material():
+    from suspensionlab.core.cad_tube_notch import notch_tube_against_tube
+
+    # Front tube lies on Y, rear tube on X; the two share their final endpoint.
+    doc = document(rear=(100, 100, 0))
+    before = deepcopy(doc)
+    result = notch_tube_against_tube(doc, 'tube_front', 'tube_rear')
+    assert doc == before
+    assert (result.tube_id, result.cutter_id) == ('tube_front', 'tube_rear')
+    assert BRepCheck_Analyzer(result.shape).IsValid()
+    # (9, 95, 0) is within the wall of the target but also in the bore of
+    # the cutter (distance 5 from its axis); that material must be removed.
+    for point, expected in [((9, 95, 0), TopAbs_OUT), ((-9, 95, 0), TopAbs_IN),
+                            ((9, 80, 0), TopAbs_IN)]:
+        assert BRepClass3d_SolidClassifier(result.shape, gp_Pnt(*point), 1e-7).State() == expected
+    envelope = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(100, 100, 0), gp_Dir(-1, 0, 0)), 10, 100).Shape()
+    intersection = BRepAlgoAPI_Common(result.shape, envelope)
+    assert intersection.IsDone() and volume(intersection.Shape()) == pytest.approx(0, abs=1e-5)
+    assert result.original_volume_mm3 == pytest.approx(math.pi * (10**2 - 8**2) * 100)
+    assert 0 < result.removed_volume_mm3 < result.original_volume_mm3
+
+
+@pytest.mark.parametrize(('tube', 'cutter'), [('tube_front', 'tube_rear'), ('tube_rear', 'tube_front')])
+@pytest.mark.parametrize(('rear', 'outer'), [((100, 100, 0), (0, 100, 0)), ((100, 0, 0), (35, 100, 40))])
+def test_cut_both_tube_directions_with_different_diameters(tube, cutter, rear, outer):
+    from suspensionlab.core.cad_tube_notch import notch_tube_against_tube
+    from suspensionlab.model.scheme_arm_assembly import edit_assembly_part
+
+    doc = edit_assembly_part(document(rear=rear, outer=outer), 'tube_rear',
+                             {'radius_mm': 7, 'wall_mm': 1.5})
+    original = deepcopy(doc)
+    result = notch_tube_against_tube(doc, tube, cutter)
+    assert doc == original and BRepCheck_Analyzer(result.shape).IsValid()
+    assert result.cutter_id == cutter and result.tube_id == tube
+    assert result.remaining_volume_mm3 > 0 and result.removed_volume_mm3 > 0
+    assert result.original_volume_mm3 == pytest.approx(result.remaining_volume_mm3 + result.removed_volume_mm3)
+
+
+def test_tube_cut_rejects_self_butt_contact_and_fully_removed_tube():
+    from suspensionlab.core.cad_tube_notch import notch_tube_against_tube
+
+    doc = document()
+    original = deepcopy(doc)
+    with pytest.raises(TubeNotchError, match='same_tube'):
+        notch_tube_against_tube(doc, 'tube_front', 'tube_front')
+    with pytest.raises(TubeNotchError, match='unsupported_pair'):
+        notch_tube_against_tube(doc, 'tube_front', 'ball_plate')
+    # The two straight tube endpoints meet at y=100, but have no volume in common.
+    with pytest.raises(TubeNotchError, match='no_overlap'):
+        notch_tube_against_tube(document(rear=(0, 200, 0)), 'tube_front', 'tube_rear')
+    # The shorter coaxial target is entirely within the longer cutter envelope.
+    with pytest.raises(TubeNotchError, match='empty_or_split'):
+        notch_tube_against_tube(document(rear=(0, -100, 0)), 'tube_front', 'tube_rear')
+    assert doc == original
+
+
+def test_tube_cut_does_not_extend_the_cutter_beyond_its_end():
+    from suspensionlab.core.cad_tube_notch import notch_tube_against_tube
+
+    # Rear occupies y=50..100, front y=0..100. Only that finite half is removed.
+    result = notch_tube_against_tube(document(rear=(0, 50, 0)), 'tube_front', 'tube_rear')
+    assert BRepClass3d_SolidClassifier(result.shape, gp_Pnt(9, 25, 0), 1e-7).State() == TopAbs_IN
+    assert BRepClass3d_SolidClassifier(result.shape, gp_Pnt(9, 75, 0), 1e-7).State() == TopAbs_OUT
+    assert result.removed_volume_mm3 == pytest.approx(math.pi * (10**2 - 8**2) * 50, rel=1e-7)

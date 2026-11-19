@@ -80,12 +80,12 @@ class TubeNotchPreviewView(QWidget):
         self._timer.setInterval(250)
         self._timer.timeout.connect(self._start)
         layout = QVBoxLayout(self)
-        note = QLabel('Экспериментальная подрезка одной прямой трубы: корпус режет сплошным наружным '
-                      'цилиндром, пластина — собственным конечным телом с отверстием. Труба может остаться '
-                      'внутри отверстия пластины; проход крепежа не проверяется. Показана только выбранная '
-                      'пара. Нулевой зазор; детали не продлеваются. Линии приближённые: пересечения могут '
-                      'отображаться неполно. Это не проверка сварки, монтажа или прочности; '
-                      'сборка и .kim не меняются.')
+        note = QLabel('Экспериментальная подрезка одной прямой трубы: корпус или другая труба режет '
+                      'сплошным наружным цилиндром, пластина — собственным телом с отверстием. '
+                      'Труба может остаться внутри отверстия пластины; проход крепежа не проверяется. '
+                      'Показана только выбранная пара, режущая деталь не меняется. Нулевой зазор; '
+                      'детали не продлеваются. Линии приближённые: пересечения могут отображаться неполно. '
+                      'Это не проверка сварки, монтажа или прочности; сборка и .kim не меняются.')
         note.setWordWrap(True)
         layout.addWidget(note)
         form = QFormLayout()
@@ -97,7 +97,9 @@ class TubeNotchPreviewView(QWidget):
         self.housing.addItem('Передний корпус', 'housing_front')
         self.housing.addItem('Задний корпус', 'housing_rear')
         self.housing.addItem('Пластина у шаровой (если добавлена)', 'ball_plate')
-        form.addRow('Режущая деталь', self.housing)
+        self.housing.addItem('Передняя труба (наружный цилиндр)', 'tube_front')
+        self.housing.addItem('Задняя труба (наружный цилиндр)', 'tube_rear')
+        form.addRow('Режущая деталь (не изменяется)', self.housing)
         self.plane = QComboBox(self)
         for plane in ('XY', 'XZ', 'YZ'):
             self.plane.addItem(plane, plane)
@@ -151,6 +153,8 @@ class TubeNotchPreviewView(QWidget):
             self.status.setText('Выключено. Для построения требуется CAD-ядро.')
         elif self._document is None or self._fingerprint is None:
             self.status.setText('Снимок сборки недоступен или некорректен.')
+        elif self.tube.currentData() == self.housing.currentData():
+            self.status.setText('Выберите другую режущую деталь: нельзя подрезать трубу самой собой.')
         else:
             self._pending = (deepcopy(self._document), str(self.tube.currentData()), str(self.housing.currentData()))
             self.status.setText('Старый вид очищен. Подрезка строится по текущему снимку…')
@@ -195,6 +199,7 @@ class TubeNotchPreviewView(QWidget):
             return
         reasons = {'no_overlap': 'труба и режущий объём выбранной детали не пересекаются',
                    'missing_plate': 'пластина не добавлена в сборку',
+                   'same_tube': 'нельзя подрезать трубу самой собой',
                    'invalid_cutter': 'режущая деталь не прошла геометрическую проверку',
                    'empty_or_split': 'подрезка удаляет трубу или разделяет её на части',
                    'invalid_result': 'результат не прошёл геометрическую проверку',

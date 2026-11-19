@@ -5,13 +5,13 @@ from typing import Any
 
 from .cad_assembly_projection import bounds_for_shape, project_shape
 from .cad_kim_prototype import _place_scheme_arm_housing, _place_scheme_arm_plate, build_part
-from .cad_tube_notch import notch_tube_against_housing, notch_tube_against_plate
+from .cad_tube_notch import notch_tube_against_housing, notch_tube_against_plate, notch_tube_against_tube
 
 
 def project_tube_notch(document: dict[str, Any], tube_id: str, cutter_id: str) -> dict[str, Any]:
     """Изолированная пара до/после; HLR может не показать все пересечения.
 
-    Корпус режет наружным цилиндром; пластина — собственным телом с отверстием.
+    Корпус и труба режут наружным цилиндром; пластина — телом с отверстием.
     """
     from OCP.BRep import BRep_Builder
     from OCP.TopoDS import TopoDS_Compound
@@ -19,6 +19,9 @@ def project_tube_notch(document: dict[str, Any], tube_id: str, cutter_id: str) -
     if cutter_id == 'ball_plate':
         result = notch_tube_against_plate(document, tube_id)
         cutting_part = _place_scheme_arm_plate(document)
+    elif cutter_id in ('tube_front', 'tube_rear'):
+        result = notch_tube_against_tube(document, tube_id, cutter_id)
+        cutting_part = build_part(document['parts'][('tube_front', 'tube_rear').index(cutter_id)])
     else:
         result = notch_tube_against_housing(document, tube_id, cutter_id)
         housing_index = ('housing_front', 'housing_rear').index(cutter_id)

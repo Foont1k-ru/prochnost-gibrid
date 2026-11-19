@@ -116,6 +116,10 @@ def run_cad_check() -> None:
     _require(plate_notch.before.bounds_mm == plate_notch.after.bounds_mm and
              any(a != b for a, b in zip(plate_notch.before.views, plate_notch.after.views, strict=True)),
              "В собранном приложении недоступен предварительный просмотр подрезки по пластине")
+    tube_notch = TubeNotchPreviewJob().run(notch_assembly, 'tube_front', 'tube_rear')
+    _require(tube_notch.before.bounds_mm == tube_notch.after.bounds_mm and
+             any(a != b for a, b in zip(tube_notch.before.views, tube_notch.after.views, strict=True)),
+             "В собранном приложении недоступен предварительный просмотр подрезки по другой трубе")
 
     # Искусственная поверхность с единственным круговым контуром, как отдельный
     # тест наличия кода восстановления в собранной программе.

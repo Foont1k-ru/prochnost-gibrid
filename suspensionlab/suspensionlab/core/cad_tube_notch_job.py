@@ -48,8 +48,11 @@ class TubeNotchPreviewJob:
     def run(self, document: dict[str, Any], tube: str, housing: str, *, timeout: float = 90) -> TubeNotchPreview:
         if self._cancelled.is_set():
             raise CadPreviewError('cancelled')
-        if tube not in ('tube_front', 'tube_rear') or housing not in ('housing_front', 'housing_rear', 'ball_plate'):
+        if (tube not in ('tube_front', 'tube_rear') or
+                housing not in ('housing_front', 'housing_rear', 'ball_plate', 'tube_front', 'tube_rear')):
             raise CadPreviewError('unsupported_pair')
+        if tube == housing:
+            raise CadPreviewError('same_tube')
         with tempfile.TemporaryDirectory(prefix='suspension-notch-') as directory:
             path = Path(directory)
             source, output, report = path / 'snapshot.kima', path / 'preview.json', path / 'report.json'
@@ -93,7 +96,7 @@ class TubeNotchPreviewJob:
                     known = {'missing_cad', 'no_shape', 'projection', 'coordinates', 'limit', 'unexpected',
                              'no_overlap', 'empty_or_split', 'invalid_result', 'invalid_tube', 'invalid_volume',
                              'intersection_failed', 'cut_failed', 'unsupported_pair', 'missing_plate',
-                             'invalid_cutter'}
+                             'invalid_cutter', 'same_tube'}
                     reason = state.get('code')
                     raise CadPreviewError(reason if isinstance(reason, str) and reason in known else 'crash')
                 if not output.is_file() or output.stat().st_size > 2 * MAX_OUTPUT_BYTES:

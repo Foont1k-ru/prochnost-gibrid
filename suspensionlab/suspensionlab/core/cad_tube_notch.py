@@ -1,4 +1,4 @@
-"""Экспериментальная подрезка трубы по корпусу втулки или пластине.
+"""Экспериментальная подрезка трубы по корпусу, пластине или другой трубе.
 
 Это только CAD-прототип; исходные .kim/.kima не изменяются и готовая деталь
 не создаётся. Выбор пары выполняет вызывающая сторона, не алгоритм.
@@ -80,6 +80,34 @@ def notch_tube_against_plate(document: dict[str, Any], tube_id: str) -> TubeNotc
         raise TubeNotchError('missing_plate')
     tube = build_part(document['parts'][('tube_front', 'tube_rear').index(tube_id)])
     return _cut_tube(tube, _place_scheme_arm_plate(document), tube_id, 'ball_plate')
+
+
+def notch_tube_against_tube(document: dict[str, Any], tube_id: str, cutter_id: str) -> TubeNotch:
+    """Вычесть конечный сплошной наружный цилиндр другой прямой трубы.
+
+    Режущая труба остаётся полой в отображении, но используется её наружный
+    объём: материал подрезаемой трубы не должен заходить внутрь её отверстия.
+    Без продления труб и зазора; рассматривается только одна явно выбранная пара.
+    """
+    validate_scheme_arm_assembly(document)
+    tubes = ('tube_front', 'tube_rear')
+    if tube_id not in tubes or cutter_id not in tubes:
+        raise TubeNotchError('unsupported_pair')
+    if tube_id == cutter_id:
+        raise TubeNotchError('same_tube')
+
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder
+    from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt
+
+    target = build_part(document['parts'][tubes.index(tube_id)])
+    geometry = document['parts'][tubes.index(cutter_id)]['geometry']
+    points = geometry['source']['coordinates_mm']
+    start = points[0 if geometry['leg'] == 'front' else 1]
+    end = points[2]
+    direction = [float(end[i]) - float(start[i]) for i in range(3)]
+    envelope = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(*map(float, start)), gp_Dir(*direction)),
+                                        float(geometry['radius_mm']), math.dist(start, end)).Shape()
+    return _cut_tube(target, envelope, tube_id, cutter_id)
 
 
 def _cut_tube(tube: Any, cutter: Any, tube_id: str, cutter_id: str) -> TubeNotch:

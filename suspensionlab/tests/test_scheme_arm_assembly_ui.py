@@ -1108,3 +1108,54 @@ def test_tube_notch_plate_selection_and_removal_clears_stale_result(qtbot, monke
     d._saved = deepcopy(d.document)
     d.close()
     assert view._closed
+
+
+def test_tube_to_tube_selection_prevents_self_cut_and_ignores_old_result(qtbot, monkeypatch):
+    from threading import Event
+
+    from suspensionlab.core.cad_assembly_projection_job import CadAssemblyProjection
+    from suspensionlab.core.cad_tube_notch_job import TubeNotchPreview
+    from suspensionlab.ui import tube_notch_preview
+
+    entered, release = Event(), Event()
+    calls = []
+    projection = CadAssemblyProjection((((0., 0., 1., 1.),),) * 3, (0., 0., 0., 2., 3., 4.))
+    result = TubeNotchPreview(projection, projection)
+
+    class FakeJob:
+        def run(self, doc, tube, cutter):
+            calls.append((tube, cutter))
+            if len(calls) == 1:
+                entered.set()
+                assert release.wait(5)
+            return result
+        def cancel(self):
+            pass
+
+    monkeypatch.setattr(tube_notch_preview, 'TubeNotchPreviewJob', FakeJob)
+    c = AppController()
+    d = SchemeArmAssemblyDialog(c, make_doc(c))
+    qtbot.addWidget(d)
+    monkeypatch.setattr(d, '_confirm_close', lambda: True)
+    original = deepcopy(d.document)
+    view = d.notch_preview
+    view.housing.setCurrentIndex(view.housing.findData('tube_rear'))
+    view.enable.setChecked(True)
+    view._timer.stop()
+    view._start()
+    try:
+        assert entered.wait(3)
+        view.tube.setCurrentIndex(view.tube.findData('tube_rear'))
+        assert view.canvas.result is None and 'самой собой' in view.status.text()
+        assert view._pending is None and not view.retry.isEnabled()
+    finally:
+        release.set()
+    qtbot.waitUntil(lambda: view._worker is None, timeout=5000)
+    assert view.canvas.result is None and calls == [('tube_front', 'tube_rear')]
+    view.housing.setCurrentIndex(view.housing.findData('tube_front'))
+    qtbot.waitUntil(lambda: view.canvas.result is result, timeout=5000)
+    assert calls == [('tube_front', 'tube_rear'), ('tube_rear', 'tube_front')]
+    assert d.document == original
+    d._saved = deepcopy(d.document)
+    d.close()
+    assert view._closed
