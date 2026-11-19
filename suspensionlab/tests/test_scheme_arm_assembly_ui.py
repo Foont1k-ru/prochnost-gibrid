@@ -985,7 +985,7 @@ def test_tube_notch_preview_stale_result_selection_and_shutdown(qtbot, monkeypat
     result = TubeNotchPreview(projection, projection, projection, projection)
 
     class FakeJob:
-        def run(self, doc, tube, housing):
+        def run(self, doc, tube, housing, *, radial_clearance_mm=0.):
             calls.append((tube, housing))
             if len(calls) == 1:
                 entered.set()
@@ -1034,7 +1034,7 @@ def test_tube_notch_preview_failure_does_not_modify_assembly(qtbot, monkeypatch)
     from suspensionlab.ui import tube_notch_preview
 
     class FakeJob:
-        def run(self, doc, tube, housing):
+        def run(self, doc, tube, housing, *, radial_clearance_mm=0.):
             raise CadPreviewError('no_overlap')
         def cancel(self):
             pass
@@ -1071,7 +1071,7 @@ def test_tube_notch_plate_selection_and_removal_clears_stale_result(qtbot, monke
     result = TubeNotchPreview(projection, projection, projection, projection)
 
     class FakeJob:
-        def run(self, doc, tube, cutter):
+        def run(self, doc, tube, cutter, *, radial_clearance_mm=0.):
             calls.append((doc['version'], tube, cutter))
             if len(calls) == 1:
                 entered.set()
@@ -1127,7 +1127,7 @@ def test_tube_to_tube_selection_prevents_self_cut_and_ignores_old_result(qtbot, 
     result = TubeNotchPreview(projection, projection, projection, projection)
 
     class FakeJob:
-        def run(self, doc, tube, cutter):
+        def run(self, doc, tube, cutter, *, radial_clearance_mm=0.):
             calls.append((tube, cutter))
             if len(calls) == 1:
                 entered.set()
@@ -1180,7 +1180,7 @@ def test_notch_only_tube_mode_switches_without_recalculation(qtbot, monkeypatch)
     calls = []
 
     class FakeJob:
-        def run(self, doc, tube, cutter):
+        def run(self, doc, tube, cutter, *, radial_clearance_mm=0.):
             calls.append((tube, cutter))
             return result
         def cancel(self):
@@ -1474,5 +1474,93 @@ def test_notch_sequence_stage_change_rejects_silently_changed_snapshot(qtbot, mo
     assert view.canvas.result is None and 'снимок изменился' in view.status.text()
     assert view.stage.count() == 0 and not view.stage.isEnabled()
     assert not view.volumes.text()
+    d._saved = deepcopy(d.document)
+    d.close()
+
+
+def test_housing_clearance_edit_cancels_old_preview_and_is_housing_only(qtbot, monkeypatch):
+    from threading import Event
+
+    from suspensionlab.core.cad_assembly_projection_job import CadAssemblyProjection
+    from suspensionlab.core.cad_tube_notch_job import TubeNotchPreview
+    from suspensionlab.ui import tube_notch_preview
+
+    entered, release = Event(), Event()
+    calls, cancelled = [], []
+    p = CadAssemblyProjection((((0., 0., 1., 1.),),) * 3, (0., 0., 0., 2., 3., 4.))
+    first = TubeNotchPreview(p, p, p, p)
+    second = TubeNotchPreview(p, p, p, p)
+    class FakeJob:
+        def run(self, doc, tube, cutter, *, radial_clearance_mm=0.):
+            calls.append((tube, cutter, radial_clearance_mm))
+            if len(calls) == 1:
+                entered.set()
+                assert release.wait(5)
+                return first
+            return second
+        def cancel(self):
+            cancelled.append(True)
+
+    monkeypatch.setattr(tube_notch_preview, 'TubeNotchPreviewJob', FakeJob)
+    c = AppController()
+    d = SchemeArmAssemblyDialog(c, make_doc(c))
+    qtbot.addWidget(d)
+    original = deepcopy(d.document)
+    view = d.notch_preview
+    assert view.clearance.text() == '0' and view.clearance.isEnabled()
+    view.enable.setChecked(True)
+    view._timer.stop()
+    view._start()
+    try:
+        assert entered.wait(3)
+        view.clearance.setText('1,5')
+        assert cancelled and view.canvas.result is None
+    finally:
+        release.set()
+    qtbot.waitUntil(lambda: view.canvas.result is second, timeout=5000)
+    assert calls[:2] == [('tube_front', 'housing_front', 0.), ('tube_front', 'housing_front', 1.5)]
+    assert 'Радиальный зазор корпуса: 1,5 мм' in view.status.text()
+    generation = view.generation
+    view.only_tube.setChecked(True)
+    view.plane.setCurrentIndex(1)
+    assert view.generation == generation and len(calls) == 2
+    view.housing.setCurrentIndex(view.housing.findData('tube_rear'))
+    assert not view.clearance.isEnabled() and view.canvas.result is None
+    qtbot.waitUntil(lambda: len(calls) == 3 and view.canvas.result is second, timeout=5000)
+    assert calls[-1] == ('tube_front', 'tube_rear', 0.) and 'зазор не применяется' in view.status.text()
+    view.housing.setCurrentIndex(view.housing.findData('housing_front'))
+    assert view.clearance.isEnabled() and view.clearance.text() == '1,5'
+    for bad in ('', '-1', 'nan', '101', '1,2,3'):
+        view.clearance.setText(bad)
+        assert view.canvas.result is None and view._pending is None and 'от 0 до 100' in view.status.text()
+    assert len(calls) == 3 and d.document == original
+    d._saved = deepcopy(d.document)
+    d.close()
+    assert view._closed
+
+
+def test_single_notch_view_mode_change_rejects_silently_changed_snapshot(qtbot, monkeypatch):
+    from suspensionlab.core.cad_assembly_projection_job import CadAssemblyProjection
+    from suspensionlab.core.cad_tube_notch_job import TubeNotchPreview
+    from suspensionlab.ui import tube_notch_preview
+
+    p = CadAssemblyProjection((((0., 0., 1., 1.),),) * 3, (0., 0., 0., 2., 3., 4.))
+    class FakeJob:
+        def run(self, doc, tube, cutter, *, radial_clearance_mm=0.):
+            return TubeNotchPreview(p, p, p, p)
+        def cancel(self):
+            pass
+    monkeypatch.setattr(tube_notch_preview, 'TubeNotchPreviewJob', FakeJob)
+    c = AppController()
+    d = SchemeArmAssemblyDialog(c, make_doc(c))
+    qtbot.addWidget(d)
+    view = d.notch_preview
+    view.enable.setChecked(True)
+    view._timer.stop()
+    view._start()
+    qtbot.waitUntil(lambda: view.canvas.result is not None, timeout=5000)
+    d.document['scheme']['front_axle']['arb']['enabled'] = 1
+    view.only_tube.setChecked(True)
+    assert view.canvas.result is None and 'снимок изменился' in view.status.text()
     d._saved = deepcopy(d.document)
     d.close()

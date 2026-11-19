@@ -224,3 +224,69 @@ def test_tube_cut_does_not_extend_the_cutter_beyond_its_end():
     assert BRepClass3d_SolidClassifier(result.shape, gp_Pnt(9, 25, 0), 1e-7).State() == TopAbs_IN
     assert BRepClass3d_SolidClassifier(result.shape, gp_Pnt(9, 75, 0), 1e-7).State() == TopAbs_OUT
     assert result.removed_volume_mm3 == pytest.approx(math.pi * (10**2 - 8**2) * 50, rel=1e-7)
+
+
+@pytest.mark.parametrize(('axis', 'tube', 'housing'), [
+    ('x', 'tube_front', 'housing_front'), ('y', 'tube_front', 'housing_front'),
+    ('z', 'tube_front', 'housing_front'), ('x', 'tube_rear', 'housing_rear'),
+])
+def test_radial_housing_clearance_matches_independent_finite_cylinder(axis, tube, housing):
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+
+    from suspensionlab.core.cad_kim_prototype import build_part
+
+    doc = set_assembly_axis(document(outer=(35, 100, 40)), axis)
+    original = deepcopy(doc)
+    zero = notch_tube_against_housing(doc, tube, housing)
+    explicit_zero = notch_tube_against_housing(doc, tube, housing, radial_clearance_mm=0)
+    gap = notch_tube_against_housing(doc, tube, housing, radial_clearance_mm=2.5)
+    assert zero.remaining_volume_mm3 == pytest.approx(explicit_zero.remaining_volume_mm3, rel=1e-10)
+    assert 0 < gap.remaining_volume_mm3 < zero.remaining_volume_mm3
+    points = doc['parts'][0]['geometry']['source']['coordinates_mm']
+    center = points[0 if housing == 'housing_front' else 1]
+    direction = {'x': (1, 0, 0), 'y': (0, 1, 0), 'z': (0, 0, 1)}[axis]
+    start = tuple(center[i] - direction[i] * 12 for i in range(3))
+    envelope = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(*start), gp_Dir(*direction)), 16.5, 24).Shape()
+    target = build_part(doc['parts'][0 if tube == 'tube_front' else 1])
+    reference = BRepAlgoAPI_Cut(target, envelope)
+    assert reference.IsDone()
+    assert volume(BRepAlgoAPI_Cut(reference.Shape(), gap.shape).Shape()) == pytest.approx(0, abs=1e-4)
+    assert volume(BRepAlgoAPI_Cut(gap.shape, reference.Shape()).Shape()) == pytest.approx(0, abs=1e-4)
+    assert doc == original
+
+
+def test_clearance_expands_radius_but_does_not_extend_cylinder_ends():
+    doc = document(length=10)
+    zero = notch_tube_against_housing(doc, 'tube_front', 'housing_front')
+    gap = notch_tube_against_housing(doc, 'tube_front', 'housing_front', radial_clearance_mm=4)
+    def state(result, xyz):
+        return BRepClass3d_SolidClassifier(result.shape, gp_Pnt(*xyz), 1e-7).State()
+    # This tube-wall point is within radius 18 but outside the finite x end at +5 mm.
+    assert state(zero, (9, 5, 0)) == state(gap, (9, 5, 0)) == TopAbs_IN
+    # This point lies inside the enlarged radial envelope, but outside the original cylinder.
+    assert state(zero, (0, 15, 9)) == TopAbs_IN
+    assert state(gap, (0, 15, 9)) == TopAbs_OUT
+
+
+def test_excessive_clearance_can_refuse_to_remove_entire_tube():
+    with pytest.raises(TubeNotchError, match='empty_or_split'):
+        notch_tube_against_housing(document(outer=(0, 30, 0), length=40), 'tube_front', 'housing_front',
+                                   radial_clearance_mm=100)
+
+
+def test_maximum_clearance_is_accepted_when_one_solid_remains():
+    doc = document(outer=(80, 80, 0))
+    result = notch_tube_against_housing(doc, 'tube_front', 'housing_front', radial_clearance_mm=100)
+    assert 0 < result.remaining_volume_mm3 < result.original_volume_mm3
+
+
+def test_positive_clearance_still_rejects_no_intersection():
+    doc = document()
+    with pytest.raises(TubeNotchError, match='no_overlap'):
+        notch_tube_against_housing(doc, 'tube_front', 'housing_rear', radial_clearance_mm=2)
+
+
+def test_positive_clearance_refuses_to_split_tube():
+    doc = document(rear=(0, 50, 0))
+    with pytest.raises(TubeNotchError, match='empty_or_split'):
+        notch_tube_against_housing(doc, 'tube_front', 'housing_rear', radial_clearance_mm=2)

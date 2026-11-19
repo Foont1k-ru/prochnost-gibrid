@@ -118,6 +118,10 @@ def run_cad_check() -> None:
     _require(notch.before.bounds_mm == notch.after.bounds_mm and
              any(a != b for a, b in zip(notch.before.views, notch.after.views, strict=True)),
              "В собранном приложении недоступен предварительный просмотр подрезки")
+    spaced_notch = TubeNotchPreviewJob().run(notch_assembly, 'tube_front', 'housing_front', radial_clearance_mm=2.)
+    _require(spaced_notch.tube_before == notch.tube_before and
+             spaced_notch.tube_after.views != notch.tube_after.views,
+             "В собранном приложении недоступен предварительный радиальный зазор корпуса")
     plate_assembly = set_assembly_plate(notch_assembly, make_plate(60., 60., 5., 9.5),
                                         {'normal': 'z', 'offset_mm': [0., 0., 0.]})
     plate_notch = TubeNotchPreviewJob().run(plate_assembly, 'tube_front', 'ball_plate')

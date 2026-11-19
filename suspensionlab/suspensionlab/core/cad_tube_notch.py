@@ -12,6 +12,8 @@ from typing import Any
 from ..model.scheme_arm_assembly import validate_scheme_arm_assembly
 from .cad_kim_prototype import _place_scheme_arm_plate, build_part
 
+MAX_RADIAL_CLEARANCE_MM = 100.0  # программный предел, не рекомендуемый технологический зазор
+
 
 class TubeNotchError(ValueError):
     """Подрезка не принята; code указывает причину, не инженерный допуск."""
@@ -19,6 +21,20 @@ class TubeNotchError(ValueError):
     def __init__(self, code: str) -> None:
         super().__init__(code)
         self.code = code
+
+
+def validate_notch_clearance(value: Any, cutter_id: str) -> float:
+    """Зазор задаётся только для корпуса; диапазон — защита программы, не допуск."""
+    try:
+        if type(value) not in (int, float) or not math.isfinite(value):
+            raise TubeNotchError('invalid_clearance')
+        clearance = float(value)
+    except OverflowError as error:
+        raise TubeNotchError('invalid_clearance') from error
+    if not 0 <= clearance <= MAX_RADIAL_CLEARANCE_MM or (clearance != 0 and cutter_id not in (
+            'housing_front', 'housing_rear')):
+        raise TubeNotchError('invalid_clearance')
+    return clearance
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,10 +52,11 @@ class TubeNotch:
         return self.cutter_id
 
 
-def notch_tube_against_housing(document: dict[str, Any], tube_id: str, housing_id: str) -> TubeNotch:
-    """Вычесть наружный конечный цилиндр корпуса из одной исходной трубы.
+def notch_tube_against_housing(document: dict[str, Any], tube_id: str, housing_id: str, *,
+                               radial_clearance_mm: float = 0.) -> TubeNotch:
+    """Вычесть конечный цилиндр корпуса с явно заданным радиальным увеличением.
 
-    Нулевой моделируемый зазор, без удлинения трубы или корпуса. Отверстие
+    Только радиальный зазор, без удлинения трубы или корпуса. Отверстие
     корпуса намеренно не используется как режущий объём: труба не должна
     оставаться внутри отверстия из-за вычитания лишь кольца материала корпуса.
     Нет скоса кромок, технологических или прочностных расчётов. Отклоняются
@@ -50,11 +67,12 @@ def notch_tube_against_housing(document: dict[str, Any], tube_id: str, housing_i
     if tube_id not in ('tube_front', 'tube_rear') or housing_id not in ('housing_front', 'housing_rear'):
         raise TubeNotchError('unsupported_pair')
 
+    clearance = validate_notch_clearance(radial_clearance_mm, housing_id)
     tube = build_part(document['parts'][('tube_front', 'tube_rear').index(tube_id)])
-    return _cut_tube(tube, _housing_envelope(document, housing_id), tube_id, housing_id)
+    return _cut_tube(tube, _housing_envelope(document, housing_id, radial_clearance_mm=clearance), tube_id, housing_id)
 
 
-def _housing_envelope(document: dict[str, Any], housing_id: str) -> Any:
+def _housing_envelope(document: dict[str, Any], housing_id: str, *, radial_clearance_mm: float = 0.) -> Any:
     from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder
     from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt
 
@@ -65,8 +83,9 @@ def _housing_envelope(document: dict[str, Any], housing_id: str) -> Any:
     direction = directions[document['axis']]
     length = float(geometry['length_mm'])
     start = [float(centre[i]) - direction[i] * length / 2 for i in range(3)]
+    clearance = validate_notch_clearance(radial_clearance_mm, housing_id)
     cutter = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(*start), gp_Dir(*direction)),
-                                      float(geometry['outer_radius_mm']), length).Shape()
+                                      float(geometry['outer_radius_mm']) + clearance, length).Shape()
     return cutter
 
 

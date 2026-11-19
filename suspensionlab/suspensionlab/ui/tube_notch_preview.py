@@ -7,9 +7,10 @@ from typing import Any
 
 from PySide6.QtCore import QLineF, QRectF, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QColor, QPainter, QPen
-from PySide6.QtWidgets import QCheckBox, QComboBox, QFormLayout, QLabel, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QCheckBox, QComboBox, QFormLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget
 
 from ..core.cad_transport import CadPreviewError
+from ..core.cad_tube_notch import TubeNotchError, validate_notch_clearance
 from ..core.cad_tube_notch_job import TubeNotchPreview, TubeNotchPreviewJob
 from ..model.assembly_snapshot_fingerprint import assembly_snapshot_fingerprint
 from ..model.cad_projection_layout import projection_layout
@@ -57,14 +58,15 @@ class _NotchReader(QThread):
     completed = Signal(int, object)
     failed = Signal(int, str)
 
-    def __init__(self, document: dict[str, Any], tube: str, housing: str, token: int, parent: QWidget) -> None:
+    def __init__(self, document: dict[str, Any], tube: str, housing: str, clearance: float,
+                 token: int, parent: QWidget) -> None:
         super().__init__(parent)
-        self.document, self.tube, self.housing, self.token = document, tube, housing, token
+        self.document, self.tube, self.housing, self.clearance, self.token = document, tube, housing, clearance, token
         self.job = TubeNotchPreviewJob()
 
     def run(self) -> None:
         try:
-            self.completed.emit(self.token, self.job.run(self.document, self.tube, self.housing))
+            self.completed.emit(self.token, self.job.run(self.document, self.tube, self.housing, radial_clearance_mm=self.clearance))
         except CadPreviewError as error:
             self.failed.emit(self.token, error.code)
         except Exception:
@@ -77,7 +79,7 @@ class TubeNotchPreviewView(QWidget):
         self._is_current = is_current
         self._document: dict[str, Any] | None = None
         self._fingerprint: str | None = None
-        self._pending: tuple[dict[str, Any], str, str] | None = None
+        self._pending: tuple[dict[str, Any], str, str, float] | None = None
         self._worker: _NotchReader | None = None
         self._closed = False
         self.generation = 0
@@ -89,8 +91,11 @@ class TubeNotchPreviewView(QWidget):
         note = QLabel('Экспериментальная подрезка одной прямой трубы: корпус или другая труба режет '
                       'сплошным наружным цилиндром, пластина — собственным телом с отверстием. '
                       'Труба может остаться внутри отверстия пластины; проход крепежа не проверяется. '
-                      'Показана только выбранная пара, режущая деталь не меняется. Нулевой зазор; '
-                      'детали не продлеваются. Линии приближённые: пересечения могут отображаться неполно. '
+                      'Показана только выбранная пара, режущая деталь не меняется. Только у корпуса '
+                      'можно задать радиальное увеличение режущего цилиндра; торцы не продлеваются. '
+                      'По торцам расстояние не обеспечивается; 0–100 мм — предел программы, не допуск. '
+                      'На виде показан сам корпус, а не увеличенный режущий объём. Для пластины и трубы '
+                      'зазор не поддерживается. Линии приближённые: пересечения могут отображаться неполно. '
                       'Это не проверка сварки, монтажа или прочности; сборка и .kim не меняются.')
         note.setWordWrap(True)
         layout.addWidget(note)
@@ -106,6 +111,10 @@ class TubeNotchPreviewView(QWidget):
         self.housing.addItem('Передняя труба (наружный цилиндр)', 'tube_front')
         self.housing.addItem('Задняя труба (наружный цилиндр)', 'tube_rear')
         form.addRow('Режущая деталь (не изменяется)', self.housing)
+        self.clearance = QLineEdit('0', self)
+        self.clearance.setMaxLength(32)
+        self.clearance.setAccessibleName('Радиальный зазор корпуса, мм')
+        form.addRow('Радиальный зазор корпуса, мм (0–100)', self.clearance)
         self.plane = QComboBox(self)
         for plane in ('XY', 'XZ', 'YZ'):
             self.plane.addItem(plane, plane)
@@ -127,6 +136,7 @@ class TubeNotchPreviewView(QWidget):
         self.enable.toggled.connect(self._schedule)
         self.tube.currentIndexChanged.connect(self._schedule)
         self.housing.currentIndexChanged.connect(self._schedule)
+        self.clearance.textChanged.connect(self._schedule)
         self.plane.currentIndexChanged.connect(self._change_plane)
         self.only_tube.toggled.connect(self._change_display)
         self.retry.clicked.connect(self._schedule)
@@ -145,6 +155,13 @@ class TubeNotchPreviewView(QWidget):
         result = self.canvas.result
         if result is None:
             return
+        try:
+            current = self._document is not None and self._is_current(self._document)
+        except (TypeError, ValueError, OverflowError, RecursionError):
+            current = False
+        if not current:
+            self._failed(self.generation, 'changed')
+            return
         before, after = ((result.tube_before, result.tube_after) if self.canvas.tube_only else
                          (result.before, result.after))
         mode = ('Показана только подрезаемая труба; режущая деталь скрыта.' if self.canvas.tube_only else
@@ -152,7 +169,10 @@ class TubeNotchPreviewView(QWidget):
         index = ('XY', 'XZ', 'YZ').index(self.canvas.plane)
         warning = (' На этой плоскости изменений не видно; попробуйте другую плоскость.'
                    if before.views[index] == after.views[index] else '')
-        self.status.setText(f'{mode} До и после — в одном масштабе; при переключении режима масштаб может '
+        cutter = str(self.housing.currentData())
+        gap = (f'Радиальный зазор корпуса: {self.clearance.text().strip()} мм; торцы не продлены. '
+               if cutter in ('housing_front', 'housing_rear') else 'Для этой детали зазор не применяется. ')
+        self.status.setText(gap + f'{mode} До и после — в одном масштабе; при переключении режима масштаб может '
                             f'измениться. Ничего не применено и не сохранено; это не проверка геометрии '
                             f'для изготовления, сварки или прочности.{warning}')
 
@@ -175,6 +195,14 @@ class TubeNotchPreviewView(QWidget):
         self.canvas.result = None
         self.canvas.update()
         self.retry.setEnabled(False)
+        cutter = str(self.housing.currentData())
+        is_housing = cutter in ('housing_front', 'housing_rear')
+        self.clearance.setEnabled(is_housing)
+        try:
+            gap = validate_notch_clearance(float(self.clearance.text().strip().replace(',', '.')) if is_housing else 0.,
+                                           cutter)
+        except (ValueError, OverflowError, TubeNotchError):
+            gap = None
         if self._worker is not None:
             self._worker.job.cancel()
         if self._closed:
@@ -183,19 +211,21 @@ class TubeNotchPreviewView(QWidget):
             self.status.setText('Выключено. Для построения требуется CAD-ядро.')
         elif self._document is None or self._fingerprint is None:
             self.status.setText('Снимок сборки недоступен или некорректен.')
+        elif gap is None:
+            self.status.setText('Укажите конечный радиальный зазор от 0 до 100 мм. Это программный предел, не допуск.')
         elif self.tube.currentData() == self.housing.currentData():
             self.status.setText('Выберите другую режущую деталь: нельзя подрезать трубу самой собой.')
         else:
-            self._pending = (deepcopy(self._document), str(self.tube.currentData()), str(self.housing.currentData()))
+            self._pending = (deepcopy(self._document), str(self.tube.currentData()), cutter, gap)
             self.status.setText('Старый вид очищен. Подрезка строится по текущему снимку…')
             self._timer.start()
 
     def _start(self) -> None:
         if self._closed or self._worker is not None or self._pending is None:
             return
-        document, tube, housing = self._pending
+        document, tube, housing, clearance = self._pending
         self._pending = None
-        worker = _NotchReader(document, tube, housing, self.generation, self)
+        worker = _NotchReader(document, tube, housing, clearance, self.generation, self)
         self._worker = worker
         worker.completed.connect(self._completed)
         worker.failed.connect(self._failed)
@@ -226,6 +256,7 @@ class TubeNotchPreviewView(QWidget):
         reasons = {'no_overlap': 'труба и режущий объём выбранной детали не пересекаются',
                    'missing_plate': 'пластина не добавлена в сборку',
                    'same_tube': 'нельзя подрезать трубу самой собой',
+                   'invalid_clearance': 'некорректный или неподдерживаемый зазор',
                    'invalid_cutter': 'режущая деталь не прошла геометрическую проверку',
                    'empty_or_split': 'подрезка удаляет трубу или разделяет её на части',
                    'invalid_result': 'результат не прошёл геометрическую проверку',

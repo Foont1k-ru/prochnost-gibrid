@@ -107,7 +107,7 @@ def test_tube_notch_worker_is_dispatched_before_gui(monkeypatch) -> None:
     called: list[list[str]] = []
     worker.main = lambda args: called.append(args) or 23  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, 'suspensionlab.core.cad_tube_notch_worker', worker)
-    args = ['source', 'output', 'report', 'tube_front', 'housing_front']
+    args = ['source', 'output', 'report', 'tube_front', 'housing_front', '1.5']
     monkeypatch.setattr(sys, 'argv', ['app', '--tube-notch-worker', *args])
     assert packaging_entry.main() == 23 and called == [args]
 

@@ -27,7 +27,7 @@ def projection():
 
 def test_parser_rejects_unsafe_or_inconsistent_data():
     valid = {'before': projection(), 'after': projection(),
-             'tube_before': projection(), 'tube_after': projection()}
+             'tube_before': projection(), 'tube_after': projection(), 'radial_clearance_mm': 0.}
     result = parse_notch_preview(valid)
     assert result.before.bounds_mm == result.after.bounds_mm
     assert result.tube_before.bounds_mm == result.tube_after.bounds_mm
@@ -37,7 +37,9 @@ def test_parser_rejects_unsafe_or_inconsistent_data():
     bad_lines['views']['XY'] = [[0, 0, 1, float('nan')]]
     for data in ({}, {'before': projection()}, {**valid, 'extra': 1},
                  {**valid, 'after': bad_bounds}, {**valid, 'after': bad_lines},
-                 {**valid, 'tube_after': bad_bounds}, {**valid, 'tube_after': bad_lines}):
+                 {**valid, 'tube_after': bad_bounds}, {**valid, 'tube_after': bad_lines},
+                 {**valid, 'radial_clearance_mm': True}, {**valid, 'radial_clearance_mm': float('nan')},
+                 {**valid, 'radial_clearance_mm': 0.2}):
         with pytest.raises(CadPreviewError, match='output'):
             parse_notch_preview(data)
 
@@ -82,7 +84,7 @@ def test_malformed_worker_output_rejected(monkeypatch):
         def poll(self):
             return 0
     def start(command, **_kwargs):
-        output, report = Path(command[-4]), Path(command[-3])
+        output, report = Path(command[-5]), Path(command[-4])
         report.write_text('{"status":"ok"}', encoding='utf-8')
         output.write_text('{}', encoding='utf-8')
         return Process()
@@ -244,3 +246,57 @@ def test_hidden_plate_cut_can_be_inspected_as_tube_only():
     assert any(a != b for a, b in zip(result.tube_before.views, result.tube_after.views, strict=True))
     # The comparison is genuinely for different displayed shapes, not the pair again.
     assert result.before.bounds_mm != result.tube_before.bounds_mm
+
+
+def test_clearance_validation_is_preflight_and_housing_only(monkeypatch):
+    from suspensionlab.core import cad_tube_notch_job
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError('invalid clearance must not start worker')
+    monkeypatch.setattr(cad_tube_notch_job.subprocess, 'Popen', forbidden)
+    for invalid in (-1, 100.001, float('nan'), float('inf'), float('-inf'), True, '1', None, 10**400):
+        with pytest.raises(CadPreviewError, match='invalid_clearance'):
+            TubeNotchPreviewJob().run(document(), 'tube_front', 'housing_front', radial_clearance_mm=invalid)
+    for cutter in ('ball_plate', 'tube_rear'):
+        with pytest.raises(CadPreviewError, match='invalid_clearance'):
+            TubeNotchPreviewJob().run(document(), 'tube_front', cutter, radial_clearance_mm=1)
+
+
+def test_preview_result_must_echo_requested_clearance():
+    valid = {'before': projection(), 'after': projection(), 'tube_before': projection(),
+             'tube_after': projection(), 'radial_clearance_mm': 1.25}
+    assert parse_notch_preview(valid, expected_clearance_mm=1.25)
+    for returned in (0, 2, True, '1.25', float('inf'), float('nan')):
+        with pytest.raises(CadPreviewError, match='output'):
+            parse_notch_preview({**valid, 'radial_clearance_mm': returned}, expected_clearance_mm=1.25)
+
+
+def test_worker_refuses_invalid_or_unsupported_clearance_without_output(tmp_path):
+    import json
+    import os
+    import sys
+
+    pytest.importorskip('OCP', reason='Опциональное CAD-ядро', exc_type=ImportError)
+    from suspensionlab.model.kim_format import write_document
+
+    source, output, report = tmp_path / 'in.kima', tmp_path / 'out.json', tmp_path / 'report.json'
+    write_document(source, 'assembly', document())
+    for cutter, gap in [('housing_front', '-1'), ('housing_front', 'nan'), ('housing_front', 'bad'),
+                        ('housing_front', '101'), ('ball_plate', '1'), ('tube_rear', '1')]:
+        process = subprocess.run([sys.executable, '-m', 'suspensionlab.core.cad_tube_notch_worker',
+                                  str(source), str(output), str(report), 'tube_front', cutter, gap],
+                                 env=os.environ.copy(), capture_output=True, timeout=30, check=False)
+        assert process.returncode != 0 and not output.exists()
+        assert json.loads(report.read_text(encoding='utf-8')) == {'status': 'error', 'code': 'invalid_clearance'}
+
+
+def test_real_isolated_preview_changes_with_housing_clearance():
+    pytest.importorskip('OCP', reason='Опциональное CAD-ядро', exc_type=ImportError)
+    doc = document()
+    original = deepcopy(doc)
+    zero = TubeNotchPreviewJob().run(doc, 'tube_front', 'housing_front', radial_clearance_mm=0, timeout=90)
+    clearance = TubeNotchPreviewJob().run(doc, 'tube_front', 'housing_front', radial_clearance_mm=2, timeout=90)
+    assert zero.before == clearance.before and zero.tube_before == clearance.tube_before
+    assert zero.tube_after.bounds_mm == clearance.tube_after.bounds_mm
+    assert zero.tube_after.views != clearance.tube_after.views
+    assert doc == original

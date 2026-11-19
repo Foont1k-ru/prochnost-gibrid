@@ -49,7 +49,7 @@ def main() -> int:
         from suspensionlab.core.cad_tube_notch_sequence_worker import main as sequence_main
 
         return sequence_main(sys.argv[2:])
-    if len(sys.argv) == 7 and sys.argv[1] == "--tube-notch-worker":
+    if len(sys.argv) == 8 and sys.argv[1] == "--tube-notch-worker":
         from suspensionlab.core.cad_tube_notch_worker import main as notch_main
 
         return notch_main(sys.argv[2:])
