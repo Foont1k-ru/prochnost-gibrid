@@ -36,10 +36,11 @@ class TubeNotchSequence:
     tube_id: str
     shape: Any
     steps: tuple[NotchStep, ...]
+    stage_shapes: tuple[Any, ...] = ()
 
 
-def notch_tube_sequence(document: dict[str, Any], tube_id: str, cutter_ids: list[str] | tuple[str, ...]
-                        ) -> TubeNotchSequence:
+def notch_tube_sequence(document: dict[str, Any], tube_id: str, cutter_ids: list[str] | tuple[str, ...], *,
+                        capture_stages: bool = False) -> TubeNotchSequence:
     """Последовательно вычесть выбранные детали из одной трубы в указанном порядке.
 
     Корпуса и вторая труба режут конечным наружным цилиндром, пластина — своим
@@ -48,7 +49,8 @@ def notch_tube_sequence(document: dict[str, Any], tube_id: str, cutter_ids: list
     должен удалять объём и оставлять одно валидное тело. Нет пересечения после
     предыдущих резов — отказ всей последовательности, а не тихий пропуск.
     Возвращается только полная цепочка; исходный документ и файлы не меняются.
-    Это внутренний CAD-код: использовать только в изолированном процессе.
+    При запросе промежуточных стадий их формы копируются до следующего реза,
+    но не возвращаются при отказе всей цепочки. Использовать только в изоляции.
     """
     snapshot = deepcopy(document)
     order = validate_notch_sequence(snapshot, tube_id, cutter_ids)
@@ -56,6 +58,7 @@ def notch_tube_sequence(document: dict[str, Any], tube_id: str, cutter_ids: list
     current = build_part(snapshot['parts'][TUBES.index(tube_id)])
     steps: list[NotchStep] = []
     cutters: list[Any] = []
+    stages: list[Any] = []
     for index, cutter_id in enumerate(order):
         try:
             if cutter_id in TUBES:
@@ -65,6 +68,13 @@ def notch_tube_sequence(document: dict[str, Any], tube_id: str, cutter_ids: list
             else:
                 cutter_shape = _housing_envelope(snapshot, cutter_id)
             result = _cut_tube(current, cutter_shape, tube_id, cutter_id)
+            if capture_stages:
+                from OCP.BRepBuilderAPI import BRepBuilderAPI_Copy
+
+                copied = BRepBuilderAPI_Copy(result.shape, True, False)
+                if not copied.IsDone() or copied.Shape().IsNull():
+                    raise TubeNotchError('invalid_result')
+                stages.append(copied.Shape())
         except TubeNotchError as error:
             raise TubeNotchSequenceError(error.code, index, cutter_id) from error
         except Exception as error:
@@ -89,7 +99,7 @@ def notch_tube_sequence(document: dict[str, Any], tube_id: str, cutter_ids: list
         remaining = float(properties.Mass())
         if not 0 <= remaining <= tolerance:
             raise TubeNotchSequenceError('invalid_result', index, order[index])
-    return TubeNotchSequence(tube_id, current, tuple(steps))
+    return TubeNotchSequence(tube_id, current, tuple(steps), tuple(stages))
 
 
 def validate_notch_sequence(document: dict[str, Any], tube_id: str, cutter_ids: list[str] | tuple[str, ...]

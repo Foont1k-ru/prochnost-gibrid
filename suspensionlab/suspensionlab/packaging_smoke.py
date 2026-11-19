@@ -124,7 +124,9 @@ def run_cad_check() -> None:
              any(a != b for a, b in zip(tube_notch.before.views, tube_notch.after.views, strict=True)),
              "В собранном приложении недоступен предварительный просмотр подрезки по другой трубе")
     sequence = SequencePreviewJob().run(notch_assembly, 'tube_front', ['housing_front', 'tube_rear'])
-    _require(sequence.before.bounds_mm == sequence.after.bounds_mm and
+    _require([stage.cutter_id for stage in sequence.stages] == ['housing_front', 'tube_rear'] and
+             all(stage.projection.bounds_mm == sequence.before.bounds_mm for stage in sequence.stages) and
+             sequence.before.bounds_mm == sequence.after.bounds_mm and
              any(a != b for a, b in zip(sequence.before.views, sequence.after.views, strict=True)),
              "В собранном приложении недоступен предварительный просмотр нескольких резов")
 

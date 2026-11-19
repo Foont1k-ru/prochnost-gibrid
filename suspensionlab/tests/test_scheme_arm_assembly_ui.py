@@ -1223,7 +1223,7 @@ def test_notch_sequence_order_changes_invalidate_stale_results(qtbot, monkeypatc
     from PySide6.QtCore import Qt
 
     from suspensionlab.core.cad_assembly_projection_job import CadAssemblyProjection
-    from suspensionlab.core.cad_tube_notch_sequence_job import SequencePreview
+    from suspensionlab.core.cad_tube_notch_sequence_job import SequencePreview, SequenceStagePreview
     from suspensionlab.ui import tube_notch_sequence_preview
 
     entered, release = Event(), Event()
@@ -1237,7 +1237,7 @@ def test_notch_sequence_order_changes_invalidate_stale_results(qtbot, monkeypatc
                 assert release.wait(5)
             bounds = (0., 0., 0., 2., 3., 4.) if cutters[0] == 'tube_rear' else (0., 0., 0., 9., 9., 9.)
             before = CadAssemblyProjection(lines, bounds)
-            return SequencePreview(before, before)
+            return SequencePreview(before, tuple(SequenceStagePreview(c, before) for c in cutters))
         def cancel(self):
             pass  # Force an obsolete reply after cancellation.
 
@@ -1313,7 +1313,7 @@ def test_notch_sequence_rejects_snapshot_changed_without_refresh(qtbot):
     from PySide6.QtCore import Qt
 
     from suspensionlab.core.cad_assembly_projection_job import CadAssemblyProjection
-    from suspensionlab.core.cad_tube_notch_sequence_job import SequencePreview
+    from suspensionlab.core.cad_tube_notch_sequence_job import SequencePreview, SequenceStagePreview
 
     c = AppController()
     d = SchemeArmAssemblyDialog(c, make_doc(c))
@@ -1325,7 +1325,7 @@ def test_notch_sequence_rejects_snapshot_changed_without_refresh(qtbot):
     token = view.generation
     d.document['scheme']['front_axle']['arb']['enabled'] = 1
     p = CadAssemblyProjection((((0., 0., 1., 1.),),) * 3, (0., 0., 0., 2., 3., 4.))
-    view._completed(token, SequencePreview(p, p))
+    view._completed(token, SequencePreview(p, (SequenceStagePreview('housing_front', p),)))
     assert view.canvas.result is None and 'снимок изменился' in view.status.text()
     d._saved = deepcopy(d.document)
     d.close()
@@ -1365,3 +1365,88 @@ def test_notch_sequence_shutdown_cancels_running_worker(qtbot, monkeypatch):
     finally:
         stopped.set()
         view.shutdown()
+
+
+def test_notch_sequence_switches_stages_without_new_calculation(qtbot, monkeypatch):
+    from PySide6.QtCore import Qt
+
+    from suspensionlab.core.cad_assembly_projection_job import CadAssemblyProjection
+    from suspensionlab.core.cad_tube_notch_sequence_job import SequencePreview, SequenceStagePreview
+    from suspensionlab.ui import tube_notch_sequence_preview
+
+    calls = []
+    bounds = (0., 0., 0., 2., 3., 4.)
+    before = CadAssemblyProjection((((0., 0., 1., 1.),),) * 3, bounds)
+    first = CadAssemblyProjection((((0., 1., 1., 0.),),) * 3, bounds)
+    final = CadAssemblyProjection((((0., 0., 1., 0.),),) * 3, bounds)
+    class FakeJob:
+        def run(self, doc, tube, cutters):
+            calls.append((tube, cutters))
+            return SequencePreview(before, (SequenceStagePreview(cutters[0], first),
+                                            SequenceStagePreview(cutters[1], final)))
+        def cancel(self):
+            pass
+
+    monkeypatch.setattr(tube_notch_sequence_preview, 'SequencePreviewJob', FakeJob)
+    c = AppController()
+    d = SchemeArmAssemblyDialog(c, make_doc(c))
+    qtbot.addWidget(d)
+    monkeypatch.setattr(d, '_confirm_close', lambda: True)
+    view = d.notch_sequence
+    d.tabs.setCurrentWidget(view)
+    d.show()
+    view.cutters.item(0).setCheckState(Qt.CheckState.Checked)
+    view.cutters.item(4).setCheckState(Qt.CheckState.Checked)
+    view.enable.setChecked(True)
+    view._timer.stop()
+    view._start()
+    qtbot.waitUntil(lambda: view.canvas.result is not None, timeout=5000)
+    assert view.stage.isEnabled() and view.stage.count() == 2 and view.stage.currentIndex() == 1
+    assert 'итог' in view.stage.currentText() and 'шага 2 из 2' in view.status.text()
+    assert view.canvas.result.after is final and view.canvas.after_title == 'Шаг 2'
+    final_image = view.canvas.grab().toImage()
+    generation = view.generation
+    view.stage.setCurrentIndex(0)
+    assert view.canvas.result.before is before and view.canvas.result.after is first
+    assert view.canvas.after_title == 'Шаг 1' and 'шага 1 из 2' in view.status.text()
+    assert 'Передний корпус' in view.status.text()
+    assert view.generation == generation and calls == [('tube_front', ('housing_front', 'tube_rear'))]
+    assert view.canvas.grab().toImage() != final_image
+    view.plane.setCurrentIndex(1)
+    assert view.generation == generation and view.canvas.plane == 'XZ'
+    view.enable.setChecked(False)
+    assert view.canvas.result is None and view.stage.count() == 0 and not view.stage.isEnabled()
+    d._saved = deepcopy(d.document)
+    d.close()
+
+
+def test_notch_sequence_stage_change_rejects_silently_changed_snapshot(qtbot, monkeypatch):
+    from PySide6.QtCore import Qt
+
+    from suspensionlab.core.cad_assembly_projection_job import CadAssemblyProjection
+    from suspensionlab.core.cad_tube_notch_sequence_job import SequencePreview, SequenceStagePreview
+    from suspensionlab.ui import tube_notch_sequence_preview
+
+    p = CadAssemblyProjection((((0., 0., 1., 1.),),) * 3, (0., 0., 0., 2., 3., 4.))
+    class FakeJob:
+        def run(self, doc, tube, cutters):
+            return SequencePreview(p, tuple(SequenceStagePreview(c, p) for c in cutters))
+        def cancel(self):
+            pass
+    monkeypatch.setattr(tube_notch_sequence_preview, 'SequencePreviewJob', FakeJob)
+    c = AppController()
+    d = SchemeArmAssemblyDialog(c, make_doc(c))
+    qtbot.addWidget(d)
+    view = d.notch_sequence
+    view.cutters.item(0).setCheckState(Qt.CheckState.Checked)
+    view.cutters.item(4).setCheckState(Qt.CheckState.Checked)
+    view.enable.setChecked(True)
+    view._timer.stop()
+    view._start()
+    qtbot.waitUntil(lambda: view.canvas.result is not None, timeout=5000)
+    d.document['scheme']['front_axle']['arb']['enabled'] = 1
+    view.stage.setCurrentIndex(0)
+    assert view.canvas.result is None and 'снимок изменился' in view.status.text()
+    assert view.stage.count() == 0 and not view.stage.isEnabled()
+    d._saved = deepcopy(d.document)
+    d.close()

@@ -63,6 +63,7 @@ class TubeNotchSequencePreviewView(QWidget):
         self._fingerprint: str | None = None
         self._pending: tuple[dict[str, Any], str, tuple[str, ...]] | None = None
         self._worker: _SequenceReader | None = None
+        self._preview: SequencePreview | None = None
         self._closed = False
         self.generation = 0
         self._timer = QTimer(self)
@@ -71,7 +72,7 @@ class TubeNotchSequencePreviewView(QWidget):
         self._timer.timeout.connect(self._start)
 
         layout = QVBoxLayout(self)
-        note = QLabel('Экспериментальный просмотр одной трубы до и после всех отмеченных резов. '
+        note = QLabel('Экспериментальный просмотр исходной трубы и результата после выбранного шага. '
                       'Режущие детали берутся из исходной сборки и не показаны; порядок — сверху вниз. '
                       'Корпуса и другая труба режут наружным конечным цилиндром, пластина — телом '
                       'с отверстием (труба может остаться в отверстии). Нулевой зазор, без продления. '
@@ -106,6 +107,11 @@ class TubeNotchSequencePreviewView(QWidget):
         buttons.addStretch(1)
         row.addLayout(buttons)
         layout.addLayout(row)
+        stage_form = QFormLayout()
+        self.stage = QComboBox(self)
+        self.stage.setEnabled(False)
+        stage_form.addRow('Показать трубу после шага', self.stage)
+        layout.addLayout(stage_form)
         self.enable = QCheckBox('Построить последовательность в фоне')
         layout.addWidget(self.enable)
         self.status = QLabel('Выключено. Для построения требуется CAD-ядро.')
@@ -122,6 +128,7 @@ class TubeNotchSequencePreviewView(QWidget):
         self.tube.currentIndexChanged.connect(self._schedule)
         self.enable.toggled.connect(self._schedule)
         self.plane.currentIndexChanged.connect(self._change_plane)
+        self.stage.currentIndexChanged.connect(self._change_stage)
         self.up.clicked.connect(lambda: self._move(-1))
         self.down.clicked.connect(lambda: self._move(1))
         self.retry.clicked.connect(self._schedule)
@@ -143,16 +150,37 @@ class TubeNotchSequencePreviewView(QWidget):
     def _change_plane(self, *_args: object) -> None:
         self.canvas.plane = str(self.plane.currentData())
         self.canvas.update()
+        self._change_stage()
+
+    def _change_stage(self, *_args: object) -> None:
+        result = self._preview
+        index = self.stage.currentIndex()
+        if result is None or not 0 <= index < len(result.stages):
+            return
+        try:
+            current = self._document is not None and self._is_current(self._document)
+        except (TypeError, ValueError, OverflowError, RecursionError):
+            current = False
+        if not current:
+            self._failed(self.generation, 'changed', None)
+            return
+        before, after = result.before, result.stages[index].projection
+        self.canvas.result = TubeNotchPreview(before, after, before, after)
+        self.canvas.after_title = f'Шаг {index + 1}'
+        self.canvas.update()
         self._display_status()
 
     def _display_status(self) -> None:
-        result = self.canvas.result
-        if result is None:
+        result, preview = self.canvas.result, self._preview
+        index = self.stage.currentIndex()
+        if result is None or preview is None or not 0 <= index < len(preview.stages):
             return
-        index = ('XY', 'XZ', 'YZ').index(self.canvas.plane)
+        plane = ('XY', 'XZ', 'YZ').index(self.canvas.plane)
         warning = (' На этой плоскости изменений не видно; попробуйте другую плоскость.'
-                   if result.before.views[index] == result.after.views[index] else '')
-        self.status.setText('Показана только выбранная труба до и после всех резов; режущие детали скрыты. '
+                   if result.before.views[plane] == result.after.views[plane] else '')
+        label = CUTTER_LABELS[preview.stages[index].cutter_id]
+        self.status.setText(f'Показана только выбранная труба: исходная и после шага {index + 1} из '
+                            f'{len(preview.stages)} ({label}); режущие детали скрыты. '
                             'Линии приближённые, часть геометрии может быть скрыта. '
                             'Ничего не применено и не сохранено.' + warning)
 
@@ -168,12 +196,22 @@ class TubeNotchSequencePreviewView(QWidget):
         self._document, self._fingerprint = deepcopy(document), code
         self._schedule()
 
+    def _clear_preview(self) -> None:
+        self._preview = None
+        was_blocked = self.stage.blockSignals(True)
+        try:
+            self.stage.clear()
+        finally:
+            self.stage.blockSignals(was_blocked)
+        self.stage.setEnabled(False)
+        self.canvas.result = None
+        self.canvas.update()
+
     def _schedule(self, *_args: object) -> None:
         self.generation += 1
         self._timer.stop()
         self._pending = None
-        self.canvas.result = None
-        self.canvas.update()
+        self._clear_preview()
         self.retry.setEnabled(False)
         if self._worker is not None:
             self._worker.job.cancel()
@@ -212,14 +250,25 @@ class TubeNotchSequencePreviewView(QWidget):
         if not current:
             self._failed(token, 'changed', None)
             return
-        if not isinstance(result, SequencePreview):
+        order = self._order()
+        if (not isinstance(result, SequencePreview) or not order or len(result.stages) != len(order) or
+                any(stage.cutter_id != cutter or stage.projection.bounds_mm != result.before.bounds_mm
+                    for stage, cutter in zip(result.stages, order, strict=True))):
             self._failed(token, 'output', None)
             return
-        # Reuse the tube-only canvas, with the same bounds for both states.
-        self.canvas.result = TubeNotchPreview(result.before, result.after, result.before, result.after)
-        self.canvas.update()
+        self._preview = result
+        was_blocked = self.stage.blockSignals(True)
+        try:
+            self.stage.clear()
+            for i, cutter in enumerate(order):
+                suffix = ' — итог' if i == len(order) - 1 else ''
+                self.stage.addItem(f'Шаг {i + 1}: {CUTTER_LABELS[cutter]}{suffix}', i)
+            self.stage.setCurrentIndex(len(order) - 1)
+        finally:
+            self.stage.blockSignals(was_blocked)
+        self.stage.setEnabled(True)
         self.retry.setEnabled(True)
-        self._display_status()
+        self._change_stage()
 
     def _failed(self, token: int, code: str, step: object) -> None:
         if token != self.generation or self._closed:
@@ -237,8 +286,7 @@ class TubeNotchSequencePreviewView(QWidget):
         if (isinstance(step, tuple) and len(step) == 2 and type(step[0]) is int and
                 0 <= step[0] < len(order) and step[1] == order[step[0]]):
             context = f' Шаг {step[0] + 1} — {CUTTER_LABELS[order[step[0]]]}. '
-        self.canvas.result = None
-        self.canvas.update()
+        self._clear_preview()
         self.retry.setEnabled(self.enable.isChecked() and bool(order) and self._document is not None)
         self.status.setText(f'Последовательность не построена.{context} '
                             f'{reasons.get(code, "ошибка CAD-построения")}. '

@@ -21,6 +21,7 @@ class NotchCanvas(QWidget):
         self.result: TubeNotchPreview | None = None
         self.plane = 'XY'
         self.tube_only = False
+        self.after_title = 'После'
         self.setMinimumSize(600, 250)
 
     def paintEvent(self, _event: object) -> None:
@@ -35,7 +36,7 @@ class NotchCanvas(QWidget):
         before, after = ((result.tube_before, result.tube_after) if self.tube_only else
                          (result.before, result.after))
         mode = 'труба' if self.tube_only else 'пара'
-        for panel, projection, title in ((0, before, 'До'), (1, after, 'После')):
+        for panel, projection, title in ((0, before, 'До'), (1, after, self.after_title)):
             left = width * panel
             painter.setPen(QColor('#303840'))
             painter.drawText(QRectF(left + 4, 2, width - 8, 25), int(Qt.AlignmentFlag.AlignLeft),

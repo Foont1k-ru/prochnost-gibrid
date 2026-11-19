@@ -34,9 +34,12 @@ def projection():
 
 
 def test_parser_rejects_malformed_inconsistent_or_unsafe_results():
-    valid = {'before': projection(), 'after': projection()}
-    result = parse_sequence_preview(valid)
+    order = ('housing_front', 'tube_rear')
+    valid = {'before': projection(), 'stages': [
+        {'cutter': cutter, 'projection': projection()} for cutter in order]}
+    result = parse_sequence_preview(valid, order)
     assert result.before.bounds_mm == result.after.bounds_mm
+    assert tuple(x.cutter_id for x in result.stages) == order
     bad_bounds = projection()
     bad_bounds['bounds_mm'] = [0, 0, 0, 2, 1, 1]
     bad_lines = projection()
@@ -46,10 +49,18 @@ def test_parser_rejects_malformed_inconsistent_or_unsafe_results():
     too_many = projection()
     too_many['views']['XY'] = [[0, 0, 1, 1]] * 30001
     for value in ({}, {'before': projection()}, {**valid, 'extra': 1},
-                  {**valid, 'after': bad_bounds}, {**valid, 'after': bad_lines},
-                  {**valid, 'after': outside}, {**valid, 'after': too_many}):
+                  {**valid, 'stages': []}, {**valid, 'stages': list(reversed(valid['stages']))},
+                  {**valid, 'stages': [*valid['stages'], valid['stages'][0]]},
+                  {**valid, 'stages': [{'cutter': 'housing_front', 'projection': bad_bounds}, valid['stages'][1]]},
+                  {**valid, 'stages': [valid['stages'][0], {'cutter': 'tube_rear', 'projection': bad_lines}]},
+                  {**valid, 'stages': [valid['stages'][0], {'cutter': 'tube_rear', 'projection': outside}]},
+                  {**valid, 'stages': [valid['stages'][0], {'cutter': 'tube_rear', 'projection': too_many}]},
+                  {**valid, 'stages': [valid['stages'][0], {'cutter': 'tube_rear', 'projection': projection(),
+                                                            'extra': 1}]}):
         with pytest.raises(CadPreviewError, match='output'):
-            parse_sequence_preview(value)
+            parse_sequence_preview(value, order)
+    with pytest.raises(CadPreviewError, match='output'):
+        parse_sequence_preview(valid, ())
 
 
 def test_preflight_prevents_invalid_steps_without_process(monkeypatch):
@@ -179,6 +190,9 @@ def test_isolated_real_cad_process_projects_complete_sequence(tube, order):
     before, original_order = deepcopy(doc), list(order)
     result = SequencePreviewJob().run(doc, tube, order, timeout=120)
     assert result.before.bounds_mm == result.after.bounds_mm
+    assert [stage.cutter_id for stage in result.stages] == order
+    assert all(stage.projection.bounds_mm == result.before.bounds_mm for stage in result.stages)
+    assert all(all(stage.projection.views) for stage in result.stages)
     assert all(result.before.views) and all(result.after.views)
     assert any(a != b for a, b in zip(result.before.views, result.after.views, strict=True))
     assert doc == before and order == original_order
@@ -203,3 +217,19 @@ def test_worker_crash_without_report(monkeypatch):
     monkeypatch.setattr(cad_tube_notch_sequence_job.subprocess, 'Popen', lambda *args, **kwargs: Process())
     with pytest.raises(CadPreviewError, match='crash'):
         SequencePreviewJob().run(document(), 'tube_front', ['housing_front'])
+
+
+def test_worker_writes_no_partial_stages_when_later_cut_fails(tmp_path):
+    import sys
+
+    pytest.importorskip('OCP', reason='Опциональное CAD-ядро', exc_type=ImportError)
+    from suspensionlab.model.kim_format import write_document
+
+    source, output, report = (tmp_path / 'snapshot.kima', tmp_path / 'preview.json', tmp_path / 'report.json')
+    write_document(source, 'assembly', document(rear=(1, 0, 0)), overwrite=False)
+    process = subprocess.run([sys.executable, '-m', 'suspensionlab.core.cad_tube_notch_sequence_worker',
+                              str(source), str(output), str(report), 'tube_front', 'housing_front', 'housing_rear'],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=120, check=False)
+    assert process.returncode != 0 and not output.exists()
+    assert json.loads(report.read_text(encoding='utf-8')) == {
+        'status': 'error', 'code': 'no_overlap', 'step': 1, 'cutter': 'housing_rear'}

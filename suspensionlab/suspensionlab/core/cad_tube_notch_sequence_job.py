@@ -17,13 +17,23 @@ from ..model.kim_format import write_document
 from .cad_assembly_projection_job import MAX_OUTPUT_BYTES, CadAssemblyProjection, parse_projection
 from .cad_transport import CadPreviewError
 from .cad_tube_notch import TubeNotchError
-from .cad_tube_notch_sequence import TubeNotchSequenceError, validate_notch_sequence
+from .cad_tube_notch_sequence import MAX_CUTS, TubeNotchSequenceError, validate_notch_sequence
+
+
+@dataclass(frozen=True, slots=True)
+class SequenceStagePreview:
+    cutter_id: str
+    projection: CadAssemblyProjection
 
 
 @dataclass(frozen=True, slots=True)
 class SequencePreview:
     before: CadAssemblyProjection
-    after: CadAssemblyProjection
+    stages: tuple[SequenceStagePreview, ...]
+
+    @property
+    def after(self) -> CadAssemblyProjection:
+        return self.stages[-1].projection
 
 
 class SequencePreviewError(CadPreviewError):
@@ -32,13 +42,21 @@ class SequencePreviewError(CadPreviewError):
         self.step_index, self.cutter_id = step_index, cutter_id
 
 
-def parse_sequence_preview(value: Any) -> SequencePreview:
-    if not isinstance(value, dict) or set(value) != {'before', 'after'}:
+def parse_sequence_preview(value: Any, order: tuple[str, ...]) -> SequencePreview:
+    if (not isinstance(value, dict) or set(value) != {'before', 'stages'} or
+            not 1 <= len(order) <= MAX_CUTS or not isinstance(value['stages'], list) or
+            len(value['stages']) != len(order)):
         raise CadPreviewError('output')
-    before, after = parse_projection(value['before']), parse_projection(value['after'])
-    if before.bounds_mm != after.bounds_mm:
-        raise CadPreviewError('output')
-    return SequencePreview(before, after)
+    before = parse_projection(value['before'])
+    stages: list[SequenceStagePreview] = []
+    for item, cutter in zip(value['stages'], order, strict=True):
+        if not isinstance(item, dict) or set(item) != {'cutter', 'projection'} or item['cutter'] != cutter:
+            raise CadPreviewError('output')
+        projection = parse_projection(item['projection'])
+        if projection.bounds_mm != before.bounds_mm:
+            raise CadPreviewError('output')
+        stages.append(SequenceStagePreview(cutter, projection))
+    return SequencePreview(before, tuple(stages))
 
 
 class SequencePreviewJob:
@@ -122,9 +140,9 @@ class SequencePreviewJob:
                     raise CadPreviewError(reason)
                 if state != {'status': 'ok'}:
                     raise CadPreviewError('output')
-                if not output.is_file() or output.stat().st_size > 2 * MAX_OUTPUT_BYTES:
+                if not output.is_file() or output.stat().st_size > (1 + len(order)) * MAX_OUTPUT_BYTES:
                     raise CadPreviewError('output')
-                return parse_sequence_preview(json.loads(output.read_text(encoding='utf-8')))
+                return parse_sequence_preview(json.loads(output.read_text(encoding='utf-8')), order)
             except CadPreviewError:
                 raise
             except (OSError, ValueError, TypeError, MemoryError) as error:

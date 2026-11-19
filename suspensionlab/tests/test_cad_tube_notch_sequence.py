@@ -167,3 +167,19 @@ def test_four_different_cutters_in_explicit_order():
     assert all(s.removed_volume_mm3 > 0 for s in result.steps)
     assert result.steps[-1].remaining_volume_mm3 > 0 and BRepCheck_Analyzer(result.shape).IsValid()
     assert doc == initial
+
+
+def test_captured_stages_are_independent_and_match_each_prefix():
+    doc = document()
+    saved = deepcopy(doc)
+    order = ['housing_front', 'ball_plate', 'tube_rear']
+    full = notch_tube_sequence(doc, 'tube_front', order, capture_stages=True)
+    assert len(full.stage_shapes) == len(order)
+    assert notch_tube_sequence(doc, 'tube_front', order).stage_shapes == ()
+    for index, stage in enumerate(full.stage_shapes):
+        prefix = notch_tube_sequence(doc, 'tube_front', order[:index + 1])
+        assert BRepCheck_Analyzer(stage).IsValid()
+        assert volume(stage) == pytest.approx(full.steps[index].remaining_volume_mm3, rel=1e-7)
+        assert volume(cut(stage, prefix.shape)) == pytest.approx(0, abs=1e-4)
+        assert volume(cut(prefix.shape, stage)) == pytest.approx(0, abs=1e-4)
+    assert doc == saved
