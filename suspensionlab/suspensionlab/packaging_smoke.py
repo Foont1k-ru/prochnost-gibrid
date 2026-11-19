@@ -85,6 +85,7 @@ def run_cad_check() -> None:
     from .core.cad_transport import CadJob
     from .core.cad_tube_notch_job import TubeNotchPreviewJob
     from .core.cad_tube_notch_sequence_job import SequencePreviewJob
+    from .core.cad_weldment_job import WeldmentCadJob
     from .export.cad_assembly_svg import write_new_projection_svg
     from .model.assembly_snapshot_fingerprint import assembly_snapshot_fingerprint
     from .model.entities import Project
@@ -95,6 +96,11 @@ def run_cad_check() -> None:
                                          'bore_radius_mm': 7., 'length_mm': 24.})
     assembly = set_assembly_plate(assembly, make_plate(40., 20., 3., 5.),
                                   {'normal': 'z', 'offset_mm': [0., 0., 0.]})
+    assembly_mesh = WeldmentCadJob().run(assembly)
+    _require(assembly_mesh.part_names == tuple(part['id'] for part in assembly['parts']) and
+             assembly_mesh.triangle_parts is not None and
+             all((assembly_mesh.triangle_parts == index).any() for index in range(len(assembly['parts']))),
+             "В собранном приложении недоступны отдельные детали 3D-сборки")
     projection = CadAssemblyProjectionJob().run(assembly)
     _require(len(projection.views) == 3 and all(len(lines) > 4 for lines in projection.views) and
              all(projection.bounds_mm[i] < projection.bounds_mm[i + 3] for i in range(3)),

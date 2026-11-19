@@ -467,3 +467,42 @@ def test_plate_independent_shape_and_assembly_placement_after_rebuild(tmp_path, 
     mesh = WeldmentCadJob().run(updated)
     assert len(mesh.triangles) and mesh.skipped_faces == mesh.recovered_faces == 0
     assert read_document(path, 'assembly') == doc
+
+
+@pytest.mark.parametrize(('axis', 'with_plate'), [('x', False), ('y', True), ('z', True)])
+def test_scheme_assembly_mesh_groups_match_actual_placed_parts(tmp_path, axis, with_plate):
+    import numpy as np
+
+    from suspensionlab.core.cad_kim_prototype import _place_scheme_arm_housing, _place_scheme_arm_plate
+    from suspensionlab.core.cad_weldment_job import WeldmentCadJob
+    from suspensionlab.model.entities import Project
+    from suspensionlab.model.scheme_arm_assembly import make_plate, make_scheme_arm_assembly, set_assembly_plate
+
+    project = Project.create_default()
+    for code, xyz in {'lca_f_in': (0, 0, 0), 'lca_r_in': (100, 0, 30), 'lbj': (20, 160, 40)}.items():
+        p = project.front.hardpoints[code]
+        p.x, p.y, p.z = xyz
+    doc = make_scheme_arm_assembly(project, 10, 2, {'axis': axis, 'outer_radius_mm': 14,
+                                                       'bore_radius_mm': 7, 'length_mm': 24})
+    if with_plate:
+        doc = set_assembly_plate(doc, make_plate(60, 40, 5, 6),
+                                 {'normal': 'y', 'offset_mm': [13, 17, 19]})
+    doc['parts'][0]['name'] = doc['parts'][1]['name'] = 'Одинаковое имя'
+    mesh = WeldmentCadJob().run(doc, deviation=0.2)
+    assert mesh.part_names == tuple(part['id'] for part in doc['parts'])
+    assert mesh.triangle_parts is not None
+    assert set(mesh.triangle_parts.tolist()) == set(range(len(doc['parts'])))
+    points = doc['parts'][0]['geometry']['source']['coordinates_mm']
+    shapes = [build_part(doc['parts'][0]), build_part(doc['parts'][1]),
+              *[_place_scheme_arm_housing(part, points[i], axis) for i, part in enumerate(doc['parts'][2:4])]]
+    if with_plate:
+        shapes.append(_place_scheme_arm_plate(doc))
+    for index, shape in enumerate(shapes):
+        box = Bnd_Box()
+        BRepBndLib.AddOptimal_s(shape, box, False, False)
+        low, high = box.CornerMin(), box.CornerMax()
+        expected = np.array([[low.X(), low.Y(), low.Z()], [high.X(), high.Y(), high.Z()]])
+        triangles = mesh.triangles[mesh.triangle_parts == index]
+        observed = np.array([triangles.min(axis=(0, 1)), triangles.max(axis=(0, 1))])
+        assert np.allclose(observed, expected, atol=.5, rtol=0)
+    assert list(tmp_path.iterdir()) == []

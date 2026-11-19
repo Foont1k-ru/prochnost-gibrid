@@ -154,3 +154,73 @@ def test_quality_change_cancels_old_job_and_rebuilds(qtbot, tmp_path, monkeypatc
     qtbot.waitUntil(lambda: panel._view.mesh is not None, timeout=5000)
     assert panel._view.mesh.triangles[0, 0, 0] == 2.0 and d._save.isEnabled()
     assert d.shutdown()
+
+
+def test_scheme_assembly_tree_search_highlight_and_stale_clear(qtbot):
+    from copy import deepcopy
+
+    from suspensionlab.model.entities import Project
+    from suspensionlab.model.scheme_arm_assembly import make_plate, make_scheme_arm_assembly, set_assembly_plate
+    from suspensionlab.ui.weldment_3d import Weldment3D
+
+    doc = make_scheme_arm_assembly(Project.create_default(), 12, 2,
+                                   {'axis': 'x', 'outer_radius_mm': 14, 'bore_radius_mm': 7, 'length_mm': 24})
+    doc = set_assembly_plate(doc, make_plate(50, 40, 4, 7), {'normal': 'z', 'offset_mm': [0, 0, 0]})
+    doc['parts'][0]['name'] = doc['parts'][1]['name'] = 'Повтор'
+    snapshot = deepcopy(doc)
+    triangles = np.array([[[i, 0, 0], [i, 1, 0], [i, 0, 1]] for i in range(5)], dtype=float)
+    mesh = CadMesh(triangles, 5, part_names=tuple(p['id'] for p in doc['parts']),
+                   triangle_parts=np.arange(5, dtype=np.int32))
+    panel = Weldment3D(scheme_part=True, is_current=lambda candidate: candidate == doc)
+    qtbot.addWidget(panel)
+    panel.set_document(snapshot)
+    panel._enable.setChecked(True)
+    panel._timer.stop()
+    generation = panel.generation
+    panel._completed(generation, mesh)
+    root = panel._parts_tree.topLevelItem(0)
+    assert root is not None and root.childCount() == 5 and not panel._parts_panel.isHidden()
+    assert root.child(0).text(0) == 'Повтор · tube_front'
+    assert root.child(1).text(0) == 'Повтор · tube_rear'
+    assert panel._view._highlight is None
+    panel._view.yaw, panel._view.zoom = 1.25, 2
+    panel._parts_tree.setCurrentItem(root.child(2))
+    assert panel._view._highlight.tolist() == [False, False, True, False, False]
+    assert panel._view.yaw == 1.25 and panel._view.zoom == 2 and panel.generation == generation
+    panel._parts_filter.setText('TUBE_REAR')
+    assert root.child(0).isHidden() and not root.child(1).isHidden() and panel._view._highlight is None
+    panel._view.triangle_picked.emit(4)
+    assert not panel._parts_filter.text() and panel._parts_tree.currentItem() is root.child(4)
+    assert panel._view._highlight.tolist() == [False, False, False, False, True]
+    panel._parts_tree.setCurrentItem(root)
+    assert panel._view._highlight is None and panel.generation == generation
+    panel._parts_tree.setCurrentItem(root.child(0))
+    doc['parts'][0]['name'] = 'Изменено без обновления'
+    panel._view.triangle_picked.emit(0)  # same selected group must still check freshness
+    assert panel._view.mesh is None and panel._parts_tree.topLevelItemCount() == 0
+    assert panel._parts_panel.isHidden() and not panel.can_save()
+    panel._completed(generation - 1, mesh)
+    assert panel._view.mesh is None
+    assert panel.shutdown()
+
+
+def test_scheme_assembly_tree_rejects_missing_or_misidentified_groups(qtbot):
+    from suspensionlab.model.entities import Project
+    from suspensionlab.model.scheme_arm_assembly import make_scheme_arm_assembly
+    from suspensionlab.ui.weldment_3d import Weldment3D
+
+    doc = make_scheme_arm_assembly(Project.create_default(), 12, 2,
+                                   {'axis': 'x', 'outer_radius_mm': 14, 'bore_radius_mm': 7, 'length_mm': 24})
+    triangles = np.array([[[i, 0, 0], [i, 1, 0], [i, 0, 1]] for i in range(4)], dtype=float)
+    names = tuple(p['id'] for p in doc['parts'])
+    panel = Weldment3D(scheme_part=True)
+    qtbot.addWidget(panel)
+    panel.set_document(doc)
+    panel._enable.setChecked(True)
+    panel._timer.stop()
+    for mesh in (CadMesh(triangles, 4),
+                 CadMesh(triangles, 4, part_names=tuple(reversed(names)), triangle_parts=np.arange(4)),
+                 CadMesh(triangles, 4, part_names=names, triangle_parts=np.zeros(4, dtype=int))):
+        panel._completed(panel.generation, mesh)
+        assert panel._view.mesh is None and panel._parts_tree.topLevelItemCount() == 0 and not panel.can_save()
+    assert panel.shutdown()
