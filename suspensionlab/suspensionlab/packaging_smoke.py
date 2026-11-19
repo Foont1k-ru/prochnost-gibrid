@@ -114,7 +114,9 @@ def run_cad_check() -> None:
                                         {'normal': 'z', 'offset_mm': [0., 0., 0.]})
     plate_notch = TubeNotchPreviewJob().run(plate_assembly, 'tube_front', 'ball_plate')
     _require(plate_notch.before.bounds_mm == plate_notch.after.bounds_mm and
-             any(a != b for a, b in zip(plate_notch.before.views, plate_notch.after.views, strict=True)),
+             plate_notch.tube_before.bounds_mm == plate_notch.tube_after.bounds_mm and
+             any(a != b for a, b in zip(plate_notch.before.views, plate_notch.after.views, strict=True)) and
+             any(a != b for a, b in zip(plate_notch.tube_before.views, plate_notch.tube_after.views, strict=True)),
              "В собранном приложении недоступен предварительный просмотр подрезки по пластине")
     tube_notch = TubeNotchPreviewJob().run(notch_assembly, 'tube_front', 'tube_rear')
     _require(tube_notch.before.bounds_mm == tube_notch.after.bounds_mm and

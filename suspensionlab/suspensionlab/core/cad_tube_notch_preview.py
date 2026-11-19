@@ -37,7 +37,11 @@ def project_tube_notch(document: dict[str, Any], tube_id: str, cutter_id: str) -
     builder.Add(before, cutting_part)
     builder.Add(after, result.shape)
     builder.Add(after, cutting_part)
-    # Same bounds for both states: each plane uses the same scale before/after.
-    bounds = bounds_for_shape(before)
-    return {'before': {'views': project_shape(before), 'bounds_mm': bounds},
-            'after': {'views': project_shape(after), 'bounds_mm': bounds}}
+    # In each mode both states use the original bounds and identical scale.
+    # Tube-only views reveal contours otherwise obscured by the cutting part.
+    pair_bounds = bounds_for_shape(before)
+    tube_bounds = bounds_for_shape(tube)
+    return {'before': {'views': project_shape(before), 'bounds_mm': pair_bounds},
+            'after': {'views': project_shape(after), 'bounds_mm': pair_bounds},
+            'tube_before': {'views': project_shape(tube), 'bounds_mm': tube_bounds},
+            'tube_after': {'views': project_shape(result.shape), 'bounds_mm': tube_bounds}}

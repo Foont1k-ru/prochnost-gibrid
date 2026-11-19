@@ -26,15 +26,18 @@ def projection():
 
 
 def test_parser_rejects_unsafe_or_inconsistent_data():
-    valid = {'before': projection(), 'after': projection()}
+    valid = {'before': projection(), 'after': projection(),
+             'tube_before': projection(), 'tube_after': projection()}
     result = parse_notch_preview(valid)
     assert result.before.bounds_mm == result.after.bounds_mm
+    assert result.tube_before.bounds_mm == result.tube_after.bounds_mm
     bad_bounds = projection()
     bad_bounds['bounds_mm'] = [0, 0, 0, 2, 1, 1]
     bad_lines = projection()
     bad_lines['views']['XY'] = [[0, 0, 1, float('nan')]]
     for data in ({}, {'before': projection()}, {**valid, 'extra': 1},
-                 {**valid, 'after': bad_bounds}, {**valid, 'after': bad_lines}):
+                 {**valid, 'after': bad_bounds}, {**valid, 'after': bad_lines},
+                 {**valid, 'tube_after': bad_bounds}, {**valid, 'tube_after': bad_lines}):
         with pytest.raises(CadPreviewError, match='output'):
             parse_notch_preview(data)
 
@@ -100,8 +103,11 @@ def test_isolated_cad_worker_before_after(axis, tube, housing):
     saved = deepcopy(doc)
     result = TubeNotchPreviewJob().run(doc, tube, housing, timeout=60)
     assert result.before.bounds_mm == result.after.bounds_mm
-    assert all(len(lines) > 0 for lines in result.before.views + result.after.views)
+    assert result.tube_before.bounds_mm == result.tube_after.bounds_mm
+    assert all(len(lines) > 0 for lines in (result.before.views + result.after.views +
+                                            result.tube_before.views + result.tube_after.views))
     assert any(a != b for a, b in zip(result.before.views, result.after.views, strict=True))
+    assert any(a != b for a, b in zip(result.tube_before.views, result.tube_after.views, strict=True))
     assert doc == saved
 
 
@@ -170,8 +176,11 @@ def test_isolated_plate_preview_and_missing_plate():
     original = deepcopy(doc)
     result = TubeNotchPreviewJob().run(doc, 'tube_front', 'ball_plate', timeout=60)
     assert result.before.bounds_mm == result.after.bounds_mm
+    assert result.tube_before.bounds_mm == result.tube_after.bounds_mm
     assert all(result.before.views) and all(result.after.views)
+    assert all(result.tube_before.views) and all(result.tube_after.views)
     assert any(a != b for a, b in zip(result.before.views, result.after.views, strict=True))
+    assert any(a != b for a, b in zip(result.tube_before.views, result.tube_after.views, strict=True))
     assert doc == original
     no_overlap = set_assembly_plate(doc, make_plate(60, 60, 5, 5),
                                     {'normal': 'y', 'offset_mm': [0, 100, 0]})
@@ -200,8 +209,11 @@ def test_isolated_tube_to_tube_preview(tube, cutter):
     original = deepcopy(doc)
     result = TubeNotchPreviewJob().run(doc, tube, cutter, timeout=60)
     assert result.before.bounds_mm == result.after.bounds_mm
+    assert result.tube_before.bounds_mm == result.tube_after.bounds_mm
     assert all(result.before.views) and all(result.after.views)
+    assert all(result.tube_before.views) and all(result.tube_after.views)
     assert any(a != b for a, b in zip(result.before.views, result.after.views, strict=True))
+    assert any(a != b for a, b in zip(result.tube_before.views, result.tube_after.views, strict=True))
     assert doc == original
 
 
@@ -215,3 +227,20 @@ def test_isolated_tube_to_tube_refuses_butt_contact():
                                                       'bore_radius_mm': 7, 'length_mm': 24})
     with pytest.raises(CadPreviewError, match='no_overlap'):
         TubeNotchPreviewJob().run(doc, 'tube_front', 'tube_rear', timeout=60)
+
+
+def test_hidden_plate_cut_can_be_inspected_as_tube_only():
+    pytest.importorskip('OCP', reason='Опциональное CAD-ядро', exc_type=ImportError)
+    from suspensionlab.model.scheme_arm_assembly import make_plate, set_assembly_plate
+
+    doc = set_assembly_plate(document(), make_plate(60, 60, 5, 9.5),
+                             {'normal': 'y', 'offset_mm': [0, 0, 0]})
+    before = deepcopy(doc)
+    result = TubeNotchPreviewJob().run(doc, 'tube_front', 'ball_plate', timeout=60)
+    assert doc == before
+    assert result.tube_before.bounds_mm == result.tube_after.bounds_mm
+    # Independent expected bounds of the original front tube.
+    assert result.tube_before.bounds_mm == pytest.approx((-10, 0, -10, 10, 100, 10), abs=1e-6)
+    assert any(a != b for a, b in zip(result.tube_before.views, result.tube_after.views, strict=True))
+    # The comparison is genuinely for different displayed shapes, not the pair again.
+    assert result.before.bounds_mm != result.tube_before.bounds_mm

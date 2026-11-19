@@ -981,7 +981,7 @@ def test_tube_notch_preview_stale_result_selection_and_shutdown(qtbot, monkeypat
     calls = []
     lines = (((0., 0., 1., 1.),),) * 3
     projection = CadAssemblyProjection(lines, (0., 0., 0., 2., 3., 4.))
-    result = TubeNotchPreview(projection, projection)
+    result = TubeNotchPreview(projection, projection, projection, projection)
 
     class FakeJob:
         def run(self, doc, tube, housing):
@@ -1007,6 +1007,9 @@ def test_tube_notch_preview_stale_result_selection_and_shutdown(qtbot, monkeypat
     view._start()
     try:
         assert entered.wait(3)
+        generation = view.generation
+        view.only_tube.setChecked(True)
+        assert view.generation == generation and view.canvas.tube_only
         view.tube.setCurrentIndex(1)
         view.housing.setCurrentIndex(1)
         assert view.canvas.result is None
@@ -1064,7 +1067,7 @@ def test_tube_notch_plate_selection_and_removal_clears_stale_result(qtbot, monke
     calls = []
     lines = (((0., 0., 1., 1.),),) * 3
     projection = CadAssemblyProjection(lines, (0., 0., 0., 2., 3., 4.))
-    result = TubeNotchPreview(projection, projection)
+    result = TubeNotchPreview(projection, projection, projection, projection)
 
     class FakeJob:
         def run(self, doc, tube, cutter):
@@ -1120,7 +1123,7 @@ def test_tube_to_tube_selection_prevents_self_cut_and_ignores_old_result(qtbot, 
     entered, release = Event(), Event()
     calls = []
     projection = CadAssemblyProjection((((0., 0., 1., 1.),),) * 3, (0., 0., 0., 2., 3., 4.))
-    result = TubeNotchPreview(projection, projection)
+    result = TubeNotchPreview(projection, projection, projection, projection)
 
     class FakeJob:
         def run(self, doc, tube, cutter):
@@ -1156,6 +1159,59 @@ def test_tube_to_tube_selection_prevents_self_cut_and_ignores_old_result(qtbot, 
     qtbot.waitUntil(lambda: view.canvas.result is result, timeout=5000)
     assert calls == [('tube_front', 'tube_rear'), ('tube_rear', 'tube_front')]
     assert d.document == original
+    d._saved = deepcopy(d.document)
+    d.close()
+    assert view._closed
+
+
+def test_notch_only_tube_mode_switches_without_recalculation(qtbot, monkeypatch):
+    from suspensionlab.core.cad_assembly_projection_job import CadAssemblyProjection
+    from suspensionlab.core.cad_tube_notch_job import TubeNotchPreview
+    from suspensionlab.ui import tube_notch_preview
+
+    lines = (((0., 0., 1., 1.),),) * 3
+    different = (((0., 1., 1., 0.),),) * 3
+    bounds = (0., 0., 0., 2., 3., 4.)
+    pair = CadAssemblyProjection(lines, bounds)
+    tube_before = CadAssemblyProjection(lines, bounds)
+    tube_after = CadAssemblyProjection(different, bounds)
+    result = TubeNotchPreview(pair, pair, tube_before, tube_after)
+    calls = []
+
+    class FakeJob:
+        def run(self, doc, tube, cutter):
+            calls.append((tube, cutter))
+            return result
+        def cancel(self):
+            pass
+
+    monkeypatch.setattr(tube_notch_preview, 'TubeNotchPreviewJob', FakeJob)
+    c = AppController()
+    d = SchemeArmAssemblyDialog(c, make_doc(c))
+    qtbot.addWidget(d)
+    monkeypatch.setattr(d, '_confirm_close', lambda: True)
+    view = d.notch_preview
+    d.tabs.setCurrentWidget(view)
+    d.show()
+    view.enable.setChecked(True)
+    view._timer.stop()
+    view._start()
+    qtbot.waitUntil(lambda: view.canvas.result is result, timeout=5000)
+    assert 'пара деталей' in view.status.text() and 'изменений не видно' in view.status.text()
+    pair_image = view.canvas.grab().toImage()
+    generation = view.generation
+    view.only_tube.setChecked(True)
+    assert view.canvas.tube_only and 'режущая деталь скрыта' in view.status.text()
+    assert 'изменений не видно' not in view.status.text()
+    assert view.generation == generation and calls == [('tube_front', 'housing_front')]
+    assert view.canvas.grab().toImage() != pair_image
+    view.plane.setCurrentIndex(1)
+    assert view.canvas.plane == 'XZ' and view.generation == generation
+    view.only_tube.setChecked(False)
+    assert not view.canvas.tube_only and view.generation == generation
+    assert view.canvas.result is result and calls == [('tube_front', 'housing_front')]
+    view.enable.setChecked(False)
+    assert view.canvas.result is None
     d._saved = deepcopy(d.document)
     d.close()
     assert view._closed

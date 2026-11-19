@@ -21,15 +21,18 @@ from .cad_transport import CadPreviewError
 class TubeNotchPreview:
     before: CadAssemblyProjection
     after: CadAssemblyProjection
+    tube_before: CadAssemblyProjection
+    tube_after: CadAssemblyProjection
 
 
 def parse_notch_preview(value: Any) -> TubeNotchPreview:
-    if not isinstance(value, dict) or set(value) != {'before', 'after'}:
+    if not isinstance(value, dict) or set(value) != {'before', 'after', 'tube_before', 'tube_after'}:
         raise CadPreviewError('output')
     before, after = parse_projection(value['before']), parse_projection(value['after'])
-    if before.bounds_mm != after.bounds_mm:
+    tube_before, tube_after = parse_projection(value['tube_before']), parse_projection(value['tube_after'])
+    if before.bounds_mm != after.bounds_mm or tube_before.bounds_mm != tube_after.bounds_mm:
         raise CadPreviewError('output')
-    return TubeNotchPreview(before, after)
+    return TubeNotchPreview(before, after, tube_before, tube_after)
 
 
 class TubeNotchPreviewJob:
@@ -99,7 +102,7 @@ class TubeNotchPreviewJob:
                              'invalid_cutter', 'same_tube'}
                     reason = state.get('code')
                     raise CadPreviewError(reason if isinstance(reason, str) and reason in known else 'crash')
-                if not output.is_file() or output.stat().st_size > 2 * MAX_OUTPUT_BYTES:
+                if not output.is_file() or output.stat().st_size > 4 * MAX_OUTPUT_BYTES:
                     raise CadPreviewError('output')
                 return parse_notch_preview(json.loads(output.read_text(encoding='utf-8')))
             except CadPreviewError:

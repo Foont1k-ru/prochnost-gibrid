@@ -20,6 +20,7 @@ class NotchCanvas(QWidget):
         super().__init__(parent)
         self.result: TubeNotchPreview | None = None
         self.plane = 'XY'
+        self.tube_only = False
         self.setMinimumSize(600, 250)
 
     def paintEvent(self, _event: object) -> None:
@@ -31,11 +32,14 @@ class NotchCanvas(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         width = self.width() / 2
         index = ('XY', 'XZ', 'YZ').index(self.plane)
-        for panel, projection, title in ((0, result.before, 'До подрезки'), (1, result.after, 'После подрезки')):
+        before, after = ((result.tube_before, result.tube_after) if self.tube_only else
+                         (result.before, result.after))
+        mode = 'труба' if self.tube_only else 'пара'
+        for panel, projection, title in ((0, before, 'До'), (1, after, 'После')):
             left = width * panel
             painter.setPen(QColor('#303840'))
             painter.drawText(QRectF(left + 4, 2, width - 8, 25), int(Qt.AlignmentFlag.AlignLeft),
-                             f'{title} — {self.plane}: +{self.plane[0]} →, +{self.plane[1]} ↑')
+                             f'{title}, {mode} — {self.plane}: +{self.plane[0]} →, +{self.plane[1]} ↑')
             frame = projection_layout(projection.bounds_mm, self.plane, width, float(self.height()))
             painter.save()
             painter.setClipRect(QRectF(left, 27, width, self.height() - 27))
@@ -105,6 +109,8 @@ class TubeNotchPreviewView(QWidget):
             self.plane.addItem(plane, plane)
         form.addRow('Плоскость вида (общий масштаб до/после)', self.plane)
         layout.addLayout(form)
+        self.only_tube = QCheckBox('Только подрезаемая труба (режущая деталь скрыта)')
+        layout.addWidget(self.only_tube)
         self.enable = QCheckBox('Построить предварительную подрезку в фоне')
         layout.addWidget(self.enable)
         self.status = QLabel('Выключено. Для построения требуется CAD-ядро.')
@@ -120,11 +126,33 @@ class TubeNotchPreviewView(QWidget):
         self.tube.currentIndexChanged.connect(self._schedule)
         self.housing.currentIndexChanged.connect(self._schedule)
         self.plane.currentIndexChanged.connect(self._change_plane)
+        self.only_tube.toggled.connect(self._change_display)
         self.retry.clicked.connect(self._schedule)
 
     def _change_plane(self, *_args: object) -> None:
         self.canvas.plane = str(self.plane.currentData())
         self.canvas.update()
+        self._display_status()
+
+    def _change_display(self, enabled: bool) -> None:
+        self.canvas.tube_only = enabled
+        self.canvas.update()
+        self._display_status()
+
+    def _display_status(self) -> None:
+        result = self.canvas.result
+        if result is None:
+            return
+        before, after = ((result.tube_before, result.tube_after) if self.canvas.tube_only else
+                         (result.before, result.after))
+        mode = ('Показана только подрезаемая труба; режущая деталь скрыта.' if self.canvas.tube_only else
+                'Показана пара деталей; режущая деталь может скрывать срез.')
+        index = ('XY', 'XZ', 'YZ').index(self.canvas.plane)
+        warning = (' На этой плоскости изменений не видно; попробуйте другую плоскость.'
+                   if before.views[index] == after.views[index] else '')
+        self.status.setText(f'{mode} До и после — в одном масштабе; при переключении режима масштаб может '
+                            f'измениться. Ничего не применено и не сохранено; это не проверка геометрии '
+                            f'для изготовления, сварки или прочности.{warning}')
 
     def set_document(self, document: dict[str, Any]) -> None:
         if self._closed:
@@ -188,11 +216,7 @@ class TubeNotchPreviewView(QWidget):
         self.canvas.result = result
         self.canvas.update()
         self.retry.setEnabled(True)
-        warning = (' В полученных проекциях изменений не видно: срез может быть скрыт деталями.'
-                   if result.before.views == result.after.views else
-                   ' На отдельных проекциях срез может быть скрыт деталями.')
-        self.status.setText('Предварительный вид выбранной пары в текущем снимке: до и после в одном масштабе. '
-                            'Ничего не применено и не сохранено; геометрия и сварка требуют проверки.' + warning)
+        self._display_status()
 
     def _failed(self, token: int, code: str) -> None:
         if token != self.generation or self._closed:
