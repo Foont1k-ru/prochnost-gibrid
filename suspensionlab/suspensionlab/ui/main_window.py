@@ -44,6 +44,7 @@ from .docks.diagnostics import DiagnosticsPanel
 from .docks.inspector import Inspector
 from .docks.project_tree import ProjectTree
 from .equilibrium_dialog import EquilibriumDialog
+from .fixed_arm_skeleton_dialog import FixedArmSkeletonDialog
 from .front_tubes_dialog import FrontTubesDialog
 from .joint_concept_dialog import JointConceptDialog
 from .niva_arms_dialog import NivaArmsDialog
@@ -75,6 +76,7 @@ class MainWindow(QMainWindow):
         self._rear_tube_dialog: RearTubeDialog | None = None
         self._niva_arms_dialog: NivaArmsDialog | None = None
         self._arm_concept_dialog: ArmConceptDialog | None = None
+        self._fixed_arm_skeleton_dialog: FixedArmSkeletonDialog | None = None
         self._weldment_dialog: WeldmentDialog | None = None
         self._theme = str(self._settings.value("view/theme", self.controller.project.view.theme))
 
@@ -341,6 +343,21 @@ class MainWindow(QMainWindow):
         if dialog is not None:
             dialog.deleteLater()
 
+    def _open_fixed_arm_skeleton(self) -> None:
+        if self._fixed_arm_skeleton_dialog is None:
+            dialog = FixedArmSkeletonDialog(self.controller, self)
+            self._fixed_arm_skeleton_dialog = dialog
+            dialog.finished.connect(self._close_fixed_arm_skeleton)
+        self._fixed_arm_skeleton_dialog.show()
+        self._fixed_arm_skeleton_dialog.raise_()
+        self._fixed_arm_skeleton_dialog.activateWindow()
+
+    def _close_fixed_arm_skeleton(self, _result: int) -> None:
+        dialog = self._fixed_arm_skeleton_dialog
+        self._fixed_arm_skeleton_dialog = None
+        if dialog is not None:
+            dialog.deleteLater()
+
     def _open_weldment(self) -> None:
         if self._weldment_dialog is None:
             dialog = WeldmentDialog(self.controller, self)
@@ -449,6 +466,9 @@ class MainWindow(QMainWindow):
         self.action_arm_concept = QAction(tr("arm_concept.menu"), self)
         self.action_arm_concept.triggered.connect(self._open_arm_concept)
 
+        self.action_fixed_arm_skeleton = QAction("Эксперимент: скелет рычага по расчётному снимку…", self)
+        self.action_fixed_arm_skeleton.triggered.connect(self._open_fixed_arm_skeleton)
+
         self.action_weldment = QAction(tr("weldment.menu"), self)
         self.action_weldment.triggered.connect(self._open_weldment)
 
@@ -549,6 +569,7 @@ class MainWindow(QMainWindow):
         menu_file.addAction(self.action_front_tubes)
         menu_file.addAction(self.action_rear_tube)
         menu_file.addAction(self.action_arm_concept)
+        menu_file.addAction(self.action_fixed_arm_skeleton)
         menu_file.addAction(self.action_new_scheme_assembly)
         menu_file.addAction(self.action_open_scheme_assembly)
         menu_file.addAction(self.action_scheme_arm_part)
@@ -1157,6 +1178,9 @@ class MainWindow(QMainWindow):
         if self._weldment_dialog is not None and not self._weldment_dialog.confirm_close():
             event.ignore()
             return
+        if self._fixed_arm_skeleton_dialog is not None and not self._fixed_arm_skeleton_dialog.confirm_close():
+            event.ignore()
+            return
         if self._joint_concept_dialog is not None and not self._joint_concept_dialog.confirm_close():
             event.ignore()
             return
@@ -1167,11 +1191,13 @@ class MainWindow(QMainWindow):
             event.ignore()
             return
         arm_stopped = self._arm_concept_dialog is None or self._arm_concept_dialog.shutdown()
+        fixed_arm_stopped = self._fixed_arm_skeleton_dialog is None or self._fixed_arm_skeleton_dialog.shutdown()
         weldment_stopped = self._weldment_dialog is None or self._weldment_dialog.shutdown()
         rear_stopped = self._rear_tube_dialog is None or self._rear_tube_dialog.shutdown()
         front_stopped = self._front_tubes_dialog is None or self._front_tubes_dialog.shutdown()
         joint_stopped = self._joint_concept_dialog is None or self._joint_concept_dialog.shutdown()
-        if not arm_stopped or not weldment_stopped or not rear_stopped or not front_stopped or not joint_stopped:
+        if (not arm_stopped or not fixed_arm_stopped or not weldment_stopped or not rear_stopped or
+                not front_stopped or not joint_stopped):
             event.ignore()
             return
         self._save_settings()

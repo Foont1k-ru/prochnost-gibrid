@@ -30,9 +30,12 @@ class Scene3DPreview(QWidget):
 
     linksClicked = Signal(object, object)
 
-    def __init__(self, parent: QWidget | None = None, *, schematic: bool = False) -> None:
+    def __init__(self, parent: QWidget | None = None, *, schematic: bool = False,
+                 title_override: str | None = None, legend_override: str | None = None) -> None:
         super().__init__(parent)
         self.schematic = schematic
+        self.title_override = title_override
+        self.legend_override = legend_override
         self.volumetric = schematic
         self._visual: SchematicVisual | None = None
         self.link_targets: tuple[SelectableLink, ...] = ()
@@ -140,9 +143,11 @@ class Scene3DPreview(QWidget):
             painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.setPen(self.palette().text().color())
         painter.drawText(QRectF(8, 4, self.width() - 16, 22), int(Qt.AlignmentFlag.AlignLeft),
+                         self.title_override if self.title_override is not None else
                          tr("vehicle_schematic.title") if self.schematic else
                          tr("analysis.scene3d.travel", travel=f"{self.frame.travel_mm:+.2f}"))
         painter.drawText(QRectF(8, self.height() - 26, self.width() - 16, 20), int(Qt.AlignmentFlag.AlignLeft),
+                         self.legend_override if self.legend_override is not None else
                          tr("vehicle_schematic.legend") if self.schematic and self.volumetric else tr("analysis.scene3d.legend"))
 
     def _draw_selected_link(self, painter: QPainter, center: Point, scale: float) -> None:

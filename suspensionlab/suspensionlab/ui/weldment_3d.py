@@ -53,7 +53,7 @@ class Weldment3D(QWidget):
                  is_current: Callable[[dict[str, Any]], bool] | None = None,
                  single_tube: bool = False, four_tubes: bool = False, joint: bool = False,
                  joint_layout: bool = False, rear_joint_layout: bool = False,
-                 scheme_part: bool = False) -> None:
+                 scheme_part: bool = False, fixed_skeleton: bool = False) -> None:
         super().__init__(parent)
         self._is_current = is_current
         self._single_tube = single_tube
@@ -62,6 +62,7 @@ class Weldment3D(QWidget):
         self._joint_layout = joint_layout
         self._rear_joint_layout = rear_joint_layout
         self._scheme_part = scheme_part
+        self._fixed_skeleton = fixed_skeleton
         self._document: dict[str, Any] | None = None
         self._pending: dict[str, Any] | None = None
         self._worker: _TubeReader | None = None
@@ -156,7 +157,8 @@ class Weldment3D(QWidget):
             self._status.setText(tr("weldment_3d.no_data"))
         else:
             self._pending = self._document
-            building_key = ("scheme_part_3d.building" if self._scheme_part else
+            building_key = ("weldment_3d.fixed_building" if self._fixed_skeleton else
+                            "scheme_part_3d.building" if self._scheme_part else
                             "rear_joint_layout.cad_building" if self._rear_joint_layout else
                             "front_joint_layout.cad_building" if self._joint_layout else
                             "joint_concept.cad_building" if self._joint else
@@ -290,7 +292,8 @@ class Weldment3D(QWidget):
         self._retry.setEnabled(self._document is not None and self._enable.isChecked())
         specific = {"timeout", "memory", "changed"}
         reason = tr(f"weldment_3d.error_{code}") if code in specific else tr(f"cad_preview.error.{code}")
-        failed_key = ("scheme_part_3d.failed" if self._scheme_part else
+        failed_key = ("weldment_3d.fixed_failed" if self._fixed_skeleton else
+                      "scheme_part_3d.failed" if self._scheme_part else
                       "rear_joint_layout.cad_failed" if self._rear_joint_layout else
                       "front_joint_layout.cad_failed" if self._joint_layout else "weldment_3d.failed")
         self._status.setText(tr(failed_key, reason=reason))
