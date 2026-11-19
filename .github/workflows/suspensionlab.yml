@@ -98,7 +98,7 @@ jobs:
         shell: bash
         run: |
           set +e
-          PYTHONFAULTHANDLER=1 python -m pytest -q --ignore=tests/test_weldment_3d_integration.py --junitxml=python311-results.xml > python311-console.txt 2>&1
+          PYTHONFAULTHANDLER=1 python -u -m pytest -v --ignore=tests/test_weldment_3d_integration.py --junitxml=python311-results.xml > python311-console.txt 2>&1
           result=$?
           cat python311-console.txt
           if [ "$result" -ne 0 ]; then
@@ -113,7 +113,7 @@ jobs:
         shell: bash
         run: |
           set +e
-          PYTHONFAULTHANDLER=1 python -m pytest -q tests/test_weldment_3d_integration.py --junitxml=python311-integration-results.xml > python311-integration-console.txt 2>&1
+          PYTHONFAULTHANDLER=1 python -u -m pytest -v tests/test_weldment_3d_integration.py --junitxml=python311-integration-results.xml > python311-integration-console.txt 2>&1
           result=$?
           cat python311-integration-console.txt
           if [ "$result" -ne 0 ]; then
@@ -122,7 +122,7 @@ jobs:
           exit "$result"
       - name: Полный набор тестов и отдельные процессы Qt (Windows)
         if: runner.os == 'Windows'
-        run: python scripts/run_pytest_with_diagnostics.py -q --junitxml=python311-results.xml
+        run: python scripts/run_pytest_with_diagnostics.py -v --junitxml=python311-results.xml
       - name: Показать ошибки Python 3.11 в аннотациях
         if: failure()
         run: python scripts/annotate_pytest.py python311-results.xml
@@ -140,6 +140,8 @@ jobs:
           path: |
             suspensionlab/python311-results.xml
             suspensionlab/python311-integration-results.xml
+            suspensionlab/python311-console.txt
+            suspensionlab/python311-integration-console.txt
           if-no-files-found: warn
 
   package:
