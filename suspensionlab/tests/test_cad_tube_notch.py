@@ -98,3 +98,63 @@ def test_cut_must_not_remove_all_or_split_tube():
         notch_tube_against_housing(document(radius=500, length=500), 'tube_front', 'housing_front')
     with pytest.raises(TubeNotchError, match='empty_or_split'):
         notch_tube_against_housing(document(rear=(0, 50, 0)), 'tube_front', 'housing_rear')
+
+
+def plate_document(normal='y', offset=(0, 0, 0), *, hole=9.5, thickness=5):
+    from suspensionlab.model.scheme_arm_assembly import make_plate, set_assembly_plate
+
+    return set_assembly_plate(document(), make_plate(60, 60, thickness, hole),
+                              {'normal': normal, 'offset_mm': list(offset)})
+
+
+def test_plate_cut_uses_material_and_preserves_tube_inside_hole():
+    from suspensionlab.core.cad_kim_prototype import _place_scheme_arm_plate
+    from suspensionlab.core.cad_tube_notch import notch_tube_against_plate
+
+    doc = plate_document()
+    original = deepcopy(doc)
+    result = notch_tube_against_plate(doc, 'tube_front')
+    assert doc == original and result.cutter_id == 'ball_plate'
+    assert BRepCheck_Analyzer(result.shape).IsValid()
+    # At y=99 the plate covers the annulus outside its radius 9.5 hole.
+    assert BRepClass3d_SolidClassifier(result.shape, gp_Pnt(9.8, 99, 0), 1e-7).State() == TopAbs_OUT
+    assert BRepClass3d_SolidClassifier(result.shape, gp_Pnt(8.5, 99, 0), 1e-7).State() == TopAbs_IN
+    assert result.removed_volume_mm3 == pytest.approx(math.pi * (10**2 - 9.5**2) * 2.5, rel=1e-6)
+    intersection = BRepAlgoAPI_Common(result.shape, _place_scheme_arm_plate(doc))
+    assert intersection.IsDone() and volume(intersection.Shape()) == pytest.approx(0, abs=1e-5)
+
+
+@pytest.mark.parametrize('normal', ['x', 'y', 'z'])
+@pytest.mark.parametrize('tube', ['tube_front', 'tube_rear'])
+def test_plate_placement_and_selection(normal, tube):
+    from suspensionlab.core.cad_assembly_projection import bounds_for_shape
+    from suspensionlab.core.cad_kim_prototype import _place_scheme_arm_plate
+    from suspensionlab.core.cad_tube_notch import notch_tube_against_plate
+
+    doc = plate_document(normal, (0, -10, 0))
+    before = deepcopy(doc)
+    bounds = bounds_for_shape(_place_scheme_arm_plate(doc))
+    # Plate is centred at LBJ plus offset; normal is the thin axis.
+    spans = [bounds[i + 3] - bounds[i] for i in range(3)]
+    assert spans[['x', 'y', 'z'].index(normal)] == pytest.approx(5)
+    assert [(bounds[i + 3] + bounds[i]) / 2 for i in range(3)] == pytest.approx([0, 90, 0])
+    result = notch_tube_against_plate(doc, tube)
+    assert result.removed_volume_mm3 > 0 and BRepCheck_Analyzer(result.shape).IsValid()
+    assert doc == before
+
+
+def test_plate_absence_tangency_and_split_rejected():
+    from suspensionlab.core.cad_tube_notch import notch_tube_against_plate
+
+    with pytest.raises(TubeNotchError, match='missing_plate'):
+        notch_tube_against_plate(document(), 'tube_front')
+    with pytest.raises(TubeNotchError, match='no_overlap'):
+        notch_tube_against_plate(plate_document('y', (0, 2.5, 0), hole=5), 'tube_front')
+    with pytest.raises(TubeNotchError, match='no_overlap'):
+        notch_tube_against_plate(plate_document('y', (0, 100, 0)), 'tube_front')
+    with pytest.raises(TubeNotchError, match='empty_or_split'):
+        notch_tube_against_plate(plate_document('y', (0, -50, 0), hole=5), 'tube_front')
+    with pytest.raises(TubeNotchError, match='empty_or_split'):
+        notch_tube_against_plate(plate_document('y', (0, -50, 0), hole=5, thickness=500), 'tube_front')
+    with pytest.raises(TubeNotchError, match='unsupported_pair'):
+        notch_tube_against_plate(plate_document(), 'housing_front')

@@ -80,10 +80,11 @@ class TubeNotchPreviewView(QWidget):
         self._timer.setInterval(250)
         self._timer.timeout.connect(self._start)
         layout = QVBoxLayout(self)
-        note = QLabel('Экспериментальная подрезка одной прямой трубы по наружному конечному цилиндру '
-                      'выбранного корпуса. Показана только эта пара, без других деталей. Нулевой зазор; '
-                      'торцы не продлеваются. Линии приближённые: пересечения могут отображаться неполно. '
-                      'Это только предварительный вид, не проверка сварки, монтажа или прочности; '
+        note = QLabel('Экспериментальная подрезка одной прямой трубы: корпус режет сплошным наружным '
+                      'цилиндром, пластина — собственным конечным телом с отверстием. Труба может остаться '
+                      'внутри отверстия пластины; проход крепежа не проверяется. Показана только выбранная '
+                      'пара. Нулевой зазор; детали не продлеваются. Линии приближённые: пересечения могут '
+                      'отображаться неполно. Это не проверка сварки, монтажа или прочности; '
                       'сборка и .kim не меняются.')
         note.setWordWrap(True)
         layout.addWidget(note)
@@ -95,7 +96,8 @@ class TubeNotchPreviewView(QWidget):
         self.housing = QComboBox(self)
         self.housing.addItem('Передний корпус', 'housing_front')
         self.housing.addItem('Задний корпус', 'housing_rear')
-        form.addRow('Режущий корпус', self.housing)
+        self.housing.addItem('Пластина у шаровой (если добавлена)', 'ball_plate')
+        form.addRow('Режущая деталь', self.housing)
         self.plane = QComboBox(self)
         for plane in ('XY', 'XZ', 'YZ'):
             self.plane.addItem(plane, plane)
@@ -182,13 +184,18 @@ class TubeNotchPreviewView(QWidget):
         self.canvas.result = result
         self.canvas.update()
         self.retry.setEnabled(True)
+        warning = (' В полученных проекциях изменений не видно: срез может быть скрыт деталями.'
+                   if result.before.views == result.after.views else
+                   ' На отдельных проекциях срез может быть скрыт деталями.')
         self.status.setText('Предварительный вид выбранной пары в текущем снимке: до и после в одном масштабе. '
-                            'Ничего не применено и не сохранено; геометрия и сварка требуют проверки.')
+                            'Ничего не применено и не сохранено; геометрия и сварка требуют проверки.' + warning)
 
     def _failed(self, token: int, code: str) -> None:
         if token != self.generation or self._closed:
             return
-        reasons = {'no_overlap': 'труба и наружный объём корпуса не пересекаются',
+        reasons = {'no_overlap': 'труба и режущий объём выбранной детали не пересекаются',
+                   'missing_plate': 'пластина не добавлена в сборку',
+                   'invalid_cutter': 'режущая деталь не прошла геометрическую проверку',
                    'empty_or_split': 'подрезка удаляет трубу или разделяет её на части',
                    'invalid_result': 'результат не прошёл геометрическую проверку',
                    'missing_cad': 'CAD-ядро недоступно', 'timeout': 'превышено время',

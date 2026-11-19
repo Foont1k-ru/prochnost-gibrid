@@ -392,13 +392,31 @@ def _place_scheme_arm_housing(part: dict[str, Any], point: Any, axis: str) -> An
     return placed
 
 
-def build_scheme_arm_assembly_preview(document: dict[str, Any]) -> Any:
-    """Две встроенные трубы и два размещённых корпуса без объединения."""
+def _place_scheme_arm_plate(document: dict[str, Any]) -> Any:
+    """Разместить валидированную пластину по снимку, с её отверстием."""
     import math
 
-    from OCP.BRep import BRep_Builder
     from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
     from OCP.gp import gp_Ax1, gp_Dir, gp_Pnt, gp_Trsf, gp_Vec
+
+    points = document['parts'][0]['geometry']['source']['coordinates_mm']
+    placement = document['plate_placement']
+    transform = gp_Trsf()
+    if placement['normal'] == 'x':
+        transform.SetRotation(gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(0, 1, 0)), math.pi / 2)
+    elif placement['normal'] == 'y':
+        transform.SetRotation(gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(1, 0, 0)), -math.pi / 2)
+    position = [float(points[2][i]) + float(placement['offset_mm'][i]) for i in range(3)]
+    transform.SetTranslationPart(gp_Vec(*position))
+    plate = BRepBuilderAPI_Transform(build_part(document['parts'][4]), transform, True).Shape()
+    if plate.IsNull():
+        raise RuntimeError('plate placement failed')
+    return plate
+
+
+def build_scheme_arm_assembly_preview(document: dict[str, Any]) -> Any:
+    """Две встроенные трубы и размещённые детали без объединения."""
+    from OCP.BRep import BRep_Builder
     from OCP.TopoDS import TopoDS_Compound
 
     from ..model.scheme_arm_assembly import validate_scheme_arm_assembly
@@ -412,16 +430,5 @@ def build_scheme_arm_assembly_preview(document: dict[str, Any]) -> Any:
     for part, point in zip(document['parts'][2:4], points[:2], strict=True):
         builder.Add(compound, _place_scheme_arm_housing(part, point, document['axis']))
     if document['version'] == '0.16':
-        placement = document['plate_placement']
-        transform = gp_Trsf()
-        if placement['normal'] == 'x':
-            transform.SetRotation(gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(0, 1, 0)), math.pi / 2)
-        elif placement['normal'] == 'y':
-            transform.SetRotation(gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(1, 0, 0)), -math.pi / 2)
-        position = [float(points[2][i]) + float(placement['offset_mm'][i]) for i in range(3)]
-        transform.SetTranslationPart(gp_Vec(*position))
-        plate = BRepBuilderAPI_Transform(build_part(document['parts'][4]), transform, True).Shape()
-        if plate.IsNull():
-            raise RuntimeError('plate placement failed')
-        builder.Add(compound, plate)
+        builder.Add(compound, _place_scheme_arm_plate(document))
     return compound

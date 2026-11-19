@@ -1049,3 +1049,62 @@ def test_tube_notch_preview_failure_does_not_modify_assembly(qtbot, monkeypatch)
     d._saved = deepcopy(d.document)
     d.close()
     assert view._closed
+
+
+def test_tube_notch_plate_selection_and_removal_clears_stale_result(qtbot, monkeypatch):
+    from threading import Event
+
+    from suspensionlab.core.cad_assembly_projection_job import CadAssemblyProjection
+    from suspensionlab.core.cad_transport import CadPreviewError
+    from suspensionlab.core.cad_tube_notch_job import TubeNotchPreview
+    from suspensionlab.model.scheme_arm_assembly import make_plate, set_assembly_plate
+    from suspensionlab.ui import tube_notch_preview
+
+    entered, release = Event(), Event()
+    calls = []
+    lines = (((0., 0., 1., 1.),),) * 3
+    projection = CadAssemblyProjection(lines, (0., 0., 0., 2., 3., 4.))
+    result = TubeNotchPreview(projection, projection)
+
+    class FakeJob:
+        def run(self, doc, tube, cutter):
+            calls.append((doc['version'], tube, cutter))
+            if len(calls) == 1:
+                entered.set()
+                assert release.wait(5)
+            if doc['version'] != '0.16':
+                raise CadPreviewError('missing_plate')
+            return result
+        def cancel(self):
+            pass
+
+    monkeypatch.setattr(tube_notch_preview, 'TubeNotchPreviewJob', FakeJob)
+    c = AppController()
+    doc = set_assembly_plate(make_doc(c), make_plate(60, 60, 5, 9),
+                             {'normal': 'y', 'offset_mm': [0, 0, 0]})
+    d = SchemeArmAssemblyDialog(c, doc)
+    qtbot.addWidget(d)
+    monkeypatch.setattr(d, '_confirm_close', lambda: True)
+    view = d.notch_preview
+    view.housing.setCurrentIndex(view.housing.findData('ball_plate'))
+    view.enable.setChecked(True)
+    view._timer.stop()
+    view._start()
+    try:
+        assert entered.wait(3)
+        d.document = set_assembly_plate(d.document, None)
+        d._show_document()
+        assert view.canvas.result is None
+    finally:
+        release.set()
+    qtbot.waitUntil(lambda: 'пластина не добавлена' in view.status.text(), timeout=5000)
+    assert view.canvas.result is None and view.retry.isEnabled()
+    assert calls == [('0.16', 'tube_front', 'ball_plate'), ('0.15', 'tube_front', 'ball_plate')]
+    d.document = doc
+    d._show_document()
+    qtbot.waitUntil(lambda: view.canvas.result is result, timeout=5000)
+    assert 'изменений не видно' in view.status.text()
+    assert d.document == doc
+    d._saved = deepcopy(d.document)
+    d.close()
+    assert view._closed

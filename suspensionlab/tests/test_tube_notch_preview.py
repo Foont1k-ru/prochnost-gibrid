@@ -156,3 +156,27 @@ def test_cancel_running_worker(monkeypatch):
         killed.set()
         thread.join(5)
     assert not thread.is_alive() and errors == ['cancelled']
+
+
+def test_isolated_plate_preview_and_missing_plate():
+    pytest.importorskip('OCP', reason='Опциональное CAD-ядро', exc_type=ImportError)
+    from suspensionlab.model.scheme_arm_assembly import make_plate, set_assembly_plate
+
+    doc = document()
+    with pytest.raises(CadPreviewError, match='missing_plate'):
+        TubeNotchPreviewJob().run(doc, 'tube_front', 'ball_plate', timeout=60)
+    doc = set_assembly_plate(doc, make_plate(60, 60, 5, 9.5),
+                             {'normal': 'z', 'offset_mm': [0, 0, 0]})
+    original = deepcopy(doc)
+    result = TubeNotchPreviewJob().run(doc, 'tube_front', 'ball_plate', timeout=60)
+    assert result.before.bounds_mm == result.after.bounds_mm
+    assert all(result.before.views) and all(result.after.views)
+    assert any(a != b for a, b in zip(result.before.views, result.after.views, strict=True))
+    assert doc == original
+    no_overlap = set_assembly_plate(doc, make_plate(60, 60, 5, 5),
+                                    {'normal': 'y', 'offset_mm': [0, 100, 0]})
+    split = set_assembly_plate(doc, make_plate(60, 60, 5, 5),
+                               {'normal': 'y', 'offset_mm': [0, -50, 0]})
+    for candidate, reason in ((no_overlap, 'no_overlap'), (split, 'empty_or_split')):
+        with pytest.raises(CadPreviewError, match=reason):
+            TubeNotchPreviewJob().run(candidate, 'tube_front', 'ball_plate', timeout=60)

@@ -1,4 +1,4 @@
-"""Экспериментальная подрезка трубы по наружному габариту корпуса втулки.
+"""Экспериментальная подрезка трубы по корпусу втулки или пластине.
 
 Это только CAD-прототип; исходные .kim/.kima не изменяются и готовая деталь
 не создаётся. Выбор пары выполняет вызывающая сторона, не алгоритм.
@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..model.scheme_arm_assembly import validate_scheme_arm_assembly
-from .cad_kim_prototype import build_part
+from .cad_kim_prototype import _place_scheme_arm_plate, build_part
 
 
 class TubeNotchError(ValueError):
@@ -24,11 +24,16 @@ class TubeNotchError(ValueError):
 @dataclass(frozen=True, slots=True)
 class TubeNotch:
     tube_id: str
-    housing_id: str
+    cutter_id: str
     shape: Any
     original_volume_mm3: float
     remaining_volume_mm3: float
     removed_volume_mm3: float
+
+    @property
+    def housing_id(self) -> str:
+        """Совместимость с первоначальным внутренним прототипом корпуса."""
+        return self.cutter_id
 
 
 def notch_tube_against_housing(document: dict[str, Any], tube_id: str, housing_id: str) -> TubeNotch:
@@ -45,21 +50,12 @@ def notch_tube_against_housing(document: dict[str, Any], tube_id: str, housing_i
     if tube_id not in ('tube_front', 'tube_rear') or housing_id not in ('housing_front', 'housing_rear'):
         raise TubeNotchError('unsupported_pair')
 
-    from OCP.BRepAlgoAPI import BRepAlgoAPI_Common, BRepAlgoAPI_Cut
-    from OCP.BRepCheck import BRepCheck_Analyzer
-    from OCP.BRepGProp import BRepGProp
     from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder
     from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt
-    from OCP.GProp import GProp_GProps
-    from OCP.TopAbs import TopAbs_SOLID
-    from OCP.TopExp import TopExp_Explorer
-    from OCP.TopoDS import TopoDS
 
     tube_index = ('tube_front', 'tube_rear').index(tube_id)
     housing_index = ('housing_front', 'housing_rear').index(housing_id)
     tube = build_part(document['parts'][tube_index])
-    if tube.IsNull() or not BRepCheck_Analyzer(tube).IsValid():
-        raise TubeNotchError('invalid_tube')
     geometry = document['parts'][housing_index + 2]['geometry']
     centre = document['parts'][0]['geometry']['source']['coordinates_mm'][housing_index]
     directions = {'x': (1., 0., 0.), 'y': (0., 1., 0.), 'z': (0., 0., 1.)}
@@ -68,6 +64,37 @@ def notch_tube_against_housing(document: dict[str, Any], tube_id: str, housing_i
     start = [float(centre[i]) - direction[i] * length / 2 for i in range(3)]
     cutter = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(*start), gp_Dir(*direction)),
                                       float(geometry['outer_radius_mm']), length).Shape()
+    return _cut_tube(tube, cutter, tube_id, housing_id)
+
+
+def notch_tube_against_plate(document: dict[str, Any], tube_id: str) -> TubeNotch:
+    """Вычесть реальное конечное тело пластины, включая её отверстие как пустоту.
+
+    Нулевой зазор; труба может остаться внутри отверстия. Нет продления,
+    моделирования прохода крепежа или проверки монтажа. Только временный результат.
+    """
+    validate_scheme_arm_assembly(document)
+    if tube_id not in ('tube_front', 'tube_rear'):
+        raise TubeNotchError('unsupported_pair')
+    if document['version'] != '0.16':
+        raise TubeNotchError('missing_plate')
+    tube = build_part(document['parts'][('tube_front', 'tube_rear').index(tube_id)])
+    return _cut_tube(tube, _place_scheme_arm_plate(document), tube_id, 'ball_plate')
+
+
+def _cut_tube(tube: Any, cutter: Any, tube_id: str, cutter_id: str) -> TubeNotch:
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Common, BRepAlgoAPI_Cut
+    from OCP.BRepCheck import BRepCheck_Analyzer
+    from OCP.BRepGProp import BRepGProp
+    from OCP.GProp import GProp_GProps
+    from OCP.TopAbs import TopAbs_SOLID
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    if tube.IsNull() or not BRepCheck_Analyzer(tube).IsValid():
+        raise TubeNotchError('invalid_tube')
+    if cutter.IsNull() or not BRepCheck_Analyzer(cutter).IsValid():
+        raise TubeNotchError('invalid_cutter')
 
     def volume(shape: Any) -> float:
         properties = GProp_GProps()
@@ -111,4 +138,4 @@ def notch_tube_against_housing(document: dict[str, Any], tube_id: str, housing_i
     residual = BRepAlgoAPI_Common(shape, cutter)
     if not residual.IsDone() or residual.Shape().IsNull() or volume(residual.Shape()) > epsilon:
         raise TubeNotchError('invalid_result')
-    return TubeNotch(tube_id, housing_id, shape, original, remaining, removed)
+    return TubeNotch(tube_id, cutter_id, shape, original, remaining, removed)
