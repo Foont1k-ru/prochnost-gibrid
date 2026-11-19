@@ -44,7 +44,10 @@ def main() -> int:
         results.append(record)
         print(json.dumps(record), flush=True)
         if code != 0:
-            print(logfile.read_text(encoding='utf-8', errors='replace')[-16000:], flush=True)
+            text = logfile.read_text(encoding='utf-8', errors='replace')[-16000:]
+            print(text, flush=True)
+            escaped = text.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+            print(f'::error title=Qt CAD iteration {index}::{escaped}', flush=True)
     (output / 'summary.json').write_text(json.dumps({'environment': metadata, 'results': results},
                                                     indent=2, ensure_ascii=False), encoding='utf-8')
     return 0 if all(result['returncode'] == 0 for result in results) else 1
