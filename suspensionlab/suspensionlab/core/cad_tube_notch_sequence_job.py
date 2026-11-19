@@ -17,13 +17,21 @@ from ..model.kim_format import write_document
 from .cad_assembly_projection_job import MAX_OUTPUT_BYTES, CadAssemblyProjection, parse_projection
 from .cad_transport import CadPreviewError
 from .cad_tube_notch import TubeNotchError
-from .cad_tube_notch_sequence import MAX_CUTS, TubeNotchSequenceError, validate_notch_sequence
+from .cad_tube_notch_sequence import (
+    MAX_CUTS,
+    MAX_SEQUENCE_BYTES,
+    MAX_SEQUENCE_SEGMENTS,
+    TubeNotchSequenceError,
+    validate_notch_sequence,
+)
 
 
 @dataclass(frozen=True, slots=True)
 class SequenceStagePreview:
     cutter_id: str
     projection: CadAssemblyProjection
+    pair_before: CadAssemblyProjection
+    pair_after: CadAssemblyProjection
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,14 +56,19 @@ def parse_sequence_preview(value: Any, order: tuple[str, ...]) -> SequencePrevie
             len(value['stages']) != len(order)):
         raise CadPreviewError('output')
     before = parse_projection(value['before'])
+    total_segments = sum(len(lines) for lines in before.views)
     stages: list[SequenceStagePreview] = []
     for item, cutter in zip(value['stages'], order, strict=True):
-        if not isinstance(item, dict) or set(item) != {'cutter', 'projection'} or item['cutter'] != cutter:
+        if (not isinstance(item, dict) or set(item) != {'cutter', 'projection', 'pair_before', 'pair_after'} or
+                item['cutter'] != cutter):
             raise CadPreviewError('output')
         projection = parse_projection(item['projection'])
-        if projection.bounds_mm != before.bounds_mm:
+        pair_before, pair_after = parse_projection(item['pair_before']), parse_projection(item['pair_after'])
+        total_segments += sum(len(lines) for part in (projection, pair_before, pair_after) for lines in part.views)
+        if (total_segments > MAX_SEQUENCE_SEGMENTS or projection.bounds_mm != before.bounds_mm or
+                pair_before.bounds_mm != pair_after.bounds_mm):
             raise CadPreviewError('output')
-        stages.append(SequenceStagePreview(cutter, projection))
+        stages.append(SequenceStagePreview(cutter, projection, pair_before, pair_after))
     return SequencePreview(before, tuple(stages))
 
 
@@ -73,7 +86,7 @@ class SequencePreviewJob:
                     self._process.kill()
 
     def run(self, document: dict[str, Any], tube: str, cutters: list[str] | tuple[str, ...], *,
-            timeout: float = 120) -> SequencePreview:
+            timeout: float = 240) -> SequencePreview:
         if self._cancelled.is_set():
             raise CadPreviewError('cancelled')
         snapshot = deepcopy(document)
@@ -140,7 +153,8 @@ class SequencePreviewJob:
                     raise CadPreviewError(reason)
                 if state != {'status': 'ok'}:
                     raise CadPreviewError('output')
-                if not output.is_file() or output.stat().st_size > (1 + len(order)) * MAX_OUTPUT_BYTES:
+                max_bytes = min(MAX_SEQUENCE_BYTES, (1 + 3 * len(order)) * MAX_OUTPUT_BYTES)
+                if not output.is_file() or output.stat().st_size > max_bytes:
                     raise CadPreviewError('output')
                 return parse_sequence_preview(json.loads(output.read_text(encoding='utf-8')), order)
             except CadPreviewError:

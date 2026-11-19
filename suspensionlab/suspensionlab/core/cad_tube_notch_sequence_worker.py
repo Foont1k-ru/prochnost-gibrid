@@ -6,8 +6,9 @@ import sys
 from pathlib import Path
 
 from ..model.kim_format import read_document
+from .cad_assembly_projection_job import MAX_OUTPUT_BYTES
 from .cad_tube_notch import TubeNotchError
-from .cad_tube_notch_sequence import TubeNotchSequenceError
+from .cad_tube_notch_sequence import MAX_SEQUENCE_BYTES, TubeNotchSequenceError
 from .cad_worker import CadWorkerError
 
 
@@ -20,7 +21,10 @@ def main(argv: list[str] | None = None) -> int:
         from .cad_tube_notch_sequence_preview import project_notch_sequence
 
         result = project_notch_sequence(read_document(source, 'assembly'), args[3], args[4:])
-        output.write_text(json.dumps(result, allow_nan=False, separators=(',', ':')), encoding='utf-8')
+        payload = json.dumps(result, allow_nan=False, separators=(',', ':'))
+        if len(payload.encode('utf-8')) > min(MAX_SEQUENCE_BYTES, (1 + 3 * len(args[4:])) * MAX_OUTPUT_BYTES):
+            raise CadWorkerError('limit')
+        output.write_text(payload, encoding='utf-8')
         report.write_text('{"status":"ok"}', encoding='utf-8')
         return 0
     except TubeNotchSequenceError as error:

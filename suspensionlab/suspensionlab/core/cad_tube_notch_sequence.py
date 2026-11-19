@@ -12,6 +12,8 @@ from .cad_tube_notch import TubeNotchError, _cut_tube, _housing_envelope, _tube_
 TUBES = ('tube_front', 'tube_rear')
 CUTTERS = ('housing_front', 'housing_rear', 'ball_plate', *TUBES)
 MAX_CUTS = 4  # Два корпуса, пластина и другая труба; повторы не принимаются.
+MAX_SEQUENCE_BYTES = 24_000_000
+MAX_SEQUENCE_SEGMENTS = 120_000
 
 
 class TubeNotchSequenceError(TubeNotchError):

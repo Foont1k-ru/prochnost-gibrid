@@ -1,6 +1,7 @@
 """Сборка рычага из отдельных файлов: создание, открытие, безопасность."""
 from copy import deepcopy
 
+import pytest
 from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import QDialog, QFileDialog, QMessageBox
 
@@ -1237,7 +1238,7 @@ def test_notch_sequence_order_changes_invalidate_stale_results(qtbot, monkeypatc
                 assert release.wait(5)
             bounds = (0., 0., 0., 2., 3., 4.) if cutters[0] == 'tube_rear' else (0., 0., 0., 9., 9., 9.)
             before = CadAssemblyProjection(lines, bounds)
-            return SequencePreview(before, tuple(SequenceStagePreview(c, before) for c in cutters))
+            return SequencePreview(before, tuple(SequenceStagePreview(c, before, before, before) for c in cutters))
         def cancel(self):
             pass  # Force an obsolete reply after cancellation.
 
@@ -1325,7 +1326,7 @@ def test_notch_sequence_rejects_snapshot_changed_without_refresh(qtbot):
     token = view.generation
     d.document['scheme']['front_axle']['arb']['enabled'] = 1
     p = CadAssemblyProjection((((0., 0., 1., 1.),),) * 3, (0., 0., 0., 2., 3., 4.))
-    view._completed(token, SequencePreview(p, (SequenceStagePreview('housing_front', p),)))
+    view._completed(token, SequencePreview(p, (SequenceStagePreview('housing_front', p, p, p),)))
     assert view.canvas.result is None and 'снимок изменился' in view.status.text()
     d._saved = deepcopy(d.document)
     d.close()
@@ -1382,8 +1383,8 @@ def test_notch_sequence_switches_stages_without_new_calculation(qtbot, monkeypat
     class FakeJob:
         def run(self, doc, tube, cutters):
             calls.append((tube, cutters))
-            return SequencePreview(before, (SequenceStagePreview(cutters[0], first),
-                                            SequenceStagePreview(cutters[1], final)))
+            return SequencePreview(before, (SequenceStagePreview(cutters[0], first, before, first),
+                                            SequenceStagePreview(cutters[1], final, first, final)))
         def cancel(self):
             pass
 
@@ -1412,6 +1413,18 @@ def test_notch_sequence_switches_stages_without_new_calculation(qtbot, monkeypat
     assert 'Передний корпус' in view.status.text()
     assert view.generation == generation and calls == [('tube_front', ('housing_front', 'tube_rear'))]
     assert view.canvas.grab().toImage() != final_image
+    view.show_pair.setChecked(True)
+    assert not view.canvas.tube_only and view.canvas.before_title == 'До 1' and view.canvas.after_title == 'После 1'
+    assert view.canvas.result.before is before and view.canvas.result.after is first
+    assert 'непосредственно до и после шага 1' in view.status.text()
+    view.stage.setCurrentIndex(1)
+    assert view.canvas.result.before is first and view.canvas.result.after is final
+    assert 'предыдущие резы уже учтены' in view.status.text()
+    assert view.canvas.before_title == 'До 2' and view.canvas.after_title == 'После 2'
+    assert view.generation == generation and len(calls) == 1
+    view.show_pair.setChecked(False)
+    assert view.canvas.tube_only and view.canvas.result.tube_before is before
+    assert view.canvas.result.tube_after is final and view.canvas.before_title == 'Исходная'
     view.plane.setCurrentIndex(1)
     assert view.generation == generation and view.canvas.plane == 'XZ'
     view.enable.setChecked(False)
@@ -1420,7 +1433,8 @@ def test_notch_sequence_switches_stages_without_new_calculation(qtbot, monkeypat
     d.close()
 
 
-def test_notch_sequence_stage_change_rejects_silently_changed_snapshot(qtbot, monkeypatch):
+@pytest.mark.parametrize("action", ["stage", "pair", "plane"])
+def test_notch_sequence_stage_change_rejects_silently_changed_snapshot(qtbot, monkeypatch, action):
     from PySide6.QtCore import Qt
 
     from suspensionlab.core.cad_assembly_projection_job import CadAssemblyProjection
@@ -1430,7 +1444,7 @@ def test_notch_sequence_stage_change_rejects_silently_changed_snapshot(qtbot, mo
     p = CadAssemblyProjection((((0., 0., 1., 1.),),) * 3, (0., 0., 0., 2., 3., 4.))
     class FakeJob:
         def run(self, doc, tube, cutters):
-            return SequencePreview(p, tuple(SequenceStagePreview(c, p) for c in cutters))
+            return SequencePreview(p, tuple(SequenceStagePreview(c, p, p, p) for c in cutters))
         def cancel(self):
             pass
     monkeypatch.setattr(tube_notch_sequence_preview, 'SequencePreviewJob', FakeJob)
@@ -1445,7 +1459,12 @@ def test_notch_sequence_stage_change_rejects_silently_changed_snapshot(qtbot, mo
     view._start()
     qtbot.waitUntil(lambda: view.canvas.result is not None, timeout=5000)
     d.document['scheme']['front_axle']['arb']['enabled'] = 1
-    view.stage.setCurrentIndex(0)
+    if action == 'stage':
+        view.stage.setCurrentIndex(0)
+    elif action == 'pair':
+        view.show_pair.setChecked(True)
+    else:
+        view.plane.setCurrentIndex(1)
     assert view.canvas.result is None and 'снимок изменился' in view.status.text()
     assert view.stage.count() == 0 and not view.stage.isEnabled()
     d._saved = deepcopy(d.document)
