@@ -74,7 +74,8 @@ class Weldment3D(QWidget):
         self._timer.setInterval(250)
         self._timer.timeout.connect(self._start)
         layout = QVBoxLayout(self)
-        enable_key = ("scheme_part_3d.enable" if scheme_part else
+        enable_key = ("weldment_3d.fixed_enable" if fixed_skeleton else
+                      "scheme_part_3d.enable" if scheme_part else
                       "rear_joint_layout.cad_enable" if rear_joint_layout else
                       "front_joint_layout.cad_enable" if joint_layout else "joint_concept.cad_enable" if joint else
                       "front_pair.cad_enable" if four_tubes else
@@ -157,7 +158,9 @@ class Weldment3D(QWidget):
             self._status.setText(tr("weldment_3d.no_data"))
         else:
             self._pending = self._document
-            building_key = ("weldment_3d.fixed_building" if self._fixed_skeleton else
+            building_key = ("weldment_3d.fixed_housing_building" if self._fixed_skeleton and
+                            self._document.get('format') == 'suspensionlab-fixed-arm-housing-preview' else
+                            "weldment_3d.fixed_building" if self._fixed_skeleton else
                             "scheme_part_3d.building" if self._scheme_part else
                             "rear_joint_layout.cad_building" if self._rear_joint_layout else
                             "front_joint_layout.cad_building" if self._joint_layout else
@@ -199,7 +202,9 @@ class Weldment3D(QWidget):
         self._populate_parts(mesh)
         self._ready = True
         self._retry.setEnabled(True)
-        ready_key = ("scheme_part_3d.ready" if self._scheme_part else
+        ready_key = ("weldment_3d.fixed_housing_ready" if self._fixed_skeleton and
+                     self._document.get('format') == 'suspensionlab-fixed-arm-housing-preview' else
+                     "scheme_part_3d.ready" if self._scheme_part else
                      "rear_joint_layout.cad_ready" if self._rear_joint_layout else
                      "front_joint_layout.cad_ready" if self._joint_layout else
                      "joint_concept.cad_ready" if self._joint else

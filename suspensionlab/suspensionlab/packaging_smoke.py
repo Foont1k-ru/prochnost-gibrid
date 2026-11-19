@@ -313,6 +313,7 @@ def run_cad_check() -> None:
 
     from .model.kim_format import read_document, write_document
     from .model.templates import load_template
+    from .ui.fixed_arm_housings_dialog import FixedArmHousingsDialog
     from .ui.fixed_arm_skeleton_dialog import FixedArmSkeletonDialog
     from .ui.rear_tube_dialog import RearTubeDialog
 
@@ -366,6 +367,22 @@ def run_cad_check() -> None:
                  panel._document is not None and
                  panel._document['parts'][0]['geometry']['kind'] == 'prototype_arm_bent_tube',
                  "Гнутая труба по снимку не перестроена с исходными опорами")
+
+        def enter_housings(editor: FixedArmHousingsDialog) -> int:
+            for leg, values in (('front', (40, 25, 32, 1, 2, 3)), ('rear', (52, 31, 44, 0, -1, 0))):
+                for key, value in zip(('outer_diameter_mm', 'bore_diameter_mm', 'length_mm',
+                                       'axis_x', 'axis_y', 'axis_z'), values, strict=True):
+                    editor.fields[leg][key].setText(str(value))
+                editor.confirm_center[leg].setChecked(True)
+            editor.accept()
+            return editor.result()
+
+        with patch.object(FixedArmHousingsDialog, 'exec', enter_housings):
+            fixed_dialog._edit_housings()
+        mesh = wait_for_mesh()
+        _require(mesh.part_names == ('tube_front', 'tube_rear', 'housing_front', 'housing_rear') and
+                 mesh.triangle_parts is not None and all((mesh.triangle_parts == i).any() for i in range(4)),
+                 "Две трубы и два корпуса не построены раздельно")
         with TemporaryDirectory(prefix="suspensionlab-fixed-arm-reopen-") as directory:
             source = Path(directory) / "скелет.slarm"
             with patch.object(QFileDialog, "getSaveFileName", return_value=(str(source), "")):
@@ -375,7 +392,10 @@ def run_cad_check() -> None:
             with patch.object(QFileDialog, "getOpenFileName", return_value=(str(source), "")):
                 fixed_dialog._open_file()
             _require(fixed_dialog.preview is not None and fixed_dialog.preview.anchors == anchors and
-                     source.read_bytes() == original, "Снимок не открыт без изменения исходного файла")
+                     fixed_dialog._housings is not None and source.read_bytes() == original,
+                     "Снимок с корпусами не открыт без изменения исходного файла")
+            mesh = wait_for_mesh()
+            _require(len(mesh.part_names) == 4, "Корпуса не восстановлены в CAD")
     finally:
         with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes):
             fixed_dialog.close()

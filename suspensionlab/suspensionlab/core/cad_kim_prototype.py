@@ -160,6 +160,46 @@ def build_weldment_tubes_preview(document: dict[str, Any]) -> Any:
     return compound
 
 
+def build_fixed_arm_housing_preview(document: dict[str, Any]) -> Any:
+    """Две трубы и два полых корпуса, отдельные тела без подрезки и сварки."""
+    import math
+
+    from OCP.BRep import BRep_Builder
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+    from OCP.BRepCheck import BRepCheck_Analyzer
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder
+    from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt
+    from OCP.TopoDS import TopoDS_Compound
+
+    from ..model.fixed_arm_housings import validate_housing_preview
+
+    validate_housing_preview(document)
+    tube_doc = document['tubes']
+    points = tube_doc['parts'][0]['geometry']['source']['coordinates_mm']
+    builder, compound = BRep_Builder(), TopoDS_Compound()
+    builder.MakeCompound(compound)
+    for part in tube_doc['parts']:
+        shape = build_part(part)
+        if shape.IsNull() or not BRepCheck_Analyzer(shape).IsValid():
+            raise RuntimeError('invalid tube')
+        builder.Add(compound, shape)
+    for index, leg in enumerate(('front', 'rear')):
+        data = document['housings'][leg]
+        axis = data['axis']
+        norm = math.hypot(*axis)
+        direction = [v / norm for v in axis]
+        length = float(data['length_mm'])
+        origin = [float(points[index][i]) - direction[i] * length / 2 for i in range(3)]
+        frame = gp_Ax2(gp_Pnt(*origin), gp_Dir(*direction))
+        outer = BRepPrimAPI_MakeCylinder(frame, float(data['outer_diameter_mm']) / 2, length).Shape()
+        inner = BRepPrimAPI_MakeCylinder(frame, float(data['bore_diameter_mm']) / 2, length).Shape()
+        cut = BRepAlgoAPI_Cut(outer, inner)
+        if not cut.IsDone() or cut.Shape().IsNull() or not BRepCheck_Analyzer(cut.Shape()).IsValid():
+            raise RuntimeError('invalid housing')
+        builder.Add(compound, cut.Shape())
+    return compound
+
+
 def build_rear_tube_preview(document: dict[str, Any]) -> Any:
     """Одна полая труба, без втулок, креплений и сварки."""
     import math

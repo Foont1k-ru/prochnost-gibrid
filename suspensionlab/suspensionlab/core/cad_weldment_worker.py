@@ -10,6 +10,7 @@ import numpy as np
 
 from ..model.kim_format import read_document
 from .cad_kim_prototype import (
+    build_fixed_arm_housing_preview,
     build_front_arm_tubes_preview,
     build_front_joint_layout_preview,
     build_front_pair_preview,
@@ -41,7 +42,14 @@ def create_grouped_mesh(path: Path, deviation: float) -> tuple[np.ndarray, int, 
         from OCP.BRepCheck import BRepCheck_Analyzer
     except (ImportError, OSError) as error:
         raise CadWorkerError("missing_cad") from error
-    if path.suffix.lower() == ".kim":
+    if path.suffix.lower() == '.slpreview':
+        from ..model.fixed_arm_housings import validate_housing_preview
+        from ..model.project_io import _read_project_bytes, _unique_object
+
+        doc = json.loads(_read_project_bytes(path).decode('utf-8'), object_pairs_hook=_unique_object)
+        validate_housing_preview(doc)
+        shape = build_fixed_arm_housing_preview(doc)
+    elif path.suffix.lower() == ".kim":
         doc = read_document(path, "part")
         if doc["version"] not in ("0.4", "0.6"):
             raise CadWorkerError("no_shape")

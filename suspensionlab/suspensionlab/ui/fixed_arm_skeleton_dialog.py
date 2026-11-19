@@ -1,6 +1,7 @@
 """Пробный редактор осевых линий: только неизменяемый расчётный снимок."""
 from __future__ import annotations
 
+import json
 from math import dist
 from pathlib import Path
 from typing import Any
@@ -27,6 +28,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..model.bent_tube import make_bend_path
+from ..model.fixed_arm_housings import HousingError, make_housing_preview, validate_housings
 from ..model.fixed_arm_skeleton import (
     FixedArmSnapshot,
     SkeletonError,
@@ -41,6 +43,7 @@ from .bend_editor import BendEditor
 from .canvas.fixed_arm_projection import SkeletonProjection
 from .canvas.fixed_arm_scene import LABELS, FixedArmScene, skeleton_scene
 from .controller import AppController
+from .fixed_arm_housings_dialog import FixedArmHousingsDialog
 from .weldment_3d import Weldment3D
 
 
@@ -53,6 +56,7 @@ class FixedArmSkeletonDialog(QDialog):
         self.snapshot: FixedArmSnapshot | None = None
         self.preview: SkeletonPreview | None = None
         self._draft: tuple[str, tuple[float, float, float]] | None = None
+        self._housings: dict[str, Any] | None = None
         self._cad_candidate: dict[str, Any] | None = None
         self._cad_snapshot: FixedArmSnapshot | None = None
         self._saved_state: tuple[object, ...] | None = None
@@ -108,6 +112,17 @@ class FixedArmSkeletonDialog(QDialog):
                       '3D: движение в плоскости экрана; XY/XZ/YZ сохраняют третью координату.', self)
         note.setWordWrap(True)
         layout.addWidget(note)
+        self._housing_edit = QPushButton('Задать корпуса втулок…', self)
+        self._housing_edit.setEnabled(False)
+        self._housing_edit.clicked.connect(self._edit_housings)
+        layout.addWidget(self._housing_edit)
+        self._housing_remove = QPushButton('Убрать корпуса из просмотра', self)
+        self._housing_remove.setEnabled(False)
+        self._housing_remove.clicked.connect(self._remove_housings)
+        layout.addWidget(self._housing_remove)
+        self._housing_status = QLabel('Корпуса не заданы.', self)
+        self._housing_status.setWordWrap(True)
+        layout.addWidget(self._housing_status)
         self._bend_editor = BendEditor(self)
         self._bend_editor.set_editable(False)
         layout.addWidget(self._bend_editor)
@@ -127,13 +142,13 @@ class FixedArmSkeletonDialog(QDialog):
             projection.segmentPicked.connect(self._create_draft)
         cad_tab = QWidget(self._tabs)
         cad_layout = QVBoxLayout(cad_tab)
-        cad_note = QLabel('Предварительный CAD: только две неподрезанные полые трубы. '
-                          'Корпусов, шаровой, швов и проверки зазоров или прочности нет.', cad_tab)
-        cad_note.setWordWrap(True)
-        cad_layout.addWidget(cad_note)
+        self._cad_note = QLabel('Предварительный CAD: две неподрезанные полые трубы; корпуса пока не заданы. '
+                                'Шаровой, швов и проверки зазоров или прочности нет.', cad_tab)
+        self._cad_note.setWordWrap(True)
+        cad_layout.addWidget(self._cad_note)
         self._cad = Weldment3D(cad_tab, is_current=self._cad_is_current, fixed_skeleton=True)
         cad_layout.addWidget(self._cad, 1)
-        self._tabs.addTab(cad_tab, '3D · трубы (CAD)')
+        self._tabs.addTab(cad_tab, '3D · детали (CAD)')
         view_layout.addWidget(self._tabs, 1)
         self._reset_camera = QPushButton('Сбросить 3D-камеру', self)
         self._reset_camera.clicked.connect(self._scene.reset_camera)
@@ -216,8 +231,9 @@ class FixedArmSkeletonDialog(QDialog):
         self._remove_bend.setVisible(skeleton_view)
 
     def _state(self) -> tuple[object, ...]:
+        housing_state = json.dumps(self._housings, sort_keys=True, allow_nan=False)
         return (self.snapshot, self._from.value(), self._to.value(), self._spacing.value(),
-                self._radius.value(), self._wall.value(), self._bend_editor.state(), self._draft)
+                self._radius.value(), self._wall.value(), self._bend_editor.state(), self._draft, housing_state)
 
     def _cad_is_current(self, candidate: dict[str, Any]) -> bool:
         if (self.snapshot is None or self.preview is None or self.snapshot != self._cad_snapshot or
@@ -227,6 +243,8 @@ class FixedArmSkeletonDialog(QDialog):
         try:
             fresh = fixed_arm_tube_document(self.snapshot, self.controller.project, self._radius.value(),
                                             self._wall.value(), self._bend_editor.values())
+            if self._housings is not None:
+                fresh = make_housing_preview(fresh, self._housings)
             return fresh == candidate
         except (SkeletonError, KimFormatError, ValueError, TypeError, OverflowError):
             return False
@@ -271,6 +289,8 @@ class FixedArmSkeletonDialog(QDialog):
         self._cad_snapshot = None
         self._cad.set_document(None)
         self._save.setEnabled(False)
+        self._housing_edit.setEnabled(False)
+        self._housing_remove.setEnabled(False)
         self._scene.set_scene(None)
         with QSignalBlocker(self._point_selection):
             self._point_selection.clear()
@@ -284,6 +304,38 @@ class FixedArmSkeletonDialog(QDialog):
         for canvas in self._projections:
             canvas.set_preview(None)
         self._anchors.clear()
+
+    def _edit_housings(self) -> None:
+        if self.snapshot is None or self.preview is None or self._draft is not None:
+            return
+        if not self.snapshot.matches(self.controller.project):
+            self._refresh()
+            return
+        state, project = self._state(), self.controller.project
+        editor = FixedArmHousingsDialog(self._housings, self)
+        accepted = editor.exec() == QDialog.DialogCode.Accepted
+        if (self._state() != state or self.controller.project is not project or self.snapshot is None or
+                not self.snapshot.matches(self.controller.project)):
+            self._refresh()
+            self._housing_status.setText('Данные изменились во время ввода. Корпуса не приняты.')
+            return
+        if not accepted:
+            return
+        try:
+            candidate = validate_housings(editor.result_values)
+            tubes = fixed_arm_tube_document(self.snapshot, self.controller.project, self._radius.value(),
+                                            self._wall.value(), self._bend_editor.values())
+            make_housing_preview(tubes, candidate)
+        except (HousingError, SkeletonError, KimFormatError, ValueError) as error:
+            self._housing_status.setText(f'Корпуса не приняты: {error}')
+            return
+        self._housings = candidate
+        self._refresh()
+
+    def _remove_housings(self) -> None:
+        if self._housings is not None and self._draft is None:
+            self._housings = None
+            self._refresh()
 
     def _length_summary(self, bends: dict[str, dict[str, Any]]) -> str:
         if self.preview is None:
@@ -317,6 +369,8 @@ class FixedArmSkeletonDialog(QDialog):
         self._cad_snapshot = None
         self._cad.set_document(None)
         self._save.setEnabled(False)
+        self._housing_edit.setEnabled(False)
+        self._housing_remove.setEnabled(False)
         scene = skeleton_scene(self.preview, bends)
         scene = type(scene)(scene.travel_mm, scene.segments, (*scene.points, (f'bend_{leg}', point)))
         self._scene.set_scene(scene, self.preview.centerlines)
@@ -552,6 +606,7 @@ class FixedArmSkeletonDialog(QDialog):
         self._bend_editor.load(loaded.bends)
         del blockers
         self.snapshot = loaded.snapshot
+        self._housings = loaded.housings
         self._refresh()
         if self.snapshot is None or self.preview is None:
             self._file_status.setText('Схема изменилась во время открытия; снимок не принят.')
@@ -579,7 +634,7 @@ class FixedArmSkeletonDialog(QDialog):
             if self.controller.is_protected_export_target(path):
                 raise SkeletonFileError('Нельзя записать поверх проекта или автосохранения')
             write_skeleton(path, self.snapshot, self.controller.project, self._radius.value(),
-                           self._wall.value(), self._bend_editor.values())
+                           self._wall.value(), self._bend_editor.values(), self._housings)
         except (SkeletonFileError, KimFormatError, OSError, ValueError, RuntimeError) as error:
             QMessageBox.warning(self, 'Сохранение скелета', str(error))
             self._refresh()
@@ -591,6 +646,8 @@ class FixedArmSkeletonDialog(QDialog):
         self._file_status.clear()
         if self.snapshot is not None:
             self.snapshot = None
+            self._housings = None
+            self._housing_status.setText('Корпуса сброшены: требуется новое подтверждение опор и параметров.')
             self._bend_editor.set_editable(False)
             self._clear_preview()
             self._status.setText('Диапазон изменён. Повторно рассчитайте и зафиксируйте снимок.')
@@ -598,6 +655,8 @@ class FixedArmSkeletonDialog(QDialog):
     def _project_replaced(self) -> None:
         self._file_status.clear()
         self.snapshot = None
+        self._housings = None
+        self._housing_status.setText('Корпуса сброшены: требуется новое подтверждение опор и параметров.')
         self._bend_editor.set_editable(False)
         self._clear_preview()
         self._status.setText('Проект заменён. Повторно рассчитайте и зафиксируйте снимок.')
@@ -605,7 +664,8 @@ class FixedArmSkeletonDialog(QDialog):
     def _capture_snapshot(self) -> None:
         if self.snapshot is not None or self._bend_editor.has_bends():
             answer = QMessageBox.question(self, 'Новый снимок',
-                'Рассчитать новую схему? Текущие параметры изгибов сохранятся, но будут проверены заново.',
+                'Рассчитать новую схему? Изгибы будут проверены заново; параметры корпусов сбросятся '
+                'и потребуют нового подтверждения опор.',
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
             if answer != QMessageBox.StandardButton.Yes:
                 return
@@ -615,11 +675,14 @@ class FixedArmSkeletonDialog(QDialog):
                                          spacing_mm=self._spacing.value())
         except SkeletonError as error:
             self.snapshot = None
+            self._housings = None
+            self._housing_status.setText('Корпуса не заданы.')
             self._bend_editor.set_editable(False)
             self._clear_preview()
             self._status.setText(str(error))
             return
         self.snapshot = snapshot
+        self._housings = None
         self._bend_editor.set_editable(True)
         self._refresh()
 
@@ -631,6 +694,8 @@ class FixedArmSkeletonDialog(QDialog):
             return
         if not self.snapshot.matches(self.controller.project):
             self.snapshot = None
+            self._housings = None
+            self._housing_status.setText('Корпуса сброшены: требуется новое подтверждение опор и параметров.')
             self._bend_editor.set_editable(False)
             self._status.setText('Проект отличается от снимка. Скелет скрыт; повторите расчёт и фиксацию.')
             return
@@ -641,11 +706,13 @@ class FixedArmSkeletonDialog(QDialog):
                                         self._wall.value(), bends)
             document = fixed_arm_tube_document(self.snapshot, self.controller.project, self._radius.value(),
                                                self._wall.value(), bends)
+            if self._housings is not None:
+                document = make_housing_preview(document, self._housings)
             scene = skeleton_scene(preview, bends)
         except KimFormatError:
             self._status.setText('Заполните X, Y, Z и радиус для каждого включённого изгиба.')
             return
-        except SkeletonError as error:
+        except (SkeletonError, HousingError) as error:
             self._status.setText(str(error))
             return
         self.preview = preview
@@ -653,6 +720,15 @@ class FixedArmSkeletonDialog(QDialog):
         self._cad_snapshot = self.snapshot
         self._cad.set_document(document)
         self._save.setEnabled(True)
+        self._housing_edit.setEnabled(True)
+        self._housing_remove.setEnabled(self._housings is not None)
+        self._housing_status.setText('Оба корпуса заданы и центры опор подтверждены.' if self._housings is not None
+                                     else 'Корпуса не заданы.')
+        self._cad_note.setText('Предварительный CAD: две неподрезанные трубы и два отдельных корпуса. '
+                               'Возможны пересечения; швов, шаровой и проверок зазоров или прочности нет.'
+                               if self._housings is not None else
+                               'Предварительный CAD: две неподрезанные полые трубы; корпуса пока не заданы. '
+                               'Шаровой, швов и проверки зазоров или прочности нет.')
         self._scene.set_scene(scene, preview.centerlines)
         self._lengths.setText(self._length_summary(bends))
         with QSignalBlocker(self._point_selection):

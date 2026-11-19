@@ -18,6 +18,10 @@ class PreviewPart:
 
 
 def preview_parts(document: dict[str, Any]) -> tuple[PreviewPart, ...]:
+    if document.get('format') == 'suspensionlab-fixed-arm-housing-preview':
+        return tuple(PreviewPart(identifier, (index,), name=name) for index, (identifier, name) in enumerate((
+            ('tube_front', 'Передняя труба'), ('tube_rear', 'Задняя труба'),
+            ('housing_front', 'Передний корпус'), ('housing_rear', 'Задний корпус'))))
     if document.get('format') != 'kima-assembly':
         return ()
     version = document.get('version')
