@@ -310,7 +310,54 @@ def run_cad_check() -> None:
     from PySide6.QtWidgets import QFileDialog, QMessageBox
 
     from .model.kim_format import read_document, write_document
+    from .model.templates import load_template
+    from .ui.fixed_arm_skeleton_dialog import FixedArmSkeletonDialog
     from .ui.rear_tube_dialog import RearTubeDialog
+
+    # Проверяем именно новый пользовательский путь в замороженном приложении:
+    # снимок, две сгруппированные трубы во вложенном CAD-процессе и повторное открытие.
+    fixed_controller = AppController()
+    fixed_controller.project = load_template('ring')
+    fixed_dialog = FixedArmSkeletonDialog(fixed_controller)
+    fixed_dialog.show()
+    panel = fixed_dialog._cad
+    try:
+        fixed_dialog._capture_snapshot()
+        _require(fixed_dialog.preview is not None, "Не удалось зафиксировать расчётный снимок рычага")
+        assert fixed_dialog.preview is not None
+        anchors = fixed_dialog.preview.anchors
+        fixed_dialog._tabs.setCurrentIndex(4)
+        panel._quality.setCurrentIndex(1)
+        panel._enable.setChecked(True)
+        mesh = wait_for_mesh()
+        _require(mesh.part_names == ('tube_front', 'tube_rear') and mesh.triangle_parts is not None and
+                 all((mesh.triangle_parts == index).any() for index in (0, 1)) and
+                 not panel._view.grab().isNull(), "Трубы по снимку не отображаются раздельно")
+        a, b = anchors[0], anchors[2]
+        vertex = ((a[0] + b[0]) / 2 + 70, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2 + 70)
+        for field, bend_value in zip(fixed_dialog._bend_editor.fields['front'], (*vertex, 20), strict=True):
+            field.setText(str(bend_value))
+        fixed_dialog._bend_editor.checks['front'].setChecked(True)
+        _require(panel._view.mesh is None, "Старая CAD-модель снимка не очищена")
+        wait_for_mesh()
+        _require(fixed_dialog.preview is not None and fixed_dialog.preview.anchors == anchors and
+                 panel._document is not None and
+                 panel._document['parts'][0]['geometry']['kind'] == 'prototype_arm_bent_tube',
+                 "Гнутая труба по снимку не перестроена с исходными опорами")
+        with TemporaryDirectory(prefix="suspensionlab-fixed-arm-reopen-") as directory:
+            source = Path(directory) / "скелет.slarm"
+            with patch.object(QFileDialog, "getSaveFileName", return_value=(str(source), "")):
+                fixed_dialog._save_file()
+            _require(source.exists(), "Скелет не сохранён в отдельный файл")
+            original = source.read_bytes()
+            with patch.object(QFileDialog, "getOpenFileName", return_value=(str(source), "")):
+                fixed_dialog._open_file()
+            _require(fixed_dialog.preview is not None and fixed_dialog.preview.anchors == anchors and
+                     source.read_bytes() == original, "Снимок не открыт без изменения исходного файла")
+    finally:
+        with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes):
+            fixed_dialog.close()
+            app.processEvents()
 
     controller = AppController()
     controller.set_axle_type("rear", "live_axle_coil")
