@@ -1,6 +1,7 @@
 """Пробный редактор осевых линий: только неизменяемый расчётный снимок."""
 from __future__ import annotations
 
+from math import dist
 from pathlib import Path
 from typing import Any
 
@@ -12,7 +13,10 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
+    QHBoxLayout,
+    QInputDialog,
     QLabel,
+    QLineEdit,
     QMessageBox,
     QPushButton,
     QScrollArea,
@@ -22,6 +26,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..model.bent_tube import make_bend_path
 from ..model.fixed_arm_skeleton import (
     FixedArmSnapshot,
     SkeletonError,
@@ -47,6 +52,7 @@ class FixedArmSkeletonDialog(QDialog):
         self.controller = controller
         self.snapshot: FixedArmSnapshot | None = None
         self.preview: SkeletonPreview | None = None
+        self._draft: tuple[str, tuple[float, float, float]] | None = None
         self._cad_candidate: dict[str, Any] | None = None
         self._cad_snapshot: FixedArmSnapshot | None = None
         self._saved_state: tuple[object, ...] | None = None
@@ -97,14 +103,15 @@ class FixedArmSkeletonDialog(QDialog):
         self._status.setWordWrap(True)
         self._status.setTextFormat(Qt.TextFormat.PlainText)
         layout.addWidget(self._status)
-        note = QLabel('Опоры нельзя редактировать здесь. Вершина изгиба — пересечение продолжений прямых, '
-                      'а не точка на дуге; координаты абсолютные X/Y/Z, мм. Вершину можно перетаскивать '
-                      'на проекциях; Esc отменяет перетаскивание.', self)
+        note = QLabel('Нажмите на прямую трубу, затем перетащите появившуюся вершину. '
+                      'Пока доступен один изгиб на каждую трубу. Точки опор закреплены; Esc отменяет перемещение. '
+                      '3D: движение в плоскости экрана; XY/XZ/YZ сохраняют третью координату.', self)
         note.setWordWrap(True)
         layout.addWidget(note)
         self._bend_editor = BendEditor(self)
         self._bend_editor.set_editable(False)
         layout.addWidget(self._bend_editor)
+        self._bend_editor.hide()  # Internal storage; edited on the canvas and on demand.
         self._tabs = QTabWidget(self)
         self._scene = FixedArmScene(self._tabs)
         self._tabs.addTab(self._scene, '3D · осевые линии')
@@ -115,7 +122,9 @@ class FixedArmSkeletonDialog(QDialog):
             projection.ambiguousPick.connect(self._ambiguous_pick)
             projection.dragStarted.connect(self._begin_projection_drag)
             projection.dragCancelled.connect(self._cancel_projection_drag)
+            projection.dragMoved.connect(self._drag_moved)
             projection.dragReleased.connect(self._apply_projection_drag)
+            projection.segmentPicked.connect(self._create_draft)
         cad_tab = QWidget(self._tabs)
         cad_layout = QVBoxLayout(cad_tab)
         cad_note = QLabel('Предварительный CAD: только две неподрезанные полые трубы. '
@@ -140,14 +149,38 @@ class FixedArmSkeletonDialog(QDialog):
         self._selection_status.setFixedHeight(68)
         self._selection_status.setTextFormat(Qt.TextFormat.PlainText)
         view_layout.addWidget(self._selection_status)
+        self._lengths = QLabel(self)
+        self._lengths.setWordWrap(True)
+        self._lengths.setFixedHeight(44)
+        view_layout.addWidget(self._lengths)
+        actions = QHBoxLayout()
+        self._edit_coordinates = QPushButton('Координаты…', self)
+        self._edit_radius = QPushButton('Радиус…', self)
+        self._remove_bend = QPushButton('Удалить вершину', self)
+        self._edit_coordinates.setEnabled(False)
+        self._edit_radius.setEnabled(False)
+        self._remove_bend.setEnabled(False)
+        self._edit_coordinates.clicked.connect(self._change_selected_coordinates)
+        self._edit_radius.clicked.connect(self._change_selected_radius)
+        self._remove_bend.clicked.connect(self._remove_selected_bend)
+        actions.addWidget(self._edit_coordinates)
+        actions.addWidget(self._edit_radius)
+        actions.addWidget(self._remove_bend)
+        view_layout.addLayout(actions)
         self._tabs.currentChanged.connect(self._view_tab_changed)
         self._point_selection.currentIndexChanged.connect(self._selection_changed)
         self._scene.pointPicked.connect(self._point_picked)
         self._scene.ambiguousPick.connect(self._ambiguous_pick)
+        self._scene.segmentPicked.connect(self._create_draft)
+        self._scene.dragStarted.connect(self._begin_projection_drag)
+        self._scene.dragMoved.connect(self._drag_moved)
+        self._scene.dragReleased.connect(self._apply_projection_drag)
+        self._scene.dragCancelled.connect(self._cancel_projection_drag)
         self._anchors = QLabel(self)
         self._anchors.setWordWrap(True)
         self._anchors.setTextFormat(Qt.TextFormat.PlainText)
         layout.addWidget(self._anchors)
+        self._anchors.hide()  # Coordinates of the selected point appear beside the view.
         self._open = QPushButton('Открыть .slarm и пересчитать…', self)
         self._open.clicked.connect(self._open_file)
         layout.addWidget(self._open)
@@ -159,6 +192,7 @@ class FixedArmSkeletonDialog(QDialog):
         self._file_status.setWordWrap(True)
         self._file_status.setTextFormat(Qt.TextFormat.PlainText)
         layout.addWidget(self._file_status)
+        layout.addStretch(1)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close, self)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
@@ -176,10 +210,14 @@ class FixedArmSkeletonDialog(QDialog):
         self._reset_camera.setVisible(skeleton_view)
         self._point_selection.setVisible(skeleton_view)
         self._selection_status.setVisible(skeleton_view)
+        self._lengths.setVisible(skeleton_view)
+        self._edit_coordinates.setVisible(skeleton_view)
+        self._edit_radius.setVisible(skeleton_view)
+        self._remove_bend.setVisible(skeleton_view)
 
     def _state(self) -> tuple[object, ...]:
         return (self.snapshot, self._from.value(), self._to.value(), self._spacing.value(),
-                self._radius.value(), self._wall.value(), self._bend_editor.state())
+                self._radius.value(), self._wall.value(), self._bend_editor.state(), self._draft)
 
     def _cad_is_current(self, candidate: dict[str, Any]) -> bool:
         if (self.snapshot is None or self.preview is None or self.snapshot != self._cad_snapshot or
@@ -227,6 +265,7 @@ class FixedArmSkeletonDialog(QDialog):
         return spin
 
     def _clear_preview(self) -> None:
+        self._draft = None
         self.preview = None
         self._cad_candidate = None
         self._cad_snapshot = None
@@ -238,12 +277,145 @@ class FixedArmSkeletonDialog(QDialog):
             self._point_selection.addItem('Точка не выбрана', None)
         self._point_selection.setEnabled(False)
         self._selection_status.setText('Точки выбираются щелчком по маркеру или из списка.')
+        self._lengths.clear()
+        self._edit_coordinates.setEnabled(False)
+        self._edit_radius.setEnabled(False)
+        self._remove_bend.setEnabled(False)
         for canvas in self._projections:
             canvas.set_preview(None)
         self._anchors.clear()
 
+    def _length_summary(self, bends: dict[str, dict[str, Any]]) -> str:
+        if self.preview is None:
+            return ''
+        result = []
+        for index, (leg, name) in enumerate((('front', 'Передняя'), ('rear', 'Задняя'))):
+            start, end = self.preview.anchors[index], self.preview.anchors[2]
+            if leg not in bends:
+                result.append(f'{name}: прямая {dist(start, end):.2f} мм')
+            else:
+                bend = bends[leg]
+                path = make_bend_path(start, bend['vertex_mm'], end, bend['radius_mm'], self._radius.value())
+                result.append(f'{name}: прямые {dist(start, path.tangent_start):.2f} + '
+                              f'{dist(path.tangent_end, end):.2f} мм; дуга {path.radius * path.sweep_rad:.2f} мм')
+        return ' · '.join(result)
+
+    def _create_draft(self, leg: str, point: tuple[float, float, float]) -> None:
+        if (self.snapshot is None or self.preview is None or leg not in ('front', 'rear') or
+                not self.snapshot.matches(self.controller.project)):
+            self._refresh()
+            return
+        if self._draft is not None:
+            self._selection_status.setText('Сначала завершите или удалите черновую вершину.')
+            return
+        bends = self._bend_editor.values()
+        if leg in bends:
+            return
+        self._draft = (leg, point)
+        # The draft is not committed geometry: never display the old CAD as its result.
+        self._cad_candidate = None
+        self._cad_snapshot = None
+        self._cad.set_document(None)
+        self._save.setEnabled(False)
+        scene = skeleton_scene(self.preview, bends)
+        scene = type(scene)(scene.travel_mm, scene.segments, (*scene.points, (f'bend_{leg}', point)))
+        self._scene.set_scene(scene, self.preview.centerlines)
+        for canvas in self._projections:
+            canvas.set_preview(self.preview, scene.points)
+        with QSignalBlocker(self._point_selection):
+            self._point_selection.addItem(LABELS[f'bend_{leg}'] + ' · черновик', f'bend_{leg}')
+            self._point_selection.setCurrentIndex(self._point_selection.findData(f'bend_{leg}'))
+        self._selection_changed()
+
+    def _drag_moved(self, code: str, point: tuple[float, float, float]) -> None:
+        if self._gesture_state is None or code != self._gesture_code or self.preview is None:
+            return
+        leg = code.removeprefix('bend_')
+        index = 0 if leg == 'front' else 1
+        self._selection_status.setText(f'Кандидат: X={point[0]:.4f}, Y={point[1]:.4f}, Z={point[2]:.4f} мм. '
+                                       'Отпустите для проверки; Esc отменяет.')
+        self._lengths.setText(f'До виртуальной вершины: {dist(self.preview.anchors[index], point):.2f} + '
+                              f'{dist(point, self.preview.anchors[2]):.2f} мм. Не длины после скругления.')
+
+    def _change_selected_coordinates(self) -> None:
+        code = self._point_selection.currentData()
+        if not isinstance(code, str) or not code.startswith('bend_') or self.snapshot is None or self.preview is None:
+            return
+        point = self._scene.frame.point(code) if self._scene.frame is not None else None
+        if point is None:
+            return
+        state = self._state()
+        editor = QDialog(self)
+        editor.setWindowTitle('Координаты вершины')
+        layout = QVBoxLayout(editor)
+        form = QFormLayout()
+        fields: list[QLineEdit] = []
+        for axis, value in zip('XYZ', point, strict=True):
+            field = QLineEdit(repr(value), editor)
+            field.setObjectName('coordinate_' + axis)
+            form.addRow(axis + ', мм', field)
+            fields.append(field)
+        layout.addLayout(form)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, editor)
+        buttons.accepted.connect(editor.accept)
+        buttons.rejected.connect(editor.reject)
+        layout.addWidget(buttons)
+        if editor.exec() != QDialog.DialogCode.Accepted:
+            return
+        if state != self._state() or self.snapshot is None or not self.snapshot.matches(self.controller.project):
+            self._refresh()
+            self._selection_status.setText('Данные изменились во время ввода координат. Изменение не принято.')
+            return
+        try:
+            coordinates = tuple(float(field.text().strip().replace(',', '.')) for field in fields)
+        except ValueError:
+            self._selection_status.setText('Введите три конечные числовые координаты. Форма не изменена.')
+            return
+        self._begin_projection_drag(code)
+        self._apply_projection_drag(code, (0, 1, 2), coordinates)  # type: ignore[arg-type]
+
+    def _change_selected_radius(self) -> None:
+        code = self._point_selection.currentData()
+        if not isinstance(code, str) or not code.startswith('bend_') or self.snapshot is None or self.preview is None:
+            return
+        leg = code.removeprefix('bend_')
+        if self._draft is not None and self._draft[0] == leg:
+            self._selection_status.setText('Сначала перетащите черновую вершину с прямой трубы.')
+            return
+        state = self._state()
+        try:
+            bends = self._bend_editor.values()
+            old = float(bends[leg]['radius_mm'])
+            radius, ok = QInputDialog.getDouble(self, 'Радиус изгиба', 'Радиус осевой линии, мм:', old, 0, 1000000, 4)
+            if not ok:
+                return
+            if state != self._state() or self.snapshot is None or not self.snapshot.matches(self.controller.project):
+                self._refresh()
+                return
+            bends[leg]['radius_mm'] = radius
+            preview_fixed_arm(self.snapshot, self.controller.project, self._radius.value(), self._wall.value(), bends)
+        except (KimFormatError, SkeletonError, KeyError, ValueError, OverflowError) as error:
+            self._selection_status.setText(f'Радиус не принят: {error}. Показан прежний скелет.')
+            return
+        self._bend_editor.fields[leg][3].setText(str(radius))
+
+    def _remove_selected_bend(self) -> None:
+        code = self._point_selection.currentData()
+        if not isinstance(code, str) or not code.startswith('bend_'):
+            return
+        leg = code.removeprefix('bend_')
+        if self._draft is not None and self._draft[0] == leg:
+            self._refresh()
+        elif leg in self._bend_editor.checks:
+            self._bend_editor.checks[leg].setChecked(False)
+
     def _selection_changed(self, *_args: object) -> None:
         code = self._point_selection.currentData()
+        is_bend = isinstance(code, str) and code.startswith('bend_')
+        is_draft = is_bend and self._draft is not None and code == f'bend_{self._draft[0]}'
+        self._edit_coordinates.setEnabled(is_bend)
+        self._edit_radius.setEnabled(is_bend and not is_draft)
+        self._remove_bend.setEnabled(is_bend)
         if not isinstance(code, str) or self._scene.frame is None:
             self._scene.select_point(None)
             for projection in self._projections:
@@ -260,8 +432,9 @@ class FixedArmSkeletonDialog(QDialog):
         self._scene.select_point(code)
         for projection in self._projections:
             projection.select_point(code)
-        kind = ('Зафиксирована снимком; изменение опоры — только после нового расчёта.' if not code.startswith('bend_')
-                else 'Вершина продолжений, не точка на дуге; её можно перетащить на проекциях или изменить полями.')
+        kind = ('Зафиксирована снимком; изменение опоры — только после нового расчёта.' if not is_bend else
+                'Черновик: перетащите вершину, затем задайте радиус.' if is_draft else
+                'Вершина продолжений, не точка на дуге; перетащите в 3D или на проекции.')
         self._selection_status.setText(f'{LABELS[code]}: X={point[0]:.4f}, Y={point[1]:.4f}, Z={point[2]:.4f} мм. {kind}')
 
     def _point_picked(self, code: str) -> None:
@@ -275,9 +448,13 @@ class FixedArmSkeletonDialog(QDialog):
                                        'используйте другую проекцию или поля координат.')
 
     def _cancel_projection_drag(self) -> None:
+        had_gesture = self._gesture_state is not None
         self._gesture_state = None
         self._gesture_project = None
         self._gesture_code = None
+        if had_gesture and self.preview is not None and self._scene.frame is not None:
+            self._selection_changed()
+            self._lengths.setText(self._length_summary(self._bend_editor.values()))
 
     def _begin_projection_drag(self, code: str) -> None:
         self._cancel_projection_drag()
@@ -294,7 +471,7 @@ class FixedArmSkeletonDialog(QDialog):
         self._cancel_projection_drag()
         if (state is None or state != self._state() or project is not self.controller.project or
                 self.snapshot is None or self.preview is None or code != expected_code or
-                code not in ('bend_front', 'bend_rear') or axes not in ((0, 1), (0, 2), (1, 2))):
+                code not in ('bend_front', 'bend_rear') or axes not in ((0, 1), (0, 2), (1, 2), (0, 1, 2))):
             self._refresh()
             self._selection_status.setText('Данные изменились во время перемещения. Изменение не принято.')
             return
@@ -305,12 +482,26 @@ class FixedArmSkeletonDialog(QDialog):
         leg = code.removeprefix('bend_')
         try:
             bends = self._bend_editor.values()
-            # The hidden third coordinate is always taken from the editor, never the pointer.
-            original = bends[leg]['vertex_mm']
+            is_draft = self._draft is not None and self._draft[0] == leg
+            # Hidden projection coordinates come from the original point, never the pointer.
+            original = self._draft[1] if is_draft and self._draft is not None else bends[leg]['vertex_mm']
             vertex = list(original)
             for axis in axes:
                 vertex[axis] = coordinates[axis]
-            bends[leg]['vertex_mm'] = vertex
+            if is_draft:
+                radius, ok = QInputDialog.getDouble(self, 'Радиус скругления',
+                                                    'Введите радиус осевой линии изгиба, мм:', 0, 0, 1000000, 4)
+                if not ok:
+                    self._selection_changed()
+                    self._lengths.setText(self._length_summary(bends))
+                    return
+                if state != self._state() or self.snapshot is None or not self.snapshot.matches(self.controller.project):
+                    self._refresh()
+                    self._selection_status.setText('Данные изменились во время ввода радиуса. Изгиб не принят.')
+                    return
+                bends[leg] = {'vertex_mm': vertex, 'radius_mm': radius}
+            else:
+                bends[leg]['vertex_mm'] = vertex
             preview_fixed_arm(self.snapshot, self.controller.project, self._radius.value(), self._wall.value(), bends)
         except (KimFormatError, SkeletonError, KeyError, IndexError, TypeError, ValueError) as error:
             if not self.snapshot.matches(self.controller.project):
@@ -323,11 +514,15 @@ class FixedArmSkeletonDialog(QDialog):
             self._refresh()
             self._selection_status.setText('Данные изменились во время проверки. Изменение не принято.')
             return
-        fields = self._bend_editor.fields[leg]
-        blockers = [QSignalBlocker(fields[axis]) for axis in axes]
-        for axis in axes:
-            fields[axis].setText(str(vertex[axis]))
-        del blockers
+        if is_draft:
+            self._draft = None
+            self._bend_editor.load(bends)
+        else:
+            fields = self._bend_editor.fields[leg]
+            blockers = [QSignalBlocker(fields[axis]) for axis in axes]
+            for axis in axes:
+                fields[axis].setText(str(vertex[axis]))
+            del blockers
         # A single change notification avoids showing transient invalid intermediate states.
         self._bend_editor.changed.emit()
 
@@ -366,7 +561,7 @@ class FixedArmSkeletonDialog(QDialog):
                                   '. Сохранённая невязка — только историческая запись, не сертификат.')
 
     def _save_file(self) -> None:
-        if self.snapshot is None or self.preview is None:
+        if self.snapshot is None or self.preview is None or self._draft is not None:
             return
         if not self.snapshot.matches(self.controller.project):
             self._refresh()
@@ -458,7 +653,8 @@ class FixedArmSkeletonDialog(QDialog):
         self._cad_snapshot = self.snapshot
         self._cad.set_document(document)
         self._save.setEnabled(True)
-        self._scene.set_scene(scene)
+        self._scene.set_scene(scene, preview.centerlines)
+        self._lengths.setText(self._length_summary(bends))
         with QSignalBlocker(self._point_selection):
             for code, _point in scene.points:
                 self._point_selection.addItem(LABELS[code], code)

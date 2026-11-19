@@ -41,7 +41,7 @@ jobs:
           tests/test_fixed_arm_skeleton.py tests/test_fixed_arm_skeleton_io.py
           tests/test_fixed_arm_skeleton_ui.py tests/test_fixed_arm_skeleton_file_ui.py
           tests/test_fixed_arm_scene_ui.py tests/test_fixed_arm_projection_drag_ui.py
-          tests/test_fixed_arm_tubes_cad.py tests/test_fixed_arm_tubes_cad_ui.py
+          tests/test_fixed_arm_interactive_ui.py tests/test_fixed_arm_tubes_cad.py tests/test_fixed_arm_tubes_cad_ui.py
           --junitxml=fixed-arm-results.xml
       - name: Сохранить отчёт
         if: always()

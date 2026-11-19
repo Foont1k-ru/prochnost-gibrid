@@ -104,3 +104,36 @@ def test_real_bend_updates_and_shutdown_during_rebuild(qtbot, monkeypatch):
     assert not worker.isRunning() and dialog._cad._view.mesh is None
     assert controller.project.to_dict() == before
     dialog.close()
+
+
+def test_click_created_bend_rebuilds_real_cad_without_moving_anchors(qtbot, monkeypatch):
+    from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+    from PySide6.QtWidgets import QApplication, QInputDialog
+
+    controller, dialog = make_dialog(qtbot, monkeypatch)
+    qtbot.waitUntil(lambda: dialog._cad._ready, timeout=20000)
+    anchors, before = dialog.preview.anchors, controller.project.to_dict()
+    old_mesh = dialog._cad._view.mesh
+    dialog._tabs.setCurrentIndex(1)
+    canvas = dialog._projections[0]
+    a, b = dialog.preview.centerlines[0]
+    position = canvas._screen_point(tuple(a[i] * .6 + b[i] * .4 for i in range(3))).toPoint()
+    qtbot.mouseClick(canvas, Qt.MouseButton.LeftButton, pos=position)
+    assert dialog._draft is not None and dialog._cad._view.mesh is None
+    assert dialog._cad._document is None and not dialog._save.isEnabled()
+    start = canvas._screen_point(dialog._draft[1]).toPoint()
+    target = start + QPoint(70, 0)
+    monkeypatch.setattr(QInputDialog, 'getDouble', lambda *args: (30., True))
+    qtbot.mousePress(canvas, Qt.MouseButton.LeftButton, pos=start)
+    event = QMouseEvent(QEvent.Type.MouseMove, QPointF(target), QPointF(target), Qt.MouseButton.NoButton,
+                        Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
+    QApplication.sendEvent(canvas, event)
+    qtbot.mouseRelease(canvas, Qt.MouseButton.LeftButton, pos=target)
+    assert dialog._draft is None and dialog._cad._view.mesh is None
+    qtbot.waitUntil(lambda: dialog._cad._ready, timeout=20000)
+    assert dialog._cad._view.mesh is not old_mesh
+    assert dialog._cad._document['parts'][0]['geometry']['kind'] == 'prototype_arm_bent_tube'
+    assert dialog.preview.anchors == anchors and controller.project.to_dict() == before
+    assert dialog.shutdown()
+    dialog.close()

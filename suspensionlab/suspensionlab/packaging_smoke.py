@@ -307,7 +307,9 @@ def run_cad_check() -> None:
     # Проверяем и пользовательский путь повторного открытия в упакованном Qt.
     from unittest.mock import patch
 
-    from PySide6.QtWidgets import QFileDialog, QMessageBox
+    from PySide6.QtCore import QEvent, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+    from PySide6.QtWidgets import QApplication, QFileDialog, QInputDialog, QMessageBox
 
     from .model.kim_format import read_document, write_document
     from .model.templates import load_template
@@ -333,12 +335,32 @@ def run_cad_check() -> None:
         _require(mesh.part_names == ('tube_front', 'tube_rear') and mesh.triangle_parts is not None and
                  all((mesh.triangle_parts == index).any() for index in (0, 1)) and
                  not panel._view.grab().isNull(), "Трубы по снимку не отображаются раздельно")
+        fixed_dialog._tabs.setCurrentIndex(1)
+        app.processEvents()
+        canvas = fixed_dialog._projections[0]
         a, b = anchors[0], anchors[2]
-        vertex = ((a[0] + b[0]) / 2 + 70, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2 + 70)
-        for field, bend_value in zip(fixed_dialog._bend_editor.fields['front'], (*vertex, 20), strict=True):
-            field.setText(str(bend_value))
-        fixed_dialog._bend_editor.checks['front'].setChecked(True)
-        _require(panel._view.mesh is None, "Старая CAD-модель снимка не очищена")
+        vertex = (a[0] * .6 + b[0] * .4, a[1] * .6 + b[1] * .4, a[2] * .6 + b[2] * .4)
+        click = canvas._screen_point(vertex)
+
+        def mouse(event_type: QEvent.Type, position: QPointF, button: Qt.MouseButton,
+                  buttons: Qt.MouseButton) -> None:
+            event = QMouseEvent(event_type, position, position, button, buttons, Qt.KeyboardModifier.NoModifier)
+            QApplication.sendEvent(canvas, event)
+
+        mouse(QEvent.Type.MouseButtonPress, click, Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton)
+        mouse(QEvent.Type.MouseButtonRelease, click, Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton)
+        _require(fixed_dialog._draft is not None and panel._view.mesh is None,
+                 "Щелчок по трубе не добавил черновую вершину или не очистил старый CAD")
+        assert fixed_dialog._draft is not None
+        start = canvas._screen_point(fixed_dialog._draft[1])
+        drag_target = start + QPointF(70, 0)
+        with patch.object(QInputDialog, 'getDouble', return_value=(30., True)):
+            mouse(QEvent.Type.MouseButtonPress, start, Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton)
+            mouse(QEvent.Type.MouseMove, drag_target, Qt.MouseButton.NoButton, Qt.MouseButton.LeftButton)
+            mouse(QEvent.Type.MouseButtonRelease, drag_target, Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton)
+        _require(fixed_dialog._draft is None and panel._view.mesh is None,
+                 "Вершина не перемещена или старая CAD-модель не очищена")
+        fixed_dialog._tabs.setCurrentIndex(4)
         wait_for_mesh()
         _require(fixed_dialog.preview is not None and fixed_dialog.preview.anchors == anchors and
                  panel._document is not None and

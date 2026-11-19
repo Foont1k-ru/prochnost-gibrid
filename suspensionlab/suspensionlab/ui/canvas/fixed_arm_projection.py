@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QWidget
 
 from ...core.pose_view import Point
 from ...model.fixed_arm_skeleton import SkeletonPreview
+from .fixed_arm_pick import straight_leg_hits
 from .fixed_arm_scene import LABELS
 
 
@@ -31,6 +32,8 @@ class SkeletonProjection(QWidget):
     dragStarted = Signal(str)
     dragCancelled = Signal()
     dragReleased = Signal(str, object, object)  # код, индексы осей, новые XYZ
+    dragMoved = Signal(str, object)
+    segmentPicked = Signal(str, object)
 
     def __init__(self, axes: tuple[int, int], parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -39,11 +42,13 @@ class SkeletonProjection(QWidget):
         self.points: tuple[tuple[str, Point], ...] = ()
         self.selected_point: str | None = None
         self._drag: _Drag | None = None
+        self._segment_start: QPointF | None = None
         self.setMinimumSize(380, 240)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setAccessibleName('Проекция скелета ' + ''.join('XYZ'[i] for i in axes))
 
     def _cancel_drag(self) -> None:
+        self._segment_start = None
         if self._drag is not None:
             self._drag = None
             self.dragCancelled.emit()
@@ -51,6 +56,7 @@ class SkeletonProjection(QWidget):
 
     def set_preview(self, preview: SkeletonPreview | None, points: tuple[tuple[str, Point], ...] = ()) -> None:
         self._cancel_drag()
+        self._segment_start = None
         self.preview = preview
         self.points = points if preview is not None else ()
         self.selected_point = None
@@ -134,6 +140,7 @@ class SkeletonProjection(QWidget):
             return
         self._cancel_drag()
         hits = self._point_hits(event.position())
+        self._segment_start = event.position() if not hits else None
         if len(hits) > 1:
             self.ambiguousPick.emit()
         elif len(hits) == 1:
@@ -153,6 +160,11 @@ class SkeletonProjection(QWidget):
             self._drag.current = event.position()
             if (self._drag.current - self._drag.start).manhattanLength() >= 4:
                 self._drag.moved = True
+                delta = self._drag.current - self._drag.start
+                candidate = list(self._drag.point)
+                candidate[self.axes[0]] += delta.x() / self._drag.scale
+                candidate[self.axes[1]] -= delta.y() / self._drag.scale
+                self.dragMoved.emit(self._drag.code, tuple(candidate))
             self.update()
             event.accept()
         else:
@@ -160,6 +172,16 @@ class SkeletonProjection(QWidget):
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802
         drag = self._drag
+        start, self._segment_start = self._segment_start, None
+        if event.button() == Qt.MouseButton.LeftButton and drag is None and start is not None and self.preview is not None:
+            if (event.position() - start).manhattanLength() < 4:
+                hits = straight_leg_hits(event.position(), self.preview.centerlines, self._screen_point)
+                if len(hits) == 1:
+                    self.segmentPicked.emit(*hits[0])
+                elif len(hits) > 1:
+                    self.ambiguousPick.emit()
+            event.accept()
+            return
         if event.button() != Qt.MouseButton.LeftButton or drag is None:
             super().mouseReleaseEvent(event)
             return
@@ -177,7 +199,7 @@ class SkeletonProjection(QWidget):
         event.accept()
 
     def keyPressEvent(self, event) -> None:  # noqa: N802
-        if event.key() == Qt.Key.Key_Escape and self._drag is not None:
+        if event.key() == Qt.Key.Key_Escape and (self._drag is not None or self._segment_start is not None):
             self._cancel_drag()
             event.accept()
             return
