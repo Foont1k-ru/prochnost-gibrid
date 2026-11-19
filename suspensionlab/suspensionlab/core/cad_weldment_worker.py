@@ -22,6 +22,7 @@ from .cad_kim_prototype import (
     build_weldment_tubes_preview,
 )
 from .cad_mesh import MAX_COORDINATE
+from .cad_preview_parts import preview_parts
 from .cad_worker import CadWorkerError
 
 # Меньший отдельный бюджет для двух простых труб, чем у STEP-просмотрщика.
@@ -50,21 +51,36 @@ def create_grouped_mesh(path: Path, deviation: float) -> tuple[np.ndarray, int, 
         shape = _build_assembly_preview(doc)
     if shape.IsNull() or not BRepCheck_Analyzer(shape).IsValid():
         raise CadWorkerError("no_shape")
-    names = ('tubes',)
-    parts = [shape]
-    if doc.get('format') == 'kima-assembly' and doc.get('version') in ('0.15', '0.16'):
-        from OCP.TopoDS import TopoDS_Iterator
-
-        names = tuple(part['id'] for part in doc['parts'])
-        iterator = TopoDS_Iterator(shape)
-        parts = []
-        while iterator.More():
-            parts.append(iterator.Value())
-            iterator.Next()
-        if len(parts) != len(names):
-            raise CadWorkerError('no_shape')
+    descriptors = preview_parts(doc)
+    names = tuple(part.identifier for part in descriptors) if descriptors else ('tubes',)
+    parts = _parts_at_paths(shape, [part.path for part in descriptors]) if descriptors else [shape]
     triangles, faces, groups = _mesh_shape_grouped(shape, parts, deviation)
     return triangles, faces, names, groups
+
+
+def _parts_at_paths(shape, paths: list[tuple[int, ...]]) -> list:
+    from OCP.TopoDS import TopoDS_Iterator
+
+    def walk(parent, expected: list[tuple[int, ...]]) -> list:
+        if expected == [()]:
+            return [parent]
+        if not expected or any(not path for path in expected):
+            raise CadWorkerError('no_shape')
+        children = []
+        iterator = TopoDS_Iterator(parent)
+        while iterator.More():
+            children.append(iterator.Value())
+            iterator.Next()
+        if {path[0] for path in expected} != set(range(len(children))):
+            raise CadWorkerError('no_shape')
+        result = []
+        for index, child in enumerate(children):
+            result.extend(walk(child, [path[1:] for path in expected if path[0] == index]))
+        return result
+
+    if paths != sorted(paths) or len(set(paths)) != len(paths):
+        raise CadWorkerError('no_shape')
+    return walk(shape, paths)
 
 
 def _build_assembly_preview(doc):

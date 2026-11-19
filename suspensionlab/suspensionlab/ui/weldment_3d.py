@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..core.cad_mesh import CadMesh
+from ..core.cad_preview_parts import preview_parts
 from ..core.cad_transport import CadPreviewError
 from ..core.cad_weldment_job import WeldmentCadJob
 from ..i18n import tr
@@ -185,9 +186,9 @@ class Weldment3D(QWidget):
         if not isinstance(mesh, CadMesh) or mesh.skipped_faces or mesh.recovered_faces:
             self._failed(token, "mesh")
             return
-        if self._is_scheme_assembly():
-            assert self._document is not None
-            identifiers = tuple(part['id'] for part in self._document['parts'])
+        descriptors = preview_parts(self._document)
+        if descriptors:
+            identifiers = tuple(part.identifier for part in descriptors)
             if (mesh.triangle_parts is None or mesh.part_names != identifiers or
                     any(not (mesh.triangle_parts == i).any() for i in range(len(identifiers)))):
                 self._failed(token, "output")
@@ -205,10 +206,6 @@ class Weldment3D(QWidget):
         self._status.setText(tr(ready_key, triangles=len(mesh.triangles)))
         self.availabilityChanged.emit(self.can_save())
 
-    def _is_scheme_assembly(self) -> bool:
-        return (self._scheme_part and self._document is not None and
-                self._document.get('format') == 'kima-assembly' and self._document.get('version') in ('0.15', '0.16'))
-
     def _clear_parts(self) -> None:
         blocked = self._parts_tree.blockSignals(True)
         self._parts_tree.clear()
@@ -218,12 +215,16 @@ class Weldment3D(QWidget):
 
     def _populate_parts(self, mesh: CadMesh) -> None:
         self._clear_parts()
-        if not self._is_scheme_assembly() or self._document is None or mesh.triangle_parts is None:
+        if self._document is None or mesh.triangle_parts is None:
             return
-        root = QTreeWidgetItem([self._document['name']])
+        descriptors = preview_parts(self._document)
+        if not descriptors:
+            return
+        root = QTreeWidgetItem([self._document.get('name', tr('weldment_3d.parts_root'))])
         self._parts_tree.addTopLevelItem(root)
-        for index, part in enumerate(self._document['parts']):
-            item = QTreeWidgetItem([f"{part['name']} · {part['id']}"])
+        for index, part in enumerate(descriptors):
+            name = part.name or tr(part.label_key)
+            item = QTreeWidgetItem([f"{name} · {part.identifier}"])
             item.setData(0, Qt.ItemDataRole.UserRole, index)
             item.setToolTip(0, item.text(0))
             root.addChild(item)
@@ -250,7 +251,7 @@ class Weldment3D(QWidget):
 
     def _select_tree_part(self, item: QTreeWidgetItem | None, _previous: QTreeWidgetItem | None) -> None:
         mesh = self._view.mesh
-        if mesh is None or not self._is_scheme_assembly() or mesh.triangle_parts is None:
+        if mesh is None or self._document is None or not preview_parts(self._document) or mesh.triangle_parts is None:
             return
         if self._is_current is not None and self._document is not None and not self._is_current(self._document):
             self._failed(self.generation, "changed")

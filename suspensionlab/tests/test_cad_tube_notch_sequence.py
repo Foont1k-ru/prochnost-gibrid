@@ -190,3 +190,40 @@ def test_captured_stages_are_independent_and_match_each_prefix():
         assert volume(cut(stage, prefix.shape)) == pytest.approx(0, abs=1e-4)
         assert volume(cut(prefix.shape, stage)) == pytest.approx(0, abs=1e-4)
     assert doc == saved
+
+
+@pytest.mark.parametrize(('axis', 'rear', 'outer'), [
+    ('x', (120, 65, -35), (37, 140, 60)),
+    ('y', (-75, 90, 45), (60, 150, 35)),
+    ('z', (110, 40, 70), (-20, 150, 55)),
+])
+def test_spatial_oblique_two_cut_sequence_matches_independent_solids(axis, rear, outer):
+    """Разные пространственные углы и конечные тела, не реальные изделия."""
+    import math
+
+    project = Project.create_default()
+    for code, xyz in {'lca_f_in': (0, 0, 0), 'lca_r_in': rear, 'lbj': outer}.items():
+        point = project.front.hardpoints[code]
+        point.x, point.y, point.z = xyz
+    doc = make_scheme_arm_assembly(project, 10, 2, {'axis': axis, 'outer_radius_mm': 14,
+                                                     'bore_radius_mm': 7, 'length_mm': 24})
+    initial = deepcopy(doc)
+    seq = notch_tube_sequence(doc, 'tube_front', ['housing_front', 'tube_rear'], capture_stages=True)
+    direction = tuple(float(x) for x in outer)
+    original = cut(cylinder((0, 0, 0), direction, 10, math.dist((0, 0, 0), outer)),
+                   cylinder((0, 0, 0), direction, 8, math.dist((0, 0, 0), outer)))
+    unit = {'x': (1, 0, 0), 'y': (0, 1, 0), 'z': (0, 0, 1)}[axis]
+    housing = cylinder(tuple(-12 * v for v in unit), unit, 14, 24)
+    cutter_direction = tuple(outer[i] - rear[i] for i in range(3))
+    other = cylinder(rear, cutter_direction, 10, math.dist(rear, outer))
+    reference = original
+    for step, shape, cutter in zip(seq.steps, seq.stage_shapes, (housing, other), strict=True):
+        before = volume(reference)
+        reference = cut(reference, cutter)
+        after = volume(reference)
+        assert step.input_volume_mm3 == pytest.approx(before, rel=1e-6)
+        assert step.remaining_volume_mm3 == pytest.approx(after, rel=1e-6)
+        assert step.removed_volume_mm3 == pytest.approx(before - after, rel=1e-5)
+        assert volume(cut(shape, reference)) == pytest.approx(0, abs=1e-4)
+        assert volume(cut(reference, shape)) == pytest.approx(0, abs=1e-4)
+    assert doc == initial
