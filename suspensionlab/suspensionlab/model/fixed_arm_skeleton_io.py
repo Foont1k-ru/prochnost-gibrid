@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from .entities import Project
-from .fixed_arm_housings import HousingError, validate_housings, validate_notches
+from .fixed_arm_housings import HousingError, validate_housings, validate_notches, validate_tube_joint
 from .fixed_arm_skeleton import FixedArmSnapshot, SkeletonError, capture_fixed_arm, preview_fixed_arm
 from .fixed_arm_skeleton import _raw_points as _current_raw_points
 from .project_io import ProjectIOError, _read_project_bytes, _unique_object
@@ -39,6 +39,7 @@ class LoadedSkeleton:
     recorded_residual_mm: float
     housings: dict[str, Any] | None = None
     notches: dict[str, float] | None = None
+    tube_joint: dict[str, Any] | None = None
 
 
 def _keys(value: Any, expected: set[str]) -> dict[str, Any]:
@@ -98,7 +99,7 @@ def _canonical(value: Any) -> str:
 
 def _recheck(data: Any, current: Project) -> LoadedSkeleton:
     doc = _keys(data, {'format', 'version', 'units', 'frame', 'project', 'raw_solver_points', 'calculation', 'geometry'})
-    if (doc['format'] != _FORMAT or doc['version'] not in (_VERSION, '2', '3') or doc['units'] != 'mm' or
+    if (doc['format'] != _FORMAT or doc['version'] not in (_VERSION, '2', '3', '4') or doc['units'] != 'mm' or
             doc['frame'] != 'vehicle_front_left'):
         raise SkeletonFileError('Неподдерживаемый формат, версия или система координат')
     calc = _keys(doc['calculation'], {'algorithm', 'from_mm', 'to_mm', 'spacing_mm', 'max_step_mm',
@@ -114,14 +115,21 @@ def _recheck(data: Any, current: Project) -> LoadedSkeleton:
         raise SkeletonFileError('Неверная сетка расчёта')
     travels = [_number(x, -250, 250) for x in calc['travels_mm']]
     geometry_keys = {'radius_mm', 'wall_mm', 'bends'}
-    if doc['version'] in ('2', '3'):
+    if doc['version'] in ('2', '3', '4'):
         geometry_keys.add('housings')
-    if doc['version'] == '3':
+    if doc['version'] in ('3', '4'):
         geometry_keys.add('notches')
+    if doc['version'] == '4':
+        geometry_keys.add('tube_joint')
     geom = _keys(doc['geometry'], geometry_keys)
     try:
-        housings = validate_housings(geom['housings']) if doc['version'] in ('2', '3') else None
-        notches = validate_notches(geom['notches']) if doc['version'] == '3' else None
+        housings = (validate_housings(geom['housings']) if doc['version'] in ('2', '3') or
+                    (doc['version'] == '4' and geom['housings'] is not None) else None)
+        notches = (validate_notches(geom['notches']) if doc['version'] == '3' or
+                   (doc['version'] == '4' and geom['notches'] is not None) else None)
+        tube_joint = validate_tube_joint(geom['tube_joint']) if doc['version'] == '4' else None
+        if notches is not None and housings is None:
+            raise HousingError('Для подрезки по корпусу нужны корпуса')
     except HousingError as error:
         raise SkeletonFileError(f'Неверные параметры корпусов или подрезки: {error}') from error
     radius = _ui_number(geom['radius_mm'], 0.01, 10000)
@@ -145,19 +153,21 @@ def _recheck(data: Any, current: Project) -> LoadedSkeleton:
         preview_fixed_arm(snapshot, current, radius, wall, bends)
     except SkeletonError as error:
         raise SkeletonFileError(f'Повторный расчёт или построение не выполнены: {error}') from error
-    return LoadedSkeleton(snapshot, radius, wall, bends, old_residual, housings, notches)
+    return LoadedSkeleton(snapshot, radius, wall, bends, old_residual, housings, notches, tube_joint)
 
 
 def make_skeleton_data(snapshot: FixedArmSnapshot, current: Project, radius_mm: float, wall_mm: float,
                        bends: dict[str, dict[str, Any]], housings: dict[str, Any] | None = None,
-                       notches: dict[str, float] | None = None) -> dict[str, Any]:
+                       notches: dict[str, float] | None = None,
+                       tube_joint: dict[str, Any] | None = None) -> dict[str, Any]:
     """Проверка актуальности, геометрии и повторный расчёт перед записью."""
     if not snapshot.matches(current):
         raise SkeletonFileError('Проект отличается от снимка')
     if notches is not None and housings is None:
         raise SkeletonFileError('Для подрезки необходимы корпуса')
     data: dict[str, Any] = {
-        'format': _FORMAT, 'version': '3' if notches is not None else '2' if housings is not None else _VERSION,
+        'format': _FORMAT, 'version': ('4' if tube_joint is not None else '3' if notches is not None else
+                                      '2' if housings is not None else _VERSION),
         'units': 'mm', 'frame': 'vehicle_front_left',
         'project': json.loads(snapshot.project_json),
         'raw_solver_points': [list(p) for p in snapshot.raw_solver_points],
@@ -167,10 +177,12 @@ def make_skeleton_data(snapshot: FixedArmSnapshot, current: Project, radius_mm: 
                         'max_residual_mm': snapshot.max_residual_mm},
         'geometry': {'radius_mm': radius_mm, 'wall_mm': wall_mm, 'bends': bends},
     }
-    if housings is not None:
+    if housings is not None or tube_joint is not None:
         data['geometry']['housings'] = housings
-    if notches is not None:
+    if notches is not None or tube_joint is not None:
         data['geometry']['notches'] = notches
+    if tube_joint is not None:
+        data['geometry']['tube_joint'] = tube_joint
     checked = _recheck(data, current)
     if checked.snapshot != snapshot:
         raise SkeletonFileError('Расчётный снимок изменился; требуется новая фиксация')
@@ -196,14 +208,15 @@ def read_skeleton(path: str | Path, current: Project) -> LoadedSkeleton:
 
 def write_skeleton(path: str | Path, snapshot: FixedArmSnapshot, current: Project, radius_mm: float,
                    wall_mm: float, bends: dict[str, dict[str, Any]], housings: dict[str, Any] | None = None,
-                   notches: dict[str, float] | None = None) -> Path:
+                   notches: dict[str, float] | None = None,
+                   tube_joint: dict[str, Any] | None = None) -> Path:
     """Записать новый файл атомарным созданием без перезаписи и без ссылок."""
     target = Path(path)
     if target.suffix.lower() != SUFFIX:
         raise SkeletonFileError('Ожидался файл .slarm')
     temporary: str | None = None
     try:
-        data = make_skeleton_data(snapshot, current, radius_mm, wall_mm, bends, housings, notches)
+        data = make_skeleton_data(snapshot, current, radius_mm, wall_mm, bends, housings, notches, tube_joint)
         content = json.dumps(data, ensure_ascii=False, indent=2, allow_nan=False).encode('utf-8')
         if len(content) > MAX_PROJECT_BYTES:
             raise SkeletonFileError('Файл слишком велик')

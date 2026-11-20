@@ -53,7 +53,8 @@ def create_grouped_mesh(path: Path, deviation: float) -> tuple[np.ndarray, int, 
             shape = build_fixed_arm_housing_preview(doc)
         except FixedArmNotchError as error:
             reason = error.code if error.code in ('no_overlap', 'empty_or_split') else 'failed'
-            raise CadWorkerError(f'notch_{error.leg}_{reason}') from error
+            prefix = 'tube_joint' if error.tube_joint else 'notch'
+            raise CadWorkerError(f'{prefix}_{error.leg}_{reason}') from error
     elif path.suffix.lower() == ".kim":
         doc = read_document(path, "part")
         if doc["version"] not in ("0.4", "0.6"):

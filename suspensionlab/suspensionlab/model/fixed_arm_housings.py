@@ -66,34 +66,58 @@ def validate_notches(value: Any) -> dict[str, float]:
     return {leg: _number(clearance, low=0, high=100) for leg, clearance in value.items()}
 
 
+def validate_tube_joint(value: Any) -> dict[str, Any]:
+    """Один явно выбранный рез по наружному объёму исходной противоположной ветви."""
+    if not isinstance(value, dict) or set(value) != {'target', 'radial_clearance_mm'}:
+        raise HousingError('Выберите подрезаемую ветвь и задайте радиальный зазор')
+    if value['target'] not in ('front', 'rear'):
+        raise HousingError('Неизвестная подрезаемая ветвь')
+    return {'target': value['target'],
+            'radial_clearance_mm': _number(value['radial_clearance_mm'], low=0, high=100)}
+
+
 def validate_housing_preview(value: Any) -> None:
     if not isinstance(value, dict):
         raise HousingError('Неверный временный снимок CAD')
     version = value.get('version')
     keys = {'format', 'version', 'name', 'tubes', 'housings'}
-    if version == '2':
+    if version in ('2', '3'):
         keys.add('notches')
+    if version == '3':
+        keys.add('tube_joint')
     if set(value) != keys:
         raise HousingError('Неверный временный снимок CAD')
-    if (value['format'] != PREVIEW_FORMAT or version not in (PREVIEW_VERSION, '2') or
+    if (value['format'] != PREVIEW_FORMAT or version not in (PREVIEW_VERSION, '2', '3') or
             value['name'] != 'Трубы и корпуса — предварительный просмотр'):
         raise HousingError('Неизвестный временный снимок CAD')
     try:
         if not weldment_source_matches(value['tubes']):
             raise HousingError('Опоры труб не совпадают со снимком')
-        validate_housings(value['housings'])
-        if version == '2':
+        if version != '3' or value['housings'] is not None:
+            validate_housings(value['housings'])
+        if version == '2' or (version == '3' and value['notches'] is not None):
+            if value['housings'] is None:
+                raise HousingError('Для подрезки по корпусу нужны корпуса')
             validate_notches(value['notches'])
+        if version == '3':
+            validate_tube_joint(value['tube_joint'])
     except (TypeError, ValueError, KeyError, OverflowError, RecursionError) as error:
         raise HousingError('Недопустимый снимок труб, корпусов или подрезки') from error
 
 
-def make_housing_preview(tubes: dict[str, Any], housings: dict[str, Any],
-                         notches: dict[str, float] | None = None) -> dict[str, Any]:
+def make_housing_preview(tubes: dict[str, Any], housings: dict[str, Any] | None,
+                         notches: dict[str, float] | None = None,
+                         tube_joint: dict[str, Any] | None = None) -> dict[str, Any]:
+    if housings is None and (tube_joint is None or notches is not None):
+        raise HousingError('Для подрезки по корпусу нужны корпуса')
     doc: dict[str, Any] = {'format': PREVIEW_FORMAT, 'version': '2' if notches else PREVIEW_VERSION,
                            'name': 'Трубы и корпуса — предварительный просмотр',
-                           'tubes': tubes, 'housings': validate_housings(housings)}
-    if notches is not None:
+                           'tubes': tubes, 'housings': validate_housings(housings) if housings is not None else None}
+    if tube_joint is not None:
+        doc['version'] = '3'
+        doc['notches'] = validate_notches(notches) if notches is not None else None
+        doc['tube_joint'] = validate_tube_joint(tube_joint)
+    elif notches is not None:
         doc['version'] = '2'
         doc['notches'] = validate_notches(notches)
     validate_housing_preview(doc)

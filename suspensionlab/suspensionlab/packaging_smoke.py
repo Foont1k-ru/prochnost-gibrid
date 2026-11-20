@@ -391,6 +391,13 @@ def run_cad_check() -> None:
         _require(len(mesh.part_names) == 4 and fixed_dialog._cad_candidate is not None and
                  fixed_dialog._cad_candidate.get('notches') == {'front': 0.},
                  "Подрезка передней трубы по корпусу не построена")
+        fixed_dialog._tube_joint.setCurrentIndex(fixed_dialog._tube_joint.findData('rear'))
+        _require(panel._view.mesh is None and fixed_dialog._cad_candidate is None,
+                 "CAD не скрыт при незаданном зазоре между трубами")
+        fixed_dialog._joint_clearance.setText('0')
+        mesh = wait_for_mesh()
+        _require(len(mesh.part_names) == 4 and fixed_dialog._tube_joint_values() ==
+                 {'target': 'rear', 'radial_clearance_mm': 0.}, "Подрезка по другой трубе не построена")
         overlap = fixed_dialog._overlap
         overlap._start()
         deadline = monotonic() + 60
@@ -409,11 +416,13 @@ def run_cad_check() -> None:
                 fixed_dialog._open_file()
             _require(fixed_dialog.preview is not None and fixed_dialog.preview.anchors == anchors and
                      fixed_dialog._housings is not None and fixed_dialog._notch_checks['front'].isChecked() and
-                     fixed_dialog._notch_values() == {'front': 0.} and source.read_bytes() == original,
+                     fixed_dialog._notch_values() == {'front': 0.} and fixed_dialog._tube_joint_values() ==
+                     {'target': 'rear', 'radial_clearance_mm': 0.} and source.read_bytes() == original,
                      "Снимок с корпусами и параметрами подрезки не восстановлен")
             mesh = wait_for_mesh()
             _require(len(mesh.part_names) == 4 and panel._document is not None and
-                     panel._document.get('notches') == {'front': 0.}, "Подрезка не восстановлена в CAD")
+                     panel._document.get('notches') == {'front': 0.} and panel._document.get('tube_joint') ==
+                     {'target': 'rear', 'radial_clearance_mm': 0.}, "Подрезка не восстановлена в CAD")
     finally:
         with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes):
             fixed_dialog.close()

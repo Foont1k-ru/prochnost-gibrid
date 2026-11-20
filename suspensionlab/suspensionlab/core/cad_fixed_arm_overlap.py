@@ -24,7 +24,7 @@ def measure_overlap(document: dict[str, Any]) -> dict[str, float]:
     if document.get('format') == PREVIEW_FORMAT:
         validate_housing_preview(document)
         shape = build_fixed_arm_housing_preview(document)
-        count = 4
+        count = 4 if document['housings'] is not None else 2
     else:
         if not weldment_source_matches(document):
             raise ValueError('stale')

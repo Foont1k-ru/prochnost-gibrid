@@ -158,7 +158,10 @@ class Weldment3D(QWidget):
             self._status.setText(tr("weldment_3d.no_data"))
         else:
             self._pending = self._document
-            building_key = ("weldment_3d.fixed_housing_building" if self._fixed_skeleton and
+            building_key = ("weldment_3d.fixed_joint_building" if self._fixed_skeleton and
+                            self._document.get('format') == 'suspensionlab-fixed-arm-housing-preview' and
+                            self._document.get('tube_joint') else
+                            "weldment_3d.fixed_housing_building" if self._fixed_skeleton and
                             self._document.get('format') == 'suspensionlab-fixed-arm-housing-preview' else
                             "weldment_3d.fixed_building" if self._fixed_skeleton else
                             "scheme_part_3d.building" if self._scheme_part else
@@ -202,7 +205,10 @@ class Weldment3D(QWidget):
         self._populate_parts(mesh)
         self._ready = True
         self._retry.setEnabled(True)
-        ready_key = ("weldment_3d.fixed_notch_ready" if self._fixed_skeleton and
+        ready_key = ("weldment_3d.fixed_tube_joint_ready" if self._fixed_skeleton and
+                     self._document.get('format') == 'suspensionlab-fixed-arm-housing-preview' and
+                     self._document.get('tube_joint') else
+                     "weldment_3d.fixed_notch_ready" if self._fixed_skeleton and
                      self._document.get('format') == 'suspensionlab-fixed-arm-housing-preview' and
                      self._document.get('notches') else
                      "weldment_3d.fixed_housing_ready" if self._fixed_skeleton and
@@ -292,8 +298,8 @@ class Weldment3D(QWidget):
             return
         known = {"missing_cad", "timeout", "cancelled", "start", "crash", "mesh", "memory",
                  "missing_face", "coordinates", "no_faces", "no_shape", "output", "unexpected", "changed"}
-        notch_errors = {f'notch_{leg}_{reason}' for leg in ('front', 'rear')
-                        for reason in ('no_overlap', 'empty_or_split', 'failed')}
+        notch_errors = {f'{prefix}_{leg}_{reason}' for prefix in ('notch', 'tube_joint')
+                        for leg in ('front', 'rear') for reason in ('no_overlap', 'empty_or_split', 'failed')}
         if code not in known and code not in notch_errors:
             code = "unexpected"
         self._ready = False
@@ -302,9 +308,11 @@ class Weldment3D(QWidget):
         self._retry.setEnabled(self._document is not None and self._enable.isChecked())
         specific = {"timeout", "memory", "changed"}
         if code in notch_errors:
-            _prefix, leg, error = code.split('_', 2)
+            is_joint = code.startswith('tube_joint_')
+            leg, error = code.removeprefix('tube_joint_' if is_joint else 'notch_').split('_', 1)
             branch = 'Передняя ветвь' if leg == 'front' else 'Задняя ветвь'
-            explanation = {'no_overlap': 'нет существенного пересечения с корпусом',
+            other = 'другой трубой' if is_joint else 'корпусом'
+            explanation = {'no_overlap': f'нет существенного пересечения с {other}',
                            'empty_or_split': 'труба удалена полностью или разрезана на части',
                            'failed': 'геометрический результат не прошёл проверку'}[error]
             reason = f'{branch}: {explanation}. Измените параметры или отключите подрезку этой ветви.'
