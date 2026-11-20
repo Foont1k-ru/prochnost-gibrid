@@ -4,6 +4,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
+from ..model.fixed_arm_clearances import validate_requirements
 from ..model.fixed_arm_housings import PREVIEW_FORMAT, make_housing_preview, validate_housing_preview
 from ..model.welded_arm import weldment_source_matches
 from .cad_fixed_arm_overlap import measure_proximity
@@ -11,7 +12,9 @@ from .cad_fixed_arm_overlap_job import DISTANCE_TOLERANCE_MM, PairProximity, _pa
 
 
 def validate_request(value: Any) -> tuple[dict[str, Any], str, str, float]:
-    if not isinstance(value, dict) or set(value) != {'document', 'left', 'right', 'minimum_mm'}:
+    if not isinstance(value, dict) or set(value) not in (
+            {'document', 'left', 'right', 'minimum_mm'},
+            {'document', 'left', 'right', 'minimum_mm', 'requirements'}):
         raise ValueError('invalid_request')
     doc, left, right, minimum = (value[k] for k in ('document', 'left', 'right', 'minimum_mm'))
     if not isinstance(doc, dict):
@@ -28,6 +31,10 @@ def validate_request(value: Any) -> tuple[dict[str, Any], str, str, float]:
         names += ('housing_front', 'housing_rear')
     if left not in names or right not in names or names.index(left) >= names.index(right):
         raise ValueError('invalid_pair')
+    if 'requirements' in value:
+        requirements = validate_requirements(value['requirements'], housings=len(names) == 4)
+        if requirements.get(f'{left}|{right}') != float(minimum):
+            raise ValueError('minimum_mismatch')
     return doc, left, right, float(minimum)
 
 
@@ -75,9 +82,23 @@ def _not_worse(old: PairProximity, new: PairProximity) -> bool:
     return True
 
 
+def _requirements_not_worse(old: PairProximity, new: PairProximity, minimum: float | None) -> bool:
+    if not _not_worse(old, new):
+        return False
+    if minimum is None:
+        return True
+    if satisfies(old, minimum):
+        return satisfies(new, minimum)
+    if old.status == 'gap' and new.status == 'gap':
+        assert old.distance_mm is not None and new.distance_mm is not None
+        return new.distance_mm + DISTANCE_TOLERANCE_MM >= old.distance_mm
+    return True
+
+
 def suggest(value: Any) -> dict[str, Any]:
     """Перебор до шести вариантов; не оптимизация и не гарантия безопасности."""
     doc, left, right, minimum = validate_request(value)
+    requirements: dict[str, float] = value.get('requirements', {})
     initial_rows = measure_proximity(doc)
     initial = _parse_proximity(initial_rows, doc)
     if any(p.status in ('error', 'uncertain_overlap') for p in initial.pairs):
@@ -110,7 +131,8 @@ def suggest(value: Any) -> dict[str, Any]:
                 if not satisfies(checked, minimum):
                     continue
                 if not all((a.left, a.right) == (b.left, b.right) and
-                           ((a.left, a.right) == (left, right) or _not_worse(a, b))
+                           ((a.left, a.right) == (left, right) or
+                            _requirements_not_worse(a, b, requirements.get(f'{a.left}|{a.right}')))
                            for a, b in zip(initial.pairs, measured.pairs, strict=True)):
                     continue
                 return {'outcome': 'candidate', 'baseline': initial_rows, 'kind': kind, 'target': target,

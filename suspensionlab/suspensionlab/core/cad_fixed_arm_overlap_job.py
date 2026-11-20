@@ -14,12 +14,10 @@ from itertools import combinations
 from pathlib import Path
 from typing import Any
 
+from ..model.fixed_arm_clearances import DISTANCE_TOLERANCE_MM
 from ..model.fixed_arm_housings import PREVIEW_FORMAT, validate_housing_preview
 from ..model.project_limits import MAX_PROJECT_BYTES
 from ..model.welded_arm import weldment_source_matches
-
-# Ниже этой дистанции численно нельзя различить касание и очень малый зазор.
-DISTANCE_TOLERANCE_MM = 1e-5
 
 
 class OverlapJobError(Exception):
@@ -158,7 +156,7 @@ def _parse_proximity(value: Any, document: dict[str, Any]) -> ProximityResult:
 
 
 def _parse_suggestion(result: Any, request: dict[str, Any]) -> SuggestionResult:
-    from .fixed_arm_suggestions import _not_worse, candidate_document, satisfies, validate_request
+    from .fixed_arm_suggestions import _requirements_not_worse, candidate_document, satisfies, validate_request
 
     doc, left, right, minimum = validate_request(request)
     if not isinstance(result, dict) or result.get('outcome') not in ('candidate', 'already', 'unverified', 'no_candidate'):
@@ -193,7 +191,8 @@ def _parse_suggestion(result: Any, request: dict[str, Any]) -> SuggestionResult:
         selected = next(p for p in after.pairs if (p.left, p.right) == (left, right))
         if (not satisfies(selected, minimum) or
                 not all((a.left, a.right) == (b.left, b.right) and
-                        ((a.left, a.right) == (left, right) or _not_worse(a, b))
+                        ((a.left, a.right) == (left, right) or
+                         _requirements_not_worse(a, b, request.get('requirements', {}).get(f'{a.left}|{a.right}')))
                         for a, b in zip(baseline.pairs, after.pairs, strict=True))):
             raise OverlapJobError('output')
     except (ValueError, TypeError, KeyError, StopIteration, OverflowError) as error:
@@ -233,8 +232,10 @@ class FixedArmOverlapJob:
         return result
 
     def run_suggestion(self, document: dict[str, Any], left: str, right: str, minimum_mm: float,
-                       *, timeout: float = 180) -> SuggestionResult:
-        request = {'document': document, 'left': left, 'right': right, 'minimum_mm': minimum_mm}
+                       *, requirements: dict[str, float] | None = None, timeout: float = 180) -> SuggestionResult:
+        request: dict[str, Any] = {'document': document, 'left': left, 'right': right, 'minimum_mm': minimum_mm}
+        if requirements is not None:
+            request['requirements'] = requirements
         result = self._run(document, timeout=timeout, mode='suggest', request=request)
         if not isinstance(result, SuggestionResult):
             raise OverlapJobError('output')

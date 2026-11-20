@@ -393,7 +393,8 @@ class FixedArmSkeletonDialog(QDialog):
         joint_state = (joint_target, self._joint_clearance.text() if joint_target is not None else '')
         return (self.snapshot, self._from.value(), self._to.value(), self._spacing.value(),
                 self._radius.value(), self._wall.value(), self._bend_editor.state(), self._draft, housing_state,
-                notch_state, joint_state)
+                notch_state, joint_state, tuple(sorted(self._overlap.requirements().items())),
+                self._overlap.has_uncommitted_requirement())
 
     def _reset_notches(self, *, clear_joint: bool = True) -> None:
         for leg in ('front', 'rear'):
@@ -567,21 +568,23 @@ class FixedArmSkeletonDialog(QDialog):
             return
         had_housing_cuts = any(check.isChecked() for check in self._notch_checks.values())
         self._housings = candidate
+        cleared_requirements = self._overlap.clear_housing_requirements()
         self._reset_notches(clear_joint=False)
         self._refresh()
-        if had_housing_cuts:
-            self._housing_status.setText('Корпуса изменены; подрезки по корпусам сброшены. '
-                                         'Подрезка по трубе сохранена.')
+        if had_housing_cuts or cleared_requirements:
+            self._housing_status.setText('Корпуса изменены; подрезки и требования к парам с корпусами сброшены. '
+                                         'Подрезка и требование между трубами сохранены.')
 
     def _remove_housings(self) -> None:
         if self._housings is not None and self._draft is None:
             had_housing_cuts = any(check.isChecked() for check in self._notch_checks.values())
             self._housings = None
+            cleared_requirements = self._overlap.clear_housing_requirements()
             self._reset_notches(clear_joint=False)
             self._refresh()
-            if had_housing_cuts:
-                self._housing_status.setText('Корпуса удалены; подрезки по корпусам сброшены. '
-                                             'Подрезка по трубе сохранена.')
+            if had_housing_cuts or cleared_requirements:
+                self._housing_status.setText('Корпуса удалены; подрезки и требования к парам с корпусами сброшены. '
+                                             'Подрезка и требование между трубами сохранены.')
 
     def _length_summary(self, bends: dict[str, dict[str, Any]]) -> str:
         if self.preview is None:
@@ -870,6 +873,7 @@ class FixedArmSkeletonDialog(QDialog):
                 self._tube_joint.setCurrentIndex(self._tube_joint.findData(loaded.tube_joint['target']))
                 self._joint_clearance.setText(repr(loaded.tube_joint['radial_clearance_mm']))
         self._reset_trim_history()
+        self._overlap.set_requirements(loaded.clearance_requirements or {}, housings=self._housings is not None)
         self._refresh()
         if self.snapshot is None or self.preview is None:
             self._file_status.setText('Схема изменилась во время открытия; снимок не принят.')
@@ -883,6 +887,9 @@ class FixedArmSkeletonDialog(QDialog):
             return
         if not self.snapshot.matches(self.controller.project):
             self._refresh()
+            return
+        if self._overlap.has_uncommitted_requirement():
+            QMessageBox.warning(self, 'Сохранение скелета', 'Сначала нажмите «Задать» или отмените ввод требования к зазору.')
             return
         state = self._state()
         selected, _ = QFileDialog.getSaveFileName(self, 'Сохранить новый скелет', '', 'Скелет рычага (*.slarm)')
@@ -898,7 +905,7 @@ class FixedArmSkeletonDialog(QDialog):
                 raise SkeletonFileError('Нельзя записать поверх проекта или автосохранения')
             write_skeleton(path, self.snapshot, self.controller.project, self._radius.value(),
                            self._wall.value(), self._bend_editor.values(), self._housings, self._notch_values(),
-                           self._tube_joint_values())
+                           self._tube_joint_values(), self._overlap.requirements())
         except (SkeletonFileError, KimFormatError, OSError, ValueError, RuntimeError) as error:
             QMessageBox.warning(self, 'Сохранение скелета', str(error))
             self._refresh()
@@ -912,8 +919,9 @@ class FixedArmSkeletonDialog(QDialog):
         if self.snapshot is not None:
             self.snapshot = None
             self._housings = None
+            self._overlap.set_requirements({}, housings=False)
             self._reset_notches()
-            self._housing_status.setText('Корпуса сброшены: требуется новое подтверждение опор и параметров.')
+            self._housing_status.setText('Корпуса и требования к зазорам сброшены: требуется новый снимок.')
             self._bend_editor.set_editable(False)
             self._clear_preview()
             self._status.setText('Диапазон изменён. Повторно рассчитайте и зафиксируйте снимок.')
@@ -922,6 +930,7 @@ class FixedArmSkeletonDialog(QDialog):
         self._file_status.clear()
         self.snapshot = None
         self._housings = None
+        self._overlap.set_requirements({}, housings=False)
         self._reset_notches()
         self._housing_status.setText('Корпуса сброшены: требуется новое подтверждение опор и параметров.')
         self._bend_editor.set_editable(False)
@@ -931,8 +940,8 @@ class FixedArmSkeletonDialog(QDialog):
     def _capture_snapshot(self) -> None:
         if self.snapshot is not None or self._bend_editor.has_bends():
             answer = QMessageBox.question(self, 'Новый снимок',
-                'Рассчитать новую схему? Изгибы будут проверены заново; параметры корпусов сбросятся '
-                'и потребуют нового подтверждения опор.',
+                'Рассчитать новую схему? Изгибы будут проверены заново; корпуса и требования к зазорам сбросятся '
+                'и потребуют нового подтверждения.',
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
             if answer != QMessageBox.StandardButton.Yes:
                 return
@@ -943,6 +952,7 @@ class FixedArmSkeletonDialog(QDialog):
         except SkeletonError as error:
             self.snapshot = None
             self._housings = None
+            self._overlap.set_requirements({}, housings=False)
             self._reset_notches()
             self._housing_status.setText('Корпуса не заданы.')
             self._bend_editor.set_editable(False)
@@ -951,6 +961,7 @@ class FixedArmSkeletonDialog(QDialog):
             return
         self.snapshot = snapshot
         self._housings = None
+        self._overlap.set_requirements({}, housings=False)
         self._reset_notches()
         self._bend_editor.set_editable(True)
         self._refresh()
@@ -964,6 +975,7 @@ class FixedArmSkeletonDialog(QDialog):
         if not self.snapshot.matches(self.controller.project):
             self.snapshot = None
             self._housings = None
+            self._overlap.set_requirements({}, housings=False)
             self._reset_notches()
             self._housing_status.setText('Корпуса сброшены: требуется новое подтверждение опор и параметров.')
             self._bend_editor.set_editable(False)

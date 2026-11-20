@@ -141,3 +141,34 @@ def test_real_positive_clearance_candidate_rebuilds_all_pairs():
     assert pair.status == 'gap' and pair.distance_mm >= .50001
     assert any(p.status == 'intersection' for p in result.after.pairs)  # Existing other conflicts stay visible.
     assert doc == original
+
+
+def test_candidates_must_preserve_other_explicit_requirements(monkeypatch):
+    from itertools import combinations
+
+    from test_fixed_arm_housings import housings
+
+    from suspensionlab.model.fixed_arm_housings import make_housing_preview
+
+    doc = make_housing_preview(document(), housings())
+    names = ('tube_front', 'tube_rear', 'housing_front', 'housing_rear')
+    req = {'tube_front|tube_rear': 0.5, 'tube_front|housing_front': 2.0}
+    params = {**request(doc), 'requirements': req}
+    def measurements(candidate):
+        values = [{'left': a, 'right': b, 'distance_mm': 3, 'overlap_mm3': 0, 'threshold_mm3': 1e-6}
+                  for a, b in combinations(names, 2)]
+        if candidate == doc:
+            values[0].update(distance_mm=0, overlap_mm3=1)
+        else:
+            values[0].update(distance_mm=1, overlap_mm3=0)
+            values[1]['distance_mm'] = 1  # still a gap, but violates another explicit minimum
+        return values
+    monkeypatch.setattr(smart, 'measure_proximity', measurements)
+    assert smart.suggest(params)['outcome'] == 'no_candidate'
+    candidate = smart.candidate_document(doc, 'joint', 'front', .5)
+    forged = {'status': 'ok', 'outcome': 'candidate', 'baseline': measurements(doc), 'kind': 'joint',
+              'target': 'front', 'radial_clearance_mm': .5, 'after': measurements(candidate)}
+    with pytest.raises(OverlapJobError):
+        _parse_suggestion(forged, params)
+    with pytest.raises(ValueError):
+        smart.validate_request({**params, 'minimum_mm': 1})

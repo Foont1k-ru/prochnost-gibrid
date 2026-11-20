@@ -6,6 +6,7 @@ on:
       - '.github/workflows/fixed-arm-diagnostic.yml'
       - 'suspensionlab/suspensionlab/model/fixed_arm_skeleton*.py'
       - 'suspensionlab/suspensionlab/model/fixed_arm_housings.py'
+      - 'suspensionlab/suspensionlab/model/fixed_arm_clearances.py'
       - 'suspensionlab/suspensionlab/ui/fixed_arm_housings_dialog.py'
       - 'suspensionlab/suspensionlab/ui/fixed_arm_overlap.py'
       - 'suspensionlab/suspensionlab/core/cad_fixed_arm_overlap*.py'
@@ -53,6 +54,7 @@ jobs:
           tests/test_fixed_arm_overlap_all_job.py tests/test_fixed_arm_overlap_all_cad.py tests/test_fixed_arm_overlap_all_ui.py
           tests/test_fixed_arm_proximity_job.py tests/test_fixed_arm_proximity_cad.py tests/test_fixed_arm_proximity_ui.py
           tests/test_fixed_arm_suggestions.py tests/test_fixed_arm_suggestions_ui.py
+          tests/test_fixed_arm_clearance_io.py tests/test_fixed_arm_clearance_ui.py
           tests/test_fixed_arm_tube_joint.py tests/test_fixed_arm_tube_joint_io.py
           tests/test_fixed_arm_tube_joint_cad.py tests/test_fixed_arm_tube_joint_ui.py
           --junitxml=fixed-arm-results.xml

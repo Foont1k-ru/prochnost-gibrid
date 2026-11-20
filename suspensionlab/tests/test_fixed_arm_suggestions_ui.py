@@ -12,7 +12,8 @@ def test_proposal_requires_input_confirmation_and_keeps_project(qtbot, monkeypat
     class FakeJob:
         def cancel(self):
             pass
-        def run_suggestion(self, doc, left, right, minimum):
+        def run_suggestion(self, doc, left, right, minimum, *, requirements):
+            assert requirements == {'tube_front|tube_rear': 0.5}
             assert (left, right, minimum) == ('tube_front', 'tube_rear', 0.5)
             return SuggestionResult('candidate', baseline, 'joint', 'rear', 0.5, after)
     monkeypatch.setattr(overlap_ui, 'FixedArmOverlapJob', FakeJob)
@@ -22,7 +23,9 @@ def test_proposal_requires_input_confirmation_and_keeps_project(qtbot, monkeypat
     view._completed(view.generation, baseline)
     assert not view._suggest_button.isEnabled()
     view._minimum.setText('0,5')
-    assert view._suggest_button.isEnabled() and 'не выполнено' in view._suggest_status.text()
+    assert not view._suggest_button.isEnabled() and view._set_minimum.isEnabled()
+    view._commit_requirement()
+    assert view._suggest_button.isEnabled() and 'не выполнено' in view._suggest_status.text().lower()
     view._start_suggestion()
     qtbot.waitUntil(lambda: view._worker is None, timeout=10000)
     assert view._apply_button.isEnabled() and 'Предложение' in view._suggest_status.text()
@@ -60,13 +63,14 @@ def test_changing_requirement_discards_proposal(qtbot, monkeypatch):
     base = ProximityResult((PairProximity('tube_front', 'tube_rear', 0, 1e-6, 1),))
     view._completed(view.generation, base)
     view._minimum.setText('0.5')
-    assert 'выполнено' in view._suggest_status.text()
+    view._commit_requirement()
+    assert 'выполнено' in view._suggest_status.text().lower()
     view._suggestion = SuggestionResult('candidate', base, 'joint', 'rear', .5, base)
     view._apply_button.setEnabled(True)
     view._minimum.setText('0.9')
     assert view._suggestion is None and not view._apply_button.isEnabled()
     view._minimum.setText('nan')
-    assert not view._suggest_button.isEnabled() and 'не более' in view._suggest_status.text()
+    assert not view._suggest_button.isEnabled() and 'не принят' in view._suggest_status.text()
     assert dialog.shutdown()
     dialog.close()
 
@@ -115,9 +119,12 @@ def test_requirement_never_follows_selection_to_another_pair(qtbot, monkeypatch)
                               PairProximity('tube_front', 'housing_front', 0, 1e-6, 1)))
     view._completed(view.generation, report)
     view._minimum.setText('0.5')
-    assert 'выполнено' in view._suggest_status.text()
+    view._commit_requirement()
+    assert 'выполнено' in view._suggest_status.text().lower()
     view._table.selectRow(1)
     assert view._minimum.text() == '' and not view._suggest_button.isEnabled()
+    view._table.selectRow(0)
+    assert view._minimum.text() == '0.5' and view._suggest_button.isEnabled()
     assert dialog.shutdown()
     dialog.close()
 
@@ -150,6 +157,7 @@ def test_real_worker_suggests_zero_without_applying_until_confirmation(qtbot, mo
     view._start_proximity()
     qtbot.waitUntil(lambda: view._worker is None, timeout=60000)
     view._minimum.setText('0')
+    view._commit_requirement()
     assert view._suggest_button.isEnabled()
     view._start_suggestion()
     qtbot.waitUntil(lambda: view._worker is None, timeout=90000)

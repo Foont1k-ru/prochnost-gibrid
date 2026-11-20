@@ -423,6 +423,7 @@ def run_cad_check() -> None:
                  'ошибок: 0' in overlap._status.text(),
                  "Проверка расстояний деталей недоступна: " + overlap._status.text())
         overlap._minimum.setText('0.5')
+        overlap._commit_requirement()
         _require(overlap._suggest_button.isEnabled(), "Подбор не принимает явный минимум")
         before_candidate = fixed_dialog._cad_candidate
         overlap._start_suggestion()
@@ -444,8 +445,10 @@ def run_cad_check() -> None:
             _require(fixed_dialog.preview is not None and fixed_dialog.preview.anchors == anchors and
                      fixed_dialog._housings is not None and fixed_dialog._notch_checks['front'].isChecked() and
                      fixed_dialog._notch_values() == {'front': 0.} and fixed_dialog._tube_joint_values() ==
-                     {'target': 'rear', 'radial_clearance_mm': 0.} and source.read_bytes() == original,
-                     "Снимок с корпусами и параметрами подрезки не восстановлен")
+                     {'target': 'rear', 'radial_clearance_mm': 0.} and
+                     overlap.requirements() == {'tube_front|tube_rear': 0.5} and overlap._table.isHidden() and
+                     source.read_bytes() == original,
+                     "Снимок, параметры подрезки и требование не восстановлены или показан старый результат")
             mesh = wait_for_mesh()
             _require(len(mesh.part_names) == 4 and panel._document is not None and
                      panel._document.get('notches') == {'front': 0.} and panel._document.get('tube_joint') ==
