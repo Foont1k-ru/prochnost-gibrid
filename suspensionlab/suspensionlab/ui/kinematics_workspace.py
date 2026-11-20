@@ -199,6 +199,10 @@ class KinematicsWorkspace(QWidget):
         self.preview = Scene3DPreview(self, schematic=True, title_override=tr('workspace_flow.scene_title'),
                                       legend_override=tr('workspace_flow.scene_hint'))
         self.preview.volumetric = True
+        self.preview.point_selection_enabled = True
+        point_hint = QLabel(tr('workspace_flow.point_pick_hint'), self)
+        point_hint.setWordWrap(True)
+        main_layout.addWidget(point_hint)
         self.volume_button.toggled.connect(self._set_volumetric)
         self.preview.setMinimumSize(240, 180)
         main_layout.addWidget(self.preview, 1)
@@ -285,6 +289,7 @@ class KinematicsWorkspace(QWidget):
         self.camera.viewSelected.connect(self.preview.set_standard_view)
         self.reset.clicked.connect(self.preview.reset_camera)
         self.preview.linksClicked.connect(self._select_hits)
+        self.preview.pointsClicked.connect(self._select_point_hits)
         self.role.currentIndexChanged.connect(self._role_changed)
         self.suspension_type.activated.connect(self._choose_suspension_type)
         self.part.currentIndexChanged.connect(self._part_changed)
@@ -346,6 +351,7 @@ class KinematicsWorkspace(QWidget):
 
     def _role_changed(self, *_args) -> None:
         axle = self._axle()
+        self.preview.editable_point_codes = frozenset(p.code for p in axle.spec.points if p.code in axle.hardpoints)
         self.front_button.setChecked(axle.role == 'front')
         self.rear_button.setChecked(axle.role == 'rear')
         self._sync_suspension_type()
@@ -746,6 +752,50 @@ class KinematicsWorkspace(QWidget):
             self.sample.setText(f'Ход {sample.travel_mm:+.1f} мм • развал {sample.metrics.camber_deg:+.2f}° '
                                 f'• схождение одного колеса {sample.metrics.toe_deg:+.2f}°')
 
+    def _select_point_hits(self, hits, position) -> None:
+        revision, frame = self._revision, self.preview.frame
+        if len(hits) == 1:
+            self._apply_point_hit(hits[0], revision, frame)
+            return
+        if not hits:
+            return
+        if self._menu is not None:
+            self._menu.close()
+        menu = QMenu(self)
+        self._menu = menu
+        for code in hits:
+            spec = self._axle().spec.point(code)
+            if spec is not None:
+                action = menu.addAction(f'{tr(spec.name_key)} ({code})')
+                action.triggered.connect(lambda _checked=False, c=code, r=revision, f=frame:
+                                         self._apply_point_hit(c, r, f))
+        menu.aboutToHide.connect(lambda: self._close_pick_menu(menu))
+        menu.popup(self.preview.mapToGlobal(position))
+
+    def _close_pick_menu(self, menu: QMenu) -> None:
+        if self._menu is menu:
+            self._menu = None
+        menu.deleteLater()
+
+    def _apply_point_hit(self, code: str, revision: int, frame) -> None:
+        if revision != self._revision or frame is None or frame is not self.preview.frame:
+            return
+        spec = self._axle().spec.point(code)
+        if spec is None or code not in self._axle().hardpoints or frame.point(code) is None:
+            return
+        if code not in self.point_toggles:
+            index = self._part_index(('group', spec.group))
+            if index < 0:
+                index = self._part_index(('all', ''))
+            if index < 0:
+                return
+            self.part.setCurrentIndex(index)
+        toggle = self.point_toggles.get(code)
+        if toggle is not None:
+            toggle.setChecked(True)
+            self.preview.select_point(code)  # also works when the toggle was already open
+            self.editor_scroll.ensureWidgetVisible(toggle)
+
     def _select_hits(self, hits, position) -> None:
         if not hits:
             return
@@ -762,7 +812,7 @@ class KinematicsWorkspace(QWidget):
             if spec:
                 action = menu.addAction(tr(spec.name_key))
                 action.triggered.connect(lambda _checked=False, code=hit.code, rev=revision: self._apply_hit(code, rev))
-        menu.aboutToHide.connect(menu.deleteLater)
+        menu.aboutToHide.connect(lambda: self._close_pick_menu(menu))
         menu.popup(self.preview.mapToGlobal(position))
 
     def _apply_hit(self, code: str, revision: int) -> None:

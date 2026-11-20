@@ -29,6 +29,7 @@ class Scene3DPreview(QWidget):
     """Только каркас рассчитанных точек, положение камеры не меняет проект."""
 
     linksClicked = Signal(object, object)
+    pointsClicked = Signal(object, object)
 
     def __init__(self, parent: QWidget | None = None, *, schematic: bool = False,
                  title_override: str | None = None, legend_override: str | None = None) -> None:
@@ -39,6 +40,9 @@ class Scene3DPreview(QWidget):
         self.volumetric = schematic
         self._visual: SchematicVisual | None = None
         self.link_targets: tuple[SelectableLink, ...] = ()
+        # Opt-in: other schematic previews retain their existing click behaviour.
+        self.point_selection_enabled = False
+        self.editable_point_codes: frozenset[str] = frozenset()
         self.selected_link: tuple[str, str] | None = None
         self._click_press: QPointF | None = None
         self._click_moved = False
@@ -132,6 +136,15 @@ class Scene3DPreview(QWidget):
                               self.height() / 2 + 8 + self.pan_y - y * scale)
                 painter.drawEllipse(pos, 3, 3)
             painter.setBrush(Qt.BrushStyle.NoBrush)
+        if self.point_selection_enabled:
+            painter.setPen(QPen(QColor('#173750'), 1))
+            painter.setBrush(QColor('#b9e5ff'))
+            for code, position in self.frame.points:
+                if code in self.editable_point_codes:
+                    x, y = project_orthographic(position, center, self.yaw, self.elevation)
+                    painter.drawEllipse(QPointF(self.width() / 2 + self.pan_x + x * scale,
+                                                self.height() / 2 + 8 + self.pan_y - y * scale), 3.5, 3.5)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
         point = self.frame.point(self.selected_point) if self.selected_point else None
         if point is not None:
             x, y = project_orthographic(point, center, self.yaw, self.elevation)
@@ -178,6 +191,24 @@ class Scene3DPreview(QWidget):
             click=(position.x(), position.y()),
             tolerance_px=max(7., JOINT_RADIUS_MM * scale + 5. if self.volumetric else 7.),
         )
+
+    def _point_hits(self, position: QPointF) -> tuple[str, ...]:
+        """Projected candidates, not a depth or visibility test."""
+        if self.bounds is None or self.frame is None or not self.point_selection_enabled:
+            return ()
+        center, radius = self.bounds
+        scale = max(1.0, min(self.width() - 36, self.height() - 70)) / (2 * radius) * self.zoom
+        hits = []
+        for code, point in self.frame.points:
+            if code not in self.editable_point_codes:
+                continue
+            x, y = project_orthographic(point, center, self.yaw, self.elevation)
+            dx = self.width() / 2 + self.pan_x + x * scale - position.x()
+            dy = self.height() / 2 + 8 + self.pan_y - y * scale - position.y()
+            distance = dx * dx + dy * dy
+            if distance <= 9 ** 2:
+                hits.append((distance, code))
+        return tuple(code for _, code in sorted(hits))
 
     def _draw_schematic_volumes(self, painter: QPainter, center: Point, scale: float) -> None:
         """Условная заливка с приблизительной сортировкой по глубине, без CAD-рендера."""
@@ -269,9 +300,14 @@ class Scene3DPreview(QWidget):
         elif event.button() == Qt.MouseButton.LeftButton and self._pan_drag is None:
             if (self._click_press is not None and not self._click_moved and
                     (event.position() - self._click_press).manhattanLength() < 6):
-                hits = self._link_hits(event.position())
-                if hits:
-                    self.linksClicked.emit(hits, event.position().toPoint())
+                if self.point_selection_enabled and event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                    point_hits = self._point_hits(event.position())
+                    if point_hits:
+                        self.pointsClicked.emit(point_hits, event.position().toPoint())
+                else:
+                    hits = self._link_hits(event.position())
+                    if hits:
+                        self.linksClicked.emit(hits, event.position().toPoint())
             self._click_press = None
             self._drag = None
             event.accept()

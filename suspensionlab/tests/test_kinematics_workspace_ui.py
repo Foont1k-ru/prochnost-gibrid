@@ -477,3 +477,83 @@ def test_sidebar_expands_for_larger_platform_controls(workspace, qtbot):
     view.editor.setStyleSheet('')
     qtbot.waitUntil(lambda: view.editor_scroll.minimumWidth() == initial_width, timeout=5000)
     assert view.editor_scroll.horizontalScrollBar().maximum() == 0
+
+
+def test_shift_click_point_opens_original_coordinates_without_edit(workspace, qtbot):
+    from PySide6.QtCore import QPointF, Qt
+
+    from suspensionlab.core.scene3d import project_orthographic
+
+    controller, view = workspace
+    view.resize(1200, 800)
+    qtbot.waitUntil(lambda: view.preview.width() > 300, timeout=5000)
+    preview = view.preview
+    view.travel.setValue(view.travel.maximum())
+    frame = preview.frame
+    center, radius = preview.bounds
+    scale = max(1.0, min(preview.width() - 36, preview.height() - 70)) / (2 * radius) * preview.zoom
+    candidates = []
+    for code, point in frame.points:
+        if code not in preview.editable_point_codes or code in view.point_toggles:
+            continue
+        x, y = project_orthographic(point, center, preview.yaw, preview.elevation)
+        pos = QPointF(preview.width() / 2 + preview.pan_x + x * scale,
+                      preview.height() / 2 + 8 + preview.pan_y - y * scale).toPoint()
+        if preview._point_hits(QPointF(pos)) == (code,) and preview.rect().contains(pos):
+            candidates.append((code, pos))
+    assert candidates
+    code, pos = candidates[0]
+    original = controller.project.to_dict()
+    qtbot.mouseClick(preview, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.ShiftModifier, pos)
+    assert controller.project.to_dict() == original
+    assert preview.selected_point == code
+    assert view.point_toggles[code].isChecked()
+    qtbot.waitUntil(lambda: view._rows[(code, 'x')].isVisible(), timeout=5000)
+    assert view._rows[(code, 'x')].value() == pytest.approx(controller.project.front.hardpoints[code].x)
+
+
+def test_point_pick_disambiguation_and_stale_frame(workspace, qtbot):
+    from PySide6.QtCore import QPoint
+
+    controller, view = workspace
+    original = controller.project.to_dict()
+    frame, revision = view.preview.frame, view._revision
+    view._select_point_hits(('lca_f_in', 'ubj'), QPoint(20, 20))
+    assert view._menu is not None
+    actions = view._menu.actions()
+    assert len(actions) == 2
+    actions[1].trigger()
+    assert view.preview.selected_point == 'ubj'
+    view._menu.close()
+    qtbot.waitUntil(lambda: view._menu is None, timeout=3000)
+    assert controller.project.to_dict() == original
+    view.travel.setValue(view.travel.maximum())
+    view._apply_point_hit('lca_f_in', revision, frame)
+    assert view.preview.selected_point == 'ubj'
+    view.start.setValue(-40)
+    view._apply_point_hit('lca_f_in', revision, view.preview.frame)
+    assert view.preview.selected_point == 'ubj'
+    qtbot.waitUntil(lambda: view.result is not None, timeout=10000)
+
+
+def test_point_selection_tracks_rear_and_unsupported_static_scheme(workspace, qtbot):
+    controller, view = workspace
+    view.role.setCurrentIndex(1)
+    qtbot.waitUntil(lambda: view.result is not None, timeout=10000)
+    frame = view.preview.frame
+    revision = view._revision
+    assert frame.point('toe_out') is not None
+    view._apply_point_hit('toe_out', revision, frame)
+    assert view.preview.selected_point == 'toe_out'
+    assert view.point_toggles['toe_out'].isChecked()
+    view.role.setCurrentIndex(0)
+    view._apply_point_hit('toe_out', revision, frame)
+    assert view.preview.selected_point != 'toe_out'
+    controller.new_project('live_axle')
+    view.role.setCurrentIndex(1)
+    qtbot.waitUntil(lambda: 'не реализован' in view.status.text(), timeout=10000)
+    frame = view.preview.frame
+    code = next(code for code, _ in frame.points if code in view.preview.editable_point_codes)
+    view._apply_point_hit(code, view._revision, frame)
+    assert view.preview.selected_point == code
+    assert view.point_toggles[code].isChecked()
