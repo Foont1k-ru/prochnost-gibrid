@@ -222,7 +222,7 @@ class FixedArmSkeletonDialog(QDialog):
         self._overlap = FixedArmOverlap(self._cad_is_current, overlap_body)
         overlap_layout.addWidget(self._overlap)
         overlap_layout.addStretch(1)
-        self._cad_tools.addTab(overlap_area, 'Пересечение труб')
+        self._cad_tools.addTab(overlap_area, 'Пересечения и расстояния')
         cad_layout.addWidget(self._cad_tools)
         self._notch_status = QLabel('', cad_tab)
         self._notch_status.setWordWrap(True)

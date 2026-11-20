@@ -1,4 +1,4 @@
-"""Численные попарные пересечения деталей снимка; не проверка зазоров."""
+"""Изолированные численные проверки CAD-тел фиксированного рычага."""
 from __future__ import annotations
 
 import json
@@ -86,14 +86,57 @@ def measure_all_pairs(document: dict[str, Any]) -> list[dict[str, Any]]:
     return result
 
 
+def _distance(left: Any, right: Any) -> float:
+    """Минимальное расстояние между CAD-телами, включая вложение одного в другое."""
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+
+    calculation = BRepExtrema_DistShapeShape(left, right)
+    if not calculation.IsDone() or calculation.NbSolution() < 1:
+        raise ValueError('distance_failed')
+    value = float(calculation.Value())
+    if not math.isfinite(value) or value < 0 or value > 1e12:
+        raise ValueError('distance_failed')
+    return value
+
+
+def measure_proximity(document: dict[str, Any]) -> list[dict[str, Any]]:
+    """Дистанция и общий объём каждой пары после всех выбранных подрезок.
+
+    Ошибка отдельной пары не выдаётся за нулевое расстояние и не скрывает другие пары.
+    Ошибка построения исходных тел отклоняет весь отчёт.
+    """
+    parts = _build_parts(document)
+    names = ('tube_front', 'tube_rear', 'housing_front', 'housing_rear')[:len(parts)]
+    volumes = [_volume(part) for part in parts]
+    if any(value <= 0 for value in volumes):
+        raise ValueError('invalid_volume')
+    result = []
+    for left, right in combinations(range(len(parts)), 2):
+        pair: dict[str, Any] = {'left': names[left], 'right': names[right]}
+        try:
+            measured = _measure_pair(parts[left], parts[right], volumes[left], volumes[right])
+            distance = _distance(parts[left], parts[right])
+            pair.update(measured, distance_mm=distance)
+        except Exception:
+            pair['error'] = 'measurement_failed'
+        result.append(pair)
+    return result
+
+
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
-    if len(args) not in (2, 3) or (len(args) == 3 and args[2] != 'all'):
+    if len(args) not in (2, 3) or (len(args) == 3 and args[2] not in ('all', 'proximity')):
         return 2
     source, target = map(Path, args[:2])
     try:
         data = json.loads(_read_project_bytes(source).decode('utf-8'), object_pairs_hook=_unique_object)
-        payload = ({'pairs': measure_all_pairs(data)} if len(args) == 3 else measure_overlap(data))
+        payload: dict[str, Any]
+        if len(args) == 2:
+            payload = measure_overlap(data)
+        elif args[2] == 'all':
+            payload = {'pairs': measure_all_pairs(data)}
+        else:
+            payload = {'pairs': measure_proximity(data)}
         target.write_text(json.dumps({'status': 'ok', **payload}, allow_nan=False), encoding='utf-8')
         return 0
     except Exception:

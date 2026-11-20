@@ -1,4 +1,4 @@
-"""Изолированная проверка объёмных пересечений деталей снимка."""
+"""Изолированная проверка пересечений и расстояний деталей снимка."""
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -17,23 +17,37 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..core.cad_fixed_arm_overlap_job import FixedArmOverlapJob, OverlapJobError, OverlapResult, PairwiseResult
+from ..core.cad_fixed_arm_overlap_job import (
+    FixedArmOverlapJob,
+    OverlapJobError,
+    OverlapResult,
+    PairwiseResult,
+    ProximityResult,
+)
 
 
 class _OverlapReader(QThread):
     completed = Signal(int, object)
     failed = Signal(int, str)
 
-    def __init__(self, document: dict[str, Any], token: int, parent: QWidget, *, all_parts: bool = False) -> None:
+    def __init__(self, document: dict[str, Any], token: int, parent: QWidget, *,
+                 all_parts: bool = False, proximity: bool = False) -> None:
         super().__init__(parent)
         self.document = document
         self.token = token
         self.all_parts = all_parts
+        self.proximity = proximity
         self.job = FixedArmOverlapJob()
 
     def run(self) -> None:
         try:
-            result = self.job.run_all(self.document) if self.all_parts else self.job.run(self.document)
+            result: ProximityResult | PairwiseResult | OverlapResult
+            if self.proximity:
+                result = self.job.run_proximity(self.document)
+            elif self.all_parts:
+                result = self.job.run_all(self.document)
+            else:
+                result = self.job.run(self.document)
             self.completed.emit(self.token, result)
         except OverlapJobError as error:
             self.failed.emit(self.token, str(error))
@@ -61,6 +75,10 @@ class FixedArmOverlap(QWidget):
         self._all_button.clicked.connect(self._start_all)
         actions.addWidget(self._all_button)
         layout.addLayout(actions)
+        self._distance_button = QPushButton('Расстояния и пересечения всех пар', self)
+        self._distance_button.setEnabled(False)
+        self._distance_button.clicked.connect(self._start_proximity)
+        layout.addWidget(self._distance_button)
         self._status = QLabel('Проверка не запускалась. Касание, зазоры и прочность не определяются.', self)
         self._status.setWordWrap(True)
         layout.addWidget(self._status)
@@ -84,6 +102,7 @@ class FixedArmOverlap(QWidget):
         enabled = not self._closed and document is not None and self._worker is None
         self._button.setEnabled(enabled)
         self._all_button.setEnabled(enabled)
+        self._distance_button.setEnabled(enabled)
         self._table.setRowCount(0)
         self._table.hide()
         self._status.setText('Проверка не запускалась для текущих параметров. '
@@ -95,7 +114,10 @@ class FixedArmOverlap(QWidget):
     def _start_all(self) -> None:
         self._run_check(all_parts=True)
 
-    def _run_check(self, *, all_parts: bool) -> None:
+    def _start_proximity(self) -> None:
+        self._run_check(all_parts=False, proximity=True)
+
+    def _run_check(self, *, all_parts: bool, proximity: bool = False) -> None:
         if self._closed or self._worker is not None or self._document is None:
             return
         if not self._is_current(self._document):
@@ -103,14 +125,20 @@ class FixedArmOverlap(QWidget):
             self._table.hide()
             self._status.setText('Снимок устарел; повторите фиксацию и проверку.')
             return
-        worker = _OverlapReader(self._document, self.generation, self, all_parts=all_parts)
+        worker = _OverlapReader(self._document, self.generation, self, all_parts=all_parts, proximity=proximity)
         self._worker = worker
         self._button.setEnabled(False)
         self._all_button.setEnabled(False)
+        self._distance_button.setEnabled(False)
         self._table.setRowCount(0)
         self._table.hide()
-        self._status.setText('Проверка всех пар деталей выполняется в отдельном процессе…' if all_parts else
-                             'Проверка двух труб выполняется в отдельном процессе…')
+        if proximity:
+            text = 'Проверка расстояний и пересечений выполняется в отдельном процессе…'
+        elif all_parts:
+            text = 'Проверка всех пар деталей выполняется в отдельном процессе…'
+        else:
+            text = 'Проверка двух труб выполняется в отдельном процессе…'
+        self._status.setText(text)
         worker.completed.connect(self._completed)
         worker.failed.connect(self._failed)
         worker.finished.connect(self._finished)
@@ -123,6 +151,9 @@ class FixedArmOverlap(QWidget):
             self._table.setRowCount(0)
             self._table.hide()
             self._status.setText('Снимок устарел; результат скрыт.')
+            return
+        if isinstance(result, ProximityResult):
+            self._show_proximity(result)
             return
         if isinstance(result, PairwiseResult):
             self._show_pairs(result)
@@ -148,11 +179,50 @@ class FixedArmOverlap(QWidget):
         self._status.setText(f'Проверено пар: {len(result.pairs)}; объём выше численного порога: {count}. '
                              'Ниже порога не означает наличие зазора: касание, расстояния, сварка и прочность '
                              'не проверяются. Таблицу можно прокручивать.')
+        self._table.setColumnCount(4)
+        self._table.setHorizontalHeaderLabels(['Пара', 'Объём, мм³', 'Порог, мм³', 'Результат'])
         self._table.setRowCount(len(result.pairs))
         for row, pair in enumerate(result.pairs):
             status = 'Есть объём' if pair.overlap_mm3 > pair.threshold_mm3 else 'Ниже порога'
             cells = (f'{names[pair.left]} — {names[pair.right]}', f'{pair.overlap_mm3:.6g}',
                      f'{pair.threshold_mm3:.3g}', status)
+            for column, text in enumerate(cells):
+                self._table.setItem(row, column, QTableWidgetItem(text))
+        self._table.show()
+
+    def _show_proximity(self, result: ProximityResult) -> None:
+        names = {'tube_front': 'Передняя труба', 'tube_rear': 'Задняя труба',
+                 'housing_front': 'Передний корпус', 'housing_rear': 'Задний корпус'}
+        if not result.pairs or any(pair.left not in names or pair.right not in names for pair in result.pairs):
+            self._failed(self.generation, 'output')
+            return
+        counts = {status: sum(pair.status == status for pair in result.pairs)
+                  for status in ('intersection', 'near', 'uncertain_overlap', 'gap', 'error')}
+        self._status.setText(
+            f'Пар: {len(result.pairs)}; пересечение: {counts["intersection"]}; '
+            f'касание или ближе допуска: {counts["near"]}; малый объём ниже порога: {counts["uncertain_overlap"]}; '
+            f'зазор: {counts["gap"]}; ошибок: {counts["error"]}. '
+            'Допуск расстояния 0,00001 мм. Только текущие CAD-тела после подрезок; '
+            'не проверка движения, сварки, монтажа или прочности. Таблицу можно прокручивать.')
+        self._table.setColumnCount(5)
+        self._table.setHorizontalHeaderLabels(['Пара', 'Расстояние, мм', 'Объём, мм³', 'Порог, мм³', 'Результат'])
+        for index in (1, 2, 3, 4):
+            self._table.horizontalHeader().setSectionResizeMode(index, QHeaderView.ResizeMode.ResizeToContents)
+        self._table.setRowCount(len(result.pairs))
+        labels = {'intersection': 'Пересечение', 'near': 'Касание / в допуске',
+                  'uncertain_overlap': 'Возможное малое пересечение', 'gap': 'Зазор', 'error': 'Ошибка — не проверено'}
+        for row, pair in enumerate(result.pairs):
+            state = pair.status
+            if state == 'intersection':
+                distance = '0 (пересечение)'
+            elif state in ('error', 'uncertain_overlap'):
+                distance = '—'
+            else:
+                assert pair.distance_mm is not None
+                distance = f'{pair.distance_mm:.8g}'
+            volume = '—' if pair.overlap_mm3 is None else f'{pair.overlap_mm3:.6g}'
+            threshold = '—' if pair.threshold_mm3 is None else f'{pair.threshold_mm3:.3g}'
+            cells = (f'{names[pair.left]} — {names[pair.right]}', distance, volume, threshold, labels[state])
             for column, text in enumerate(cells):
                 self._table.setItem(row, column, QTableWidgetItem(text))
         self._table.show()
@@ -175,6 +245,7 @@ class FixedArmOverlap(QWidget):
         enabled = not self._closed and self._document is not None
         self._button.setEnabled(enabled)
         self._all_button.setEnabled(enabled)
+        self._distance_button.setEnabled(enabled)
 
     def shutdown(self) -> bool:
         self._closed = True
@@ -182,6 +253,7 @@ class FixedArmOverlap(QWidget):
         self._document = None
         self._button.setEnabled(False)
         self._all_button.setEnabled(False)
+        self._distance_button.setEnabled(False)
         self._table.setRowCount(0)
         self._table.hide()
         if self._worker is None:

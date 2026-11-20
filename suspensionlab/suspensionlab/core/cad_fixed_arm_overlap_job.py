@@ -18,6 +18,9 @@ from ..model.fixed_arm_housings import PREVIEW_FORMAT, validate_housing_preview
 from ..model.project_limits import MAX_PROJECT_BYTES
 from ..model.welded_arm import weldment_source_matches
 
+# Ниже этой дистанции численно нельзя различить касание и очень малый зазор.
+DISTANCE_TOLERANCE_MM = 1e-5
+
 
 class OverlapJobError(Exception):
     pass
@@ -42,6 +45,32 @@ class PairwiseResult:
     pairs: tuple[PairOverlap, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class PairProximity:
+    left: str
+    right: str
+    overlap_mm3: float | None
+    threshold_mm3: float | None
+    distance_mm: float | None
+
+    @property
+    def status(self) -> str:
+        if self.overlap_mm3 is None or self.threshold_mm3 is None or self.distance_mm is None:
+            return 'error'
+        if self.overlap_mm3 > self.threshold_mm3:
+            return 'intersection'
+        if self.overlap_mm3 > 0:
+            return 'uncertain_overlap'
+        if self.distance_mm <= DISTANCE_TOLERANCE_MM:
+            return 'near'
+        return 'gap'
+
+
+@dataclass(frozen=True, slots=True)
+class ProximityResult:
+    pairs: tuple[PairProximity, ...]
+
+
 def _read_numbers(item: dict[str, Any]) -> tuple[float, float]:
     numbers = [item['overlap_mm3'], item['threshold_mm3']]
     try:
@@ -53,13 +82,17 @@ def _read_numbers(item: dict[str, Any]) -> tuple[float, float]:
         raise OverlapJobError('output') from error
 
 
-def _parse_all_pairs(value: Any, document: dict[str, Any]) -> PairwiseResult:
-    if not isinstance(value, list):
-        raise OverlapJobError('output')
+def _expected_pairs(document: dict[str, Any]) -> list[tuple[str, str]]:
     names: tuple[str, ...] = ('tube_front', 'tube_rear')
     if document.get('format') == PREVIEW_FORMAT and document.get('housings') is not None:
         names += ('housing_front', 'housing_rear')
-    expected = list(combinations(names, 2))
+    return list(combinations(names, 2))
+
+
+def _parse_all_pairs(value: Any, document: dict[str, Any]) -> PairwiseResult:
+    if not isinstance(value, list):
+        raise OverlapJobError('output')
+    expected = _expected_pairs(document)
     if len(value) != len(expected):
         raise OverlapJobError('output')
     result = []
@@ -70,6 +103,30 @@ def _parse_all_pairs(value: Any, document: dict[str, Any]) -> PairwiseResult:
         overlap, threshold = _read_numbers(item)
         result.append(PairOverlap(left, right, overlap, threshold))
     return PairwiseResult(tuple(result))
+
+
+def _parse_proximity(value: Any, document: dict[str, Any]) -> ProximityResult:
+    expected = _expected_pairs(document)
+    if not isinstance(value, list) or len(value) != len(expected):
+        raise OverlapJobError('output')
+    result = []
+    for item, (left, right) in zip(value, expected, strict=True):
+        if not isinstance(item, dict) or item.get('left') != left or item.get('right') != right:
+            raise OverlapJobError('output')
+        if set(item) == {'left', 'right', 'error'} and item['error'] == 'measurement_failed':
+            result.append(PairProximity(left, right, None, None, None))
+            continue
+        if set(item) != {'left', 'right', 'overlap_mm3', 'threshold_mm3', 'distance_mm'}:
+            raise OverlapJobError('output')
+        overlap, threshold = _read_numbers(item)
+        distance = item['distance_mm']
+        try:
+            if type(distance) not in (int, float) or not math.isfinite(distance) or not 0 <= distance <= 1e12:
+                raise OverlapJobError('output')
+            result.append(PairProximity(left, right, overlap, threshold, float(distance)))
+        except (TypeError, ValueError, OverflowError) as error:
+            raise OverlapJobError('output') from error
+    return ProximityResult(tuple(result))
 
 
 class FixedArmOverlapJob:
@@ -86,18 +143,25 @@ class FixedArmOverlapJob:
                     self._process.kill()
 
     def run(self, document: dict[str, Any], *, timeout: float = 90) -> OverlapResult:
-        result = self._run(document, timeout=timeout, all_parts=False)
+        result = self._run(document, timeout=timeout, mode='overlap')
         if not isinstance(result, OverlapResult):
             raise OverlapJobError('output')
         return result
 
     def run_all(self, document: dict[str, Any], *, timeout: float = 90) -> PairwiseResult:
-        result = self._run(document, timeout=timeout, all_parts=True)
+        result = self._run(document, timeout=timeout, mode='all')
         if not isinstance(result, PairwiseResult):
             raise OverlapJobError('output')
         return result
 
-    def _run(self, document: dict[str, Any], *, timeout: float, all_parts: bool) -> OverlapResult | PairwiseResult:
+    def run_proximity(self, document: dict[str, Any], *, timeout: float = 90) -> ProximityResult:
+        result = self._run(document, timeout=timeout, mode='proximity')
+        if not isinstance(result, ProximityResult):
+            raise OverlapJobError('output')
+        return result
+
+    def _run(self, document: dict[str, Any], *, timeout: float,
+             mode: str) -> OverlapResult | PairwiseResult | ProximityResult:
         if self._cancelled.is_set():
             raise OverlapJobError('cancelled')
         try:
@@ -115,8 +179,8 @@ class FixedArmOverlapJob:
             source, target = Path(directory) / 'snapshot.json', Path(directory) / 'result.json'
             source.write_bytes(content)
             args = [str(source), str(target)]
-            if all_parts:
-                args.append('all')
+            if mode != 'overlap':
+                args.append(mode)
             if getattr(sys, 'frozen', False):
                 command = [sys.executable, '--fixed-arm-overlap-worker', *args]
             else:
@@ -153,10 +217,11 @@ class FixedArmOverlapJob:
                 result = json.loads(target.read_text(encoding='utf-8'), object_pairs_hook=_unique_object)
                 if not isinstance(result, dict) or result.get('status') != 'ok':
                     raise OverlapJobError('output')
-                if all_parts:
+                if mode in ('all', 'proximity'):
                     if set(result) != {'status', 'pairs'}:
                         raise OverlapJobError('output')
-                    return _parse_all_pairs(result['pairs'], snapshot)
+                    return (_parse_all_pairs(result['pairs'], snapshot) if mode == 'all' else
+                            _parse_proximity(result['pairs'], snapshot))
                 if set(result) != {'status', 'overlap_mm3', 'threshold_mm3'}:
                     raise OverlapJobError('output')
                 overlap, threshold = _read_numbers(result)
