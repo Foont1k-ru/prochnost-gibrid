@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..core.clearance_refinement import MAX_EXTRA, MAX_ROUNDS, RefinementReport, refine_link_clearance
 from ..core.suspension_clearance import calculate_link_clearance, eligible_objects
 from ..i18n import tr
 from ..model.entities import Axle
@@ -45,12 +46,13 @@ class ClearanceDialog(QDialog):
         super().__init__(parent)
         self.axle, self.start, self.end, self.spacing = axle, start, end, spacing
         self.is_current = is_current
-        self.setWindowTitle('Проверка условных капсул')
+        self.setWindowTitle('Проверка условных форм')
         self.resize(700, 650)
         layout = QVBoxLayout(self)
         intro = QLabel('Левая сторона, только выбранные формы и дискретные рассчитанные положения. '
                        'Задайте радиусы; размеры не берутся из модели автоматически. Рычаг и коромысло — '
-                       'две капсулы, не пластина. Колесо — сплошной цилиндр, не шина.', self)
+                       'две капсулы, не пластина. Колесо — сплошной цилиндр, не шина. '
+                       'При расчёте окно может временно не отвечать.', self)
         intro.setWordWrap(True)
         layout.addWidget(intro)
         scroll = QScrollArea(self)
@@ -98,6 +100,35 @@ class ClearanceDialog(QDialog):
         row.addStretch()
         layout.addLayout(row)
         self.margin.valueChanged.connect(self._clear_result)
+        self.refine = QCheckBox('Дополнительно уточнять дискретные положения', self)
+        self.refine.setChecked(True)
+        self.refine.setToolTip('Сначала середины исходных интервалов, затем малый зазор и границы отказа. '
+                               'Это не непрерывная проверка. Во время расчёта окно может временно не отвечать.')
+        layout.addWidget(self.refine)
+        refine_row = QHBoxLayout()
+        refine_row.addWidget(QLabel('Зона внимания над запасом', self))
+        self.alert_band = QDoubleSpinBox(self)
+        self.alert_band.setRange(0, 1000000)
+        self.alert_band.setDecimals(2)
+        self.alert_band.setValue(5)
+        self.alert_band.setSuffix(' мм')
+        self.alert_band.setAccessibleName('Зона внимания над запасом')
+        refine_row.addWidget(self.alert_band)
+        refine_row.addWidget(QLabel('Мин. интервал', self))
+        self.min_spacing = QDoubleSpinBox(self)
+        self.min_spacing.setRange(.1, 30)
+        self.min_spacing.setDecimals(2)
+        self.min_spacing.setValue(.5)
+        self.min_spacing.setSuffix(' мм')
+        self.min_spacing.setAccessibleName('Минимальный интервал уточнения')
+        refine_row.addWidget(self.min_spacing)
+        refine_row.addStretch()
+        layout.addLayout(refine_row)
+        self.refine.toggled.connect(self.alert_band.setEnabled)
+        self.refine.toggled.connect(self.min_spacing.setEnabled)
+        self.refine.toggled.connect(self._clear_result)
+        self.alert_band.valueChanged.connect(self._clear_result)
+        self.min_spacing.valueChanged.connect(self._clear_result)
         self.run_button = QPushButton('Рассчитать выбранные пары', self)
         self.run_button.clicked.connect(self.run_check)
         layout.addWidget(self.run_button)
@@ -126,9 +157,16 @@ class ClearanceDialog(QDialog):
             self.invalidate()
             return
         radii = {code: radius.value() for code, (check, radius) in self.links.items() if check.isChecked()}
+        report: RefinementReport | None = None
         try:
-            sweep = calculate_link_clearance(self.axle, self.start, self.end, self.spacing, radii, self.margin.value(),
-                                             wheel_width_mm=self.wheel_width.value())
+            if self.refine.isChecked():
+                report = refine_link_clearance(self.axle, self.start, self.end, self.spacing, radii, self.margin.value(),
+                                               wheel_width_mm=self.wheel_width.value(),
+                                               alert_band_mm=self.alert_band.value(), min_spacing_mm=self.min_spacing.value())
+                sweep = report.sweep
+            else:
+                sweep = calculate_link_clearance(self.axle, self.start, self.end, self.spacing, radii,
+                                                 self.margin.value(), wheel_width_mm=self.wheel_width.value())
         except (ValueError, KeyError, ArithmeticError) as error:
             self.output.setPlainText(f'Не рассчитано: {error}. Ничего не проверено.')
             return
@@ -150,6 +188,38 @@ class ClearanceDialog(QDialog):
                  'Известные соединённые пары исключены целиком; даже вдали от шарнира они не проверены.',
                  'Отрицательный зазор с цилиндром не означает глубину проникновения.',
                  'Между точками сетки движение и столкновения не проверены. Не является разрешением на изготовление.', '']
+        if report is None:
+            lines.append('Дополнительное уточнение отключено: только исходная сетка.')
+        else:
+            lines.append(f'Уточнение: исходных поз {len(report.initial_travels)}, дополнительных {report.added}, '
+                         f'проходов {report.rounds} из {MAX_ROUNDS}, максимум дополнительных поз {MAX_EXTRA}.')
+            lines.append(f'Зона внимания над запасом {self.alert_band.value():g} мм; '
+                         f'минимальный новый интервал {self.min_spacing.value():g} мм.')
+            lines.append(f'Исходных интервалов без средней точки: {len(report.unprobed_initial)}; '
+                         f'интервалов между двумя отказами: {len(report.inaccessible)}.')
+            if report.unprobed_initial:
+                text = ', '.join(f'{a:+.3f}…{b:+.3f}' for a, b in report.unprobed_initial[:10])
+                lines.append(f'  Начальные интервалы без средней точки, мм: {text}'
+                             + (' и другие.' if len(report.unprobed_initial) > 10 else '.'))
+            if report.inaccessible:
+                text = ', '.join(f'{a:+.3f}…{b:+.3f}' for a, b in report.inaccessible[:10])
+                lines.append(f'  Между двумя отказами, мм: {text}'
+                             + (' и другие.' if len(report.inaccessible) > 10 else '.'))
+            limits = []
+            if report.limited_by_budget:
+                limits.append('лимит дополнительных поз')
+            if report.limited_by_rounds:
+                limits.append('лимит проходов')
+            if report.limited_by_spacing:
+                limits.append('минимальный интервал')
+            lines.append(f'Осталось подозрительных интервалов: {len(report.unresolved)}'
+                         + (f' (ограничения: {", ".join(limits)})' if limits else '') + '.')
+            for interval in report.unresolved[:20]:
+                lines.append(f'  {interval.start_mm:+.3f}…{interval.end_mm:+.3f} мм: {interval.reason}')
+            if len(report.unresolved) > 20:
+                lines.append(f'  Ещё интервалов: {len(report.unresolved) - 20}.')
+            lines.append('Даже если подозрительных интервалов нет, узкий контакт между позами может быть пропущен.')
+        lines.append('')
         status = {'overlap': 'наложение', 'touch': 'касание', 'low_clearance': 'меньше запаса',
                   'limit': 'у границы запаса', 'clear': 'больше запаса', 'unknown_no_pose': 'нет решения позы',
                   'unknown_geometry': 'нет корректной геометрии',
@@ -167,9 +237,11 @@ class ClearanceDialog(QDialog):
         else:
             lines.append('Нет измеренных пар; минимальный зазор не определён.')
         lines.append('')
+        original = set(report.initial_travels) if report is not None else set()
         for sample in sweep.samples:
             failure = f' (отказ кинематики: {sample.pose_error})' if sample.pose_error else ''
-            lines.append(f'Ход {sample.travel_mm:+.2f} мм:{failure}')
+            extra = ' [дополнительная поза]' if report is not None and sample.travel_mm not in original else ''
+            lines.append(f'Ход {sample.travel_mm:+.3f} мм:{extra}{failure}')
             for pair in sample.pairs:
                 text = f'  {labels[pair.first]} / {labels[pair.second]}: {status[pair.status]}'
                 if pair.measurement is not None:

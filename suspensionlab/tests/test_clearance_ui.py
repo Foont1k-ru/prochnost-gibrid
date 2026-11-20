@@ -29,6 +29,16 @@ def test_clearance_dialog_requires_explicit_radii_and_invalidates(qtbot, monkeyp
         text = dialog.output.toPlainText()
         assert 'зазор' in text and 'Невыбранные формы не проверены' in text
         assert 'Между точками сетки' in text and 'реальные детали не проверены' in text
+        assert 'Уточнение: исходных поз' in text and '[дополнительная поза]' in text
+        assert 'узкий контакт между позами может быть пропущен' in text
+        dialog.alert_band.setValue(8)
+        assert 'Не рассчитано' in dialog.output.toPlainText()
+        dialog.refine.setChecked(False)
+        assert not dialog.alert_band.isEnabled()
+        dialog.run_check()
+        assert 'уточнение отключено' in dialog.output.toPlainText()
+        dialog.refine.setChecked(True)
+        assert 'Не рассчитано' in dialog.output.toPlainText()
         dialog.margin.setValue(2)
         assert 'Не рассчитано' in dialog.output.toPlainText()
         dialog.run_check()

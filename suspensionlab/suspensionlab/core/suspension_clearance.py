@@ -4,7 +4,7 @@
 """
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from itertools import combinations
 from math import dist, isfinite
@@ -39,6 +39,7 @@ class ClearanceSample:
     travel_mm: float
     pairs: tuple[LinkClearance, ...]
     pose_error: str | None = None
+    pose_available: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,7 +135,8 @@ def _missing_detail(sample: WorkspaceSample, code: str) -> str:
 
 def calculate_link_clearance(axle: Axle, start_mm: float, end_mm: float, spacing_mm: float,
                              radii_mm: Mapping[str, float], required_clearance_mm: float,
-                             *, wheel_width_mm: float | None = None) -> ClearanceSweep:
+                             *, wheel_width_mm: float | None = None,
+                             targets: Sequence[float] | None = None) -> ClearanceSweep:
     """Все пары выбранных форм на свежем расчёте левой оси, только дискретно.
 
     Для связей и элементов — капсулы с явными радиусами. Рычаг и коромысло —
@@ -164,7 +166,8 @@ def calculate_link_clearance(axle: Axle, start_mm: float, end_mm: float, spacing
         raise ValueError('Укажите конечный неотрицательный запас')
     selected = tuple(code for code in eligible if code in radii_mm)
     omitted = tuple(code for code in eligible if code not in radii_mm)
-    result = calculate(axle, start_mm, end_mm, spacing_mm)
+    result = (calculate(axle, start_mm, end_mm, spacing_mm) if targets is None else
+              calculate(axle, start_mm, end_mm, spacing_mm, targets=targets))
     samples = []
     for sample in result.samples:
         pairs = []
@@ -203,5 +206,6 @@ def calculate_link_clearance(axle: Axle, start_mm: float, end_mm: float, spacing
                                  for name_a, a, b in branches for name_b, c, d in other]
             worst_cap, name_a, name_b = min(measured_capsules, key=lambda item: item[0].clearance_mm)
             pairs.append(LinkClearance(first, second, worst_cap.status, worst_cap, name_a, name_b))
-        samples.append(ClearanceSample(sample.travel_mm, tuple(pairs), sample.error if scene is None else None))
+        samples.append(ClearanceSample(sample.travel_mm, tuple(pairs), sample.error if scene is None else None,
+                                       scene is not None))
     return ClearanceSweep(tuple(samples), selected, omitted)

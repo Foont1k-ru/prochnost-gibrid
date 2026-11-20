@@ -1,6 +1,7 @@
 """Дискретная кинематика для рабочей области; не заключение о безопасности."""
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from math import cos, dist, isfinite, pi, sin
 
@@ -202,13 +203,22 @@ def _rocker_error_text(error: str | None) -> str:
     return messages.get(error or '', 'ошибка или неполные данные коромысла')
 
 
-def calculate(axle: Axle, start: float, end: float, spacing: float) -> WorkspaceResult:
-    """Левая сторона поддержанной схемы, дискретная сетка с неподвижным кузовом."""
+def calculate(axle: Axle, start: float, end: float, spacing: float, *,
+              targets: Sequence[float] | None = None) -> WorkspaceResult:
+    """Левая сторона; при явных целях обе ветви заново продолжаются от нуля."""
     if not supported(axle):
         raise ValueError('Расчёт хода для этого типа пока не реализован')
     if not (-150 <= start <= 0 <= end <= 150) or not (5 <= spacing <= 30):
         raise ValueError('Диапазон должен включать ноль и быть в пределах −150…+150 мм; шаг 5…30 мм')
-    travels = travel_grid(start, end, max_spacing_mm=spacing)
+    if targets is None:
+        travels = travel_grid(start, end, max_spacing_mm=spacing)
+    else:
+        if (len(targets) == 0 or len(targets) > 5000 or
+                any(type(t) not in (int, float) or not isfinite(t) or not start <= t <= end for t in targets) or
+                any(a >= b for a, b in zip(targets, targets[1:], strict=False)) or
+                targets[0] != start or targets[-1] != end or 0 not in targets):
+            raise ValueError('Точки хода должны возрастать, включать границы и ноль и быть конечными')
+        travels = [float(t) for t in targets]
     config = axle.kinematic_elements
     rocker_setup = config.rocker if config is not None and config.type_code == axle.type_code else None
     rocker_active = rocker_setup is not None and rocker_setup.enabled
