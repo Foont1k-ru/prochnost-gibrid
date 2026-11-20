@@ -160,8 +160,17 @@ def build_weldment_tubes_preview(document: dict[str, Any]) -> Any:
     return compound
 
 
+class FixedArmNotchError(ValueError):
+    """Отклонённая подрезка одной ветви; никакая частичная сборка не выдаётся."""
+
+    def __init__(self, leg: str, code: str) -> None:
+        super().__init__(code)
+        self.leg = leg
+        self.code = code
+
+
 def build_fixed_arm_housing_preview(document: dict[str, Any]) -> Any:
-    """Две трубы и два полых корпуса, отдельные тела без подрезки и сварки."""
+    """Две трубы и два корпуса; выбранные ветви можно подрезать по своим опорам."""
     import math
 
     from OCP.BRep import BRep_Builder
@@ -176,13 +185,13 @@ def build_fixed_arm_housing_preview(document: dict[str, Any]) -> Any:
     validate_housing_preview(document)
     tube_doc = document['tubes']
     points = tube_doc['parts'][0]['geometry']['source']['coordinates_mm']
+    from .cad_tube_notch import TubeNotchError, _cut_tube
+
     builder, compound = BRep_Builder(), TopoDS_Compound()
     builder.MakeCompound(compound)
-    for part in tube_doc['parts']:
-        shape = build_part(part)
-        if shape.IsNull() or not BRepCheck_Analyzer(shape).IsValid():
-            raise RuntimeError('invalid tube')
-        builder.Add(compound, shape)
+    tubes = [build_part(part) for part in tube_doc['parts']]
+    housings = []
+    notches = document.get('notches', {})
     for index, leg in enumerate(('front', 'rear')):
         data = document['housings'][leg]
         axis = data['axis']
@@ -196,7 +205,21 @@ def build_fixed_arm_housing_preview(document: dict[str, Any]) -> Any:
         cut = BRepAlgoAPI_Cut(outer, inner)
         if not cut.IsDone() or cut.Shape().IsNull() or not BRepCheck_Analyzer(cut.Shape()).IsValid():
             raise RuntimeError('invalid housing')
-        builder.Add(compound, cut.Shape())
+        housings.append(cut.Shape())
+        if leg in notches:
+            # Solid outside envelope, not the housing's annular material. The
+            # finite length and requested radial clearance are never extended.
+            cutter = BRepPrimAPI_MakeCylinder(frame, float(data['outer_diameter_mm']) / 2 +
+                                               float(notches[leg]), length).Shape()
+            try:
+                result = _cut_tube(tubes[index], cutter, f'tube_{leg}', f'housing_{leg}')
+            except TubeNotchError as error:
+                raise FixedArmNotchError(leg, error.code) from error
+            tubes[index] = result.shape
+    for shape in (*tubes, *housings):
+        if shape.IsNull() or not BRepCheck_Analyzer(shape).IsValid():
+            raise RuntimeError('invalid part')
+        builder.Add(compound, shape)
     return compound
 
 

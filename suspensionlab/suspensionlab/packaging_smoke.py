@@ -383,6 +383,14 @@ def run_cad_check() -> None:
         _require(mesh.part_names == ('tube_front', 'tube_rear', 'housing_front', 'housing_rear') and
                  mesh.triangle_parts is not None and all((mesh.triangle_parts == i).any() for i in range(4)),
                  "Две трубы и два корпуса не построены раздельно")
+        fixed_dialog._notch_checks['front'].setChecked(True)
+        _require(panel._view.mesh is None and fixed_dialog._cad_candidate is None,
+                 "CAD не скрыт при незаданном зазоре подрезки")
+        fixed_dialog._notch_clearances['front'].setText('0')
+        mesh = wait_for_mesh()
+        _require(len(mesh.part_names) == 4 and fixed_dialog._cad_candidate is not None and
+                 fixed_dialog._cad_candidate.get('notches') == {'front': 0.},
+                 "Подрезка передней трубы по корпусу не построена")
         with TemporaryDirectory(prefix="suspensionlab-fixed-arm-reopen-") as directory:
             source = Path(directory) / "скелет.slarm"
             with patch.object(QFileDialog, "getSaveFileName", return_value=(str(source), "")):
@@ -392,8 +400,9 @@ def run_cad_check() -> None:
             with patch.object(QFileDialog, "getOpenFileName", return_value=(str(source), "")):
                 fixed_dialog._open_file()
             _require(fixed_dialog.preview is not None and fixed_dialog.preview.anchors == anchors and
-                     fixed_dialog._housings is not None and source.read_bytes() == original,
-                     "Снимок с корпусами не открыт без изменения исходного файла")
+                     fixed_dialog._housings is not None and not fixed_dialog._notch_checks['front'].isChecked() and
+                     source.read_bytes() == original,
+                     "Снимок с корпусами не открыт без изменения файла или режим подрезки не сброшен")
             mesh = wait_for_mesh()
             _require(len(mesh.part_names) == 4, "Корпуса не восстановлены в CAD")
     finally:

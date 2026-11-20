@@ -8,6 +8,7 @@ from typing import Any
 
 from PySide6.QtCore import QSignalBlocker, Qt
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -28,7 +29,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..model.bent_tube import make_bend_path
-from ..model.fixed_arm_housings import HousingError, make_housing_preview, validate_housings
+from ..model.fixed_arm_housings import HousingError, make_housing_preview, validate_housings, validate_notches
 from ..model.fixed_arm_skeleton import (
     FixedArmSnapshot,
     SkeletonError,
@@ -146,6 +147,32 @@ class FixedArmSkeletonDialog(QDialog):
                                 'Шаровой, швов и проверки зазоров или прочности нет.', cad_tab)
         self._cad_note.setWordWrap(True)
         cad_layout.addWidget(self._cad_note)
+        notch_note = QLabel('Подрезка только в CAD-просмотре, отдельно для каждой ветви по её корпусу. '
+                            'Укажите радиальный зазор явно (0 — без зазора), мм. '
+                            'Корпус не удлиняется; параметры подрезки в .slarm не сохраняются.', cad_tab)
+        notch_note.setWordWrap(True)
+        cad_layout.addWidget(notch_note)
+        self._notch_checks: dict[str, QCheckBox] = {}
+        self._notch_clearances: dict[str, QLineEdit] = {}
+        for leg, title in (('front', 'Переднюю'), ('rear', 'Заднюю')):
+            row = QHBoxLayout()
+            check = QCheckBox(f'Подрезать {title.lower()} трубу по своему корпусу', cad_tab)
+            check.setEnabled(False)
+            field = QLineEdit(cad_tab)
+            field.setPlaceholderText('Радиальный зазор, мм')
+            field.setAccessibleName(f'{title} труба: радиальный зазор, мм')
+            field.setMaxLength(64)
+            field.setEnabled(False)
+            row.addWidget(check)
+            row.addWidget(field)
+            cad_layout.addLayout(row)
+            self._notch_checks[leg] = check
+            self._notch_clearances[leg] = field
+            check.toggled.connect(self._refresh)
+            field.textChanged.connect(self._refresh)
+        self._notch_status = QLabel('', cad_tab)
+        self._notch_status.setWordWrap(True)
+        cad_layout.addWidget(self._notch_status)
         self._cad = Weldment3D(cad_tab, is_current=self._cad_is_current, fixed_skeleton=True)
         cad_layout.addWidget(self._cad, 1)
         self._tabs.addTab(cad_tab, '3D · детали (CAD)')
@@ -235,6 +262,25 @@ class FixedArmSkeletonDialog(QDialog):
         return (self.snapshot, self._from.value(), self._to.value(), self._spacing.value(),
                 self._radius.value(), self._wall.value(), self._bend_editor.state(), self._draft, housing_state)
 
+    def _reset_notches(self) -> None:
+        for leg in ('front', 'rear'):
+            with QSignalBlocker(self._notch_checks[leg]), QSignalBlocker(self._notch_clearances[leg]):
+                self._notch_checks[leg].setChecked(False)
+                self._notch_clearances[leg].clear()
+            self._notch_checks[leg].setEnabled(False)
+            self._notch_clearances[leg].setEnabled(False)
+        self._notch_status.clear()
+
+    def _notch_values(self) -> dict[str, float] | None:
+        values: dict[str, float] = {}
+        for leg in ('front', 'rear'):
+            if self._notch_checks[leg].isChecked():
+                try:
+                    values[leg] = float(self._notch_clearances[leg].text().strip().replace(',', '.'))
+                except ValueError as error:
+                    raise HousingError('Укажите радиальный зазор каждой выбранной ветви (0–100 мм)') from error
+        return validate_notches(values) if values else None
+
     def _cad_is_current(self, candidate: dict[str, Any]) -> bool:
         if (self.snapshot is None or self.preview is None or self.snapshot != self._cad_snapshot or
                 self._cad_candidate is None or candidate != self._cad_candidate or
@@ -244,7 +290,7 @@ class FixedArmSkeletonDialog(QDialog):
             fresh = fixed_arm_tube_document(self.snapshot, self.controller.project, self._radius.value(),
                                             self._wall.value(), self._bend_editor.values())
             if self._housings is not None:
-                fresh = make_housing_preview(fresh, self._housings)
+                fresh = make_housing_preview(fresh, self._housings, self._notch_values())
             return fresh == candidate
         except (SkeletonError, KimFormatError, ValueError, TypeError, OverflowError):
             return False
@@ -330,11 +376,13 @@ class FixedArmSkeletonDialog(QDialog):
             self._housing_status.setText(f'Корпуса не приняты: {error}')
             return
         self._housings = candidate
+        self._reset_notches()
         self._refresh()
 
     def _remove_housings(self) -> None:
         if self._housings is not None and self._draft is None:
             self._housings = None
+            self._reset_notches()
             self._refresh()
 
     def _length_summary(self, bends: dict[str, dict[str, Any]]) -> str:
@@ -371,6 +419,9 @@ class FixedArmSkeletonDialog(QDialog):
         self._save.setEnabled(False)
         self._housing_edit.setEnabled(False)
         self._housing_remove.setEnabled(False)
+        for key in ('front', 'rear'):
+            self._notch_checks[key].setEnabled(False)
+            self._notch_clearances[key].setEnabled(False)
         scene = skeleton_scene(self.preview, bends)
         scene = type(scene)(scene.travel_mm, scene.segments, (*scene.points, (f'bend_{leg}', point)))
         self._scene.set_scene(scene, self.preview.centerlines)
@@ -607,6 +658,7 @@ class FixedArmSkeletonDialog(QDialog):
         del blockers
         self.snapshot = loaded.snapshot
         self._housings = loaded.housings
+        self._reset_notches()
         self._refresh()
         if self.snapshot is None or self.preview is None:
             self._file_status.setText('Схема изменилась во время открытия; снимок не принят.')
@@ -647,6 +699,7 @@ class FixedArmSkeletonDialog(QDialog):
         if self.snapshot is not None:
             self.snapshot = None
             self._housings = None
+            self._reset_notches()
             self._housing_status.setText('Корпуса сброшены: требуется новое подтверждение опор и параметров.')
             self._bend_editor.set_editable(False)
             self._clear_preview()
@@ -656,6 +709,7 @@ class FixedArmSkeletonDialog(QDialog):
         self._file_status.clear()
         self.snapshot = None
         self._housings = None
+        self._reset_notches()
         self._housing_status.setText('Корпуса сброшены: требуется новое подтверждение опор и параметров.')
         self._bend_editor.set_editable(False)
         self._clear_preview()
@@ -676,6 +730,7 @@ class FixedArmSkeletonDialog(QDialog):
         except SkeletonError as error:
             self.snapshot = None
             self._housings = None
+            self._reset_notches()
             self._housing_status.setText('Корпуса не заданы.')
             self._bend_editor.set_editable(False)
             self._clear_preview()
@@ -683,6 +738,7 @@ class FixedArmSkeletonDialog(QDialog):
             return
         self.snapshot = snapshot
         self._housings = None
+        self._reset_notches()
         self._bend_editor.set_editable(True)
         self._refresh()
 
@@ -695,6 +751,7 @@ class FixedArmSkeletonDialog(QDialog):
         if not self.snapshot.matches(self.controller.project):
             self.snapshot = None
             self._housings = None
+            self._reset_notches()
             self._housing_status.setText('Корпуса сброшены: требуется новое подтверждение опор и параметров.')
             self._bend_editor.set_editable(False)
             self._status.setText('Проект отличается от снимка. Скелет скрыт; повторите расчёт и фиксацию.')
@@ -716,18 +773,34 @@ class FixedArmSkeletonDialog(QDialog):
             self._status.setText(str(error))
             return
         self.preview = preview
-        self._cad_candidate = document
-        self._cad_snapshot = self.snapshot
-        self._cad.set_document(document)
         self._save.setEnabled(True)
         self._housing_edit.setEnabled(True)
         self._housing_remove.setEnabled(self._housings is not None)
+        for leg in ('front', 'rear'):
+            self._notch_checks[leg].setEnabled(self._housings is not None)
+            self._notch_clearances[leg].setEnabled(self._housings is not None and self._notch_checks[leg].isChecked())
+        self._notch_status.clear()
+        cad_document: dict[str, Any] | None = document
+        notches = None
+        if self._housings is not None:
+            try:
+                notches = self._notch_values()
+                cad_document = make_housing_preview(document['tubes'], self._housings, notches)
+            except (HousingError, ValueError) as error:
+                cad_document = None
+                self._notch_status.setText(f'CAD скрыт: {error}. Скелет и корпуса можно сохранить отдельно.')
+        self._cad_candidate = cad_document
+        self._cad_snapshot = self.snapshot if cad_document is not None else None
+        self._cad.set_document(cad_document)
         self._housing_status.setText('Оба корпуса заданы и центры опор подтверждены.' if self._housings is not None
                                      else 'Корпуса не заданы.')
-        self._cad_note.setText('Предварительный CAD: две неподрезанные трубы и два отдельных корпуса. '
-                               'Возможны пересечения; швов, шаровой и проверок зазоров или прочности нет.'
+        self._cad_note.setText('Предварительный CAD: выбранные ветви подрезаются только по своим корпусам; '
+                               'прочие пересечения, швы, шаровая, зазоры и прочность не проверяются.'
+                               if notches else
+                               'Предварительный CAD: трубы не подрезаны; корпуса — отдельные тела. '
+                               'Возможны пересечения; швов, шаровой и проверки зазоров или прочности нет.'
                                if self._housings is not None else
-                               'Предварительный CAD: две неподрезанные полые трубы; корпуса пока не заданы. '
+                               'Предварительный CAD: трубы не подрезаны, корпуса не заданы. '
                                'Шаровой, швов и проверки зазоров или прочности нет.')
         self._scene.set_scene(scene, preview.centerlines)
         self._lengths.setText(self._length_summary(bends))

@@ -202,7 +202,10 @@ class Weldment3D(QWidget):
         self._populate_parts(mesh)
         self._ready = True
         self._retry.setEnabled(True)
-        ready_key = ("weldment_3d.fixed_housing_ready" if self._fixed_skeleton and
+        ready_key = ("weldment_3d.fixed_notch_ready" if self._fixed_skeleton and
+                     self._document.get('format') == 'suspensionlab-fixed-arm-housing-preview' and
+                     self._document.get('notches') else
+                     "weldment_3d.fixed_housing_ready" if self._fixed_skeleton and
                      self._document.get('format') == 'suspensionlab-fixed-arm-housing-preview' else
                      "scheme_part_3d.ready" if self._scheme_part else
                      "rear_joint_layout.cad_ready" if self._rear_joint_layout else
@@ -289,14 +292,24 @@ class Weldment3D(QWidget):
             return
         known = {"missing_cad", "timeout", "cancelled", "start", "crash", "mesh", "memory",
                  "missing_face", "coordinates", "no_faces", "no_shape", "output", "unexpected", "changed"}
-        if code not in known:
+        notch_errors = {f'notch_{leg}_{reason}' for leg in ('front', 'rear')
+                        for reason in ('no_overlap', 'empty_or_split', 'failed')}
+        if code not in known and code not in notch_errors:
             code = "unexpected"
         self._ready = False
         self._view.set_mesh(None)
         self._clear_parts()
         self._retry.setEnabled(self._document is not None and self._enable.isChecked())
         specific = {"timeout", "memory", "changed"}
-        reason = tr(f"weldment_3d.error_{code}") if code in specific else tr(f"cad_preview.error.{code}")
+        if code in notch_errors:
+            _prefix, leg, error = code.split('_', 2)
+            branch = 'Передняя ветвь' if leg == 'front' else 'Задняя ветвь'
+            explanation = {'no_overlap': 'нет существенного пересечения с корпусом',
+                           'empty_or_split': 'труба удалена полностью или разрезана на части',
+                           'failed': 'геометрический результат не прошёл проверку'}[error]
+            reason = f'{branch}: {explanation}. Измените параметры или отключите подрезку этой ветви.'
+        else:
+            reason = tr(f"weldment_3d.error_{code}") if code in specific else tr(f"cad_preview.error.{code}")
         failed_key = ("weldment_3d.fixed_failed" if self._fixed_skeleton else
                       "scheme_part_3d.failed" if self._scheme_part else
                       "rear_joint_layout.cad_failed" if self._rear_joint_layout else

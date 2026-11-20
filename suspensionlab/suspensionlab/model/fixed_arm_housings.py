@@ -59,23 +59,42 @@ def validate_housings(value: Any) -> dict[str, Any]:
     return result
 
 
+def validate_notches(value: Any) -> dict[str, float]:
+    """Явный радиальный зазор для выбранных пар «ветвь — своя опора»."""
+    if not isinstance(value, dict) or not value or any(leg not in ('front', 'rear') for leg in value):
+        raise HousingError('Выберите ветвь и задайте её радиальный зазор')
+    return {leg: _number(clearance, low=0, high=100) for leg, clearance in value.items()}
+
+
 def validate_housing_preview(value: Any) -> None:
-    if not isinstance(value, dict) or set(value) != {'format', 'version', 'name', 'tubes', 'housings'}:
+    if not isinstance(value, dict):
         raise HousingError('Неверный временный снимок CAD')
-    if (value['format'] != PREVIEW_FORMAT or value['version'] != PREVIEW_VERSION or
+    version = value.get('version')
+    keys = {'format', 'version', 'name', 'tubes', 'housings'}
+    if version == '2':
+        keys.add('notches')
+    if set(value) != keys:
+        raise HousingError('Неверный временный снимок CAD')
+    if (value['format'] != PREVIEW_FORMAT or version not in (PREVIEW_VERSION, '2') or
             value['name'] != 'Трубы и корпуса — предварительный просмотр'):
         raise HousingError('Неизвестный временный снимок CAD')
     try:
         if not weldment_source_matches(value['tubes']):
             raise HousingError('Опоры труб не совпадают со снимком')
         validate_housings(value['housings'])
+        if version == '2':
+            validate_notches(value['notches'])
     except (TypeError, ValueError, KeyError, OverflowError, RecursionError) as error:
-        raise HousingError('Недопустимый снимок труб или корпусов') from error
+        raise HousingError('Недопустимый снимок труб, корпусов или подрезки') from error
 
 
-def make_housing_preview(tubes: dict[str, Any], housings: dict[str, Any]) -> dict[str, Any]:
-    doc = {'format': PREVIEW_FORMAT, 'version': PREVIEW_VERSION,
-           'name': 'Трубы и корпуса — предварительный просмотр',
-           'tubes': tubes, 'housings': validate_housings(housings)}
+def make_housing_preview(tubes: dict[str, Any], housings: dict[str, Any],
+                         notches: dict[str, float] | None = None) -> dict[str, Any]:
+    doc: dict[str, Any] = {'format': PREVIEW_FORMAT, 'version': '2' if notches else PREVIEW_VERSION,
+                           'name': 'Трубы и корпуса — предварительный просмотр',
+                           'tubes': tubes, 'housings': validate_housings(housings)}
+    if notches is not None:
+        doc['version'] = '2'
+        doc['notches'] = validate_notches(notches)
     validate_housing_preview(doc)
     return json.loads(json.dumps(doc, ensure_ascii=False, allow_nan=False))

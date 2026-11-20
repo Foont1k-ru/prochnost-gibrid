@@ -10,6 +10,7 @@ import numpy as np
 
 from ..model.kim_format import read_document
 from .cad_kim_prototype import (
+    FixedArmNotchError,
     build_fixed_arm_housing_preview,
     build_front_arm_tubes_preview,
     build_front_joint_layout_preview,
@@ -48,7 +49,11 @@ def create_grouped_mesh(path: Path, deviation: float) -> tuple[np.ndarray, int, 
 
         doc = json.loads(_read_project_bytes(path).decode('utf-8'), object_pairs_hook=_unique_object)
         validate_housing_preview(doc)
-        shape = build_fixed_arm_housing_preview(doc)
+        try:
+            shape = build_fixed_arm_housing_preview(doc)
+        except FixedArmNotchError as error:
+            reason = error.code if error.code in ('no_overlap', 'empty_or_split') else 'failed'
+            raise CadWorkerError(f'notch_{error.leg}_{reason}') from error
     elif path.suffix.lower() == ".kim":
         doc = read_document(path, "part")
         if doc["version"] not in ("0.4", "0.6"):
