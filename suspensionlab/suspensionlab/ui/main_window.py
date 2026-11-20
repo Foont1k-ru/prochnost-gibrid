@@ -565,18 +565,12 @@ class MainWindow(QMainWindow):
         menu_file.addAction(self.action_open)
         menu_file.addAction(self.action_step_inventory)
         menu_file.addAction(self.action_cad_preview)
-        menu_file.addAction(self.action_cad_registration)
-        menu_file.addAction(self.action_sketch_draft)
-        menu_file.addAction(self.action_niva_arms)
-        menu_file.addAction(self.action_joint_concept)
-        menu_file.addAction(self.action_front_tubes)
-        menu_file.addAction(self.action_rear_tube)
-        menu_file.addAction(self.action_arm_concept)
-        menu_file.addAction(self.action_fixed_arm_skeleton)
-        menu_file.addAction(self.action_new_scheme_assembly)
-        menu_file.addAction(self.action_open_scheme_assembly)
-        menu_file.addAction(self.action_scheme_arm_part)
-        menu_file.addAction(self.action_weldment)
+        experiments = menu_file.addMenu(tr("workspace_flow.experiments_menu"))
+        for action in (self.action_cad_registration, self.action_sketch_draft, self.action_niva_arms,
+                       self.action_joint_concept, self.action_front_tubes, self.action_rear_tube,
+                       self.action_arm_concept, self.action_fixed_arm_skeleton, self.action_new_scheme_assembly,
+                       self.action_open_scheme_assembly, self.action_scheme_arm_part, self.action_weldment):
+            experiments.addAction(action)
         menu_file.addAction(self.action_recover_autosave)
         menu_file.addAction(self.action_allow_autosave)
         menu_file.addAction(self.action_templates)
@@ -725,6 +719,11 @@ class MainWindow(QMainWindow):
         state = self._settings.value("window/state")
         if state is not None:
             self.restoreState(state)
+        else:
+            # The focused suspension workspace already contains its own editor.
+            # Advanced panels remain available from View and user layouts are preserved.
+            for dock in (self._tree_dock, self._inspector_dock, self._diagnostics_dock):
+                dock.hide()
 
     def _sync_unit_combos(self, units: UnitSettings) -> None:
         """Приводит выпадающие списки единиц в соответствие с настройками."""
@@ -884,6 +883,7 @@ class MainWindow(QMainWindow):
         """Новый пустой проект."""
         if self._confirm_discard_changes():
             self.controller.new_project()
+            self._tabs.setCurrentWidget(self._kinematics)
             self._show_workspace()
 
     def _new_from_template(self) -> None:
@@ -916,6 +916,7 @@ class MainWindow(QMainWindow):
         except ProjectIOError as error:
             self._show_error(error)
             return
+        self._tabs.setCurrentWidget(self._kinematics)
         self._show_workspace()
 
     def _recover_autosave(self) -> None:

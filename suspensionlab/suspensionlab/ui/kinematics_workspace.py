@@ -16,8 +16,11 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSlider,
     QSplitter,
+    QTabWidget,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -31,11 +34,14 @@ from ..core.kinematics_workspace import (
     supported,
 )
 from ..core.scene3d import Segment3D
+from ..core.sweep_plot import PlotPoint
 from ..core.vehicle_schematic_scene import SelectableLink
 from ..i18n import tr
 from ..model.kinematic_elements import ElementSetup, KinematicElements
 from ..model.param_specs import point_specs
+from ..model.suspension_types import types_for_role
 from .canvas.scene3d_preview import Scene3DPreview
+from .canvas.sweep_plot import SweepPlot
 from .controller import AppController, Selection
 from .widgets.camera_views import CameraViews
 from .widgets.slider_field import SliderField
@@ -96,89 +102,186 @@ class KinematicsWorkspace(QWidget):
         self._timer.setInterval(300)
         self._timer.timeout.connect(self._calculate)
         outer = QVBoxLayout(self)
-        intro = QLabel('Рабочая схема: выберите ось и деталь, измените точки или длину. '
-                       'Шаблоны — исходные примеры, не готовая конструкция.', self)
-        intro.setWordWrap(True)
-        outer.addWidget(intro)
-        top = QHBoxLayout()
-        top.addWidget(QLabel('Ось:', self))
-        self.role = QComboBox(self)
-        self.role.addItem('Передняя', 'front')
-        self.role.addItem('Задняя', 'rear')
-        top.addWidget(self.role)
-        top.addWidget(QLabel('Деталь / группа:', self))
-        self.part = QComboBox(self)
-        top.addWidget(self.part, 1)
-        outer.addLayout(top)
+        outer.setContentsMargins(8, 8, 8, 8)
+        title_row = QHBoxLayout()
+        title = QLabel(tr('workspace_flow.title'), self)
+        title.setObjectName('WorkspaceTitle')
+        title_row.addWidget(title)
+        subtitle = QLabel(tr('workspace_flow.subtitle'), self)
+        subtitle.setObjectName('WorkspaceSubtitle')
+        title_row.addWidget(subtitle)
+        title_row.addStretch(1)
+        outer.addLayout(title_row)
+
         splitter = QSplitter(self)
         splitter.setChildrenCollapsible(False)
+        self.editor_scroll = QScrollArea(splitter)
+        self.editor_scroll.setWidgetResizable(True)
+        self.editor_scroll.setMinimumWidth(300)
+        sidebar = QWidget(self.editor_scroll)
+        sidebar.setObjectName('WorkspaceSidebar')
+        sidebar_layout = QVBoxLayout(sidebar)
+        sidebar_layout.setContentsMargins(12, 12, 12, 12)
+        sidebar_heading = QLabel(tr('workspace_flow.sidebar'), sidebar)
+        sidebar_heading.setObjectName('WorkspaceSectionTitle')
+        sidebar_layout.addWidget(sidebar_heading)
+        sidebar_hint = QLabel(tr('workspace_flow.intro'), sidebar)
+        sidebar_hint.setObjectName('WorkspaceSubtitle')
+        sidebar_hint.setWordWrap(True)
+        sidebar_layout.addWidget(sidebar_hint)
+
+        self.role = QComboBox(sidebar)
+        self.role.addItem(tr('workspace_flow.front'), 'front')
+        self.role.addItem(tr('workspace_flow.rear'), 'rear')
+        self.role.hide()  # The two visible buttons use the same selection model.
+        role_row = QHBoxLayout()
+        self.front_button = QPushButton(tr('workspace_flow.front'), sidebar)
+        self.rear_button = QPushButton(tr('workspace_flow.rear'), sidebar)
+        for button in (self.front_button, self.rear_button):
+            button.setCheckable(True)
+            button.setObjectName('WorkspaceAxisButton')
+            role_row.addWidget(button)
+        self.front_button.clicked.connect(lambda: self._choose_role(0))
+        self.rear_button.clicked.connect(lambda: self._choose_role(1))
+        sidebar_layout.addLayout(role_row)
+        sidebar_layout.addWidget(QLabel(tr('workspace_flow.type'), sidebar))
+        self.suspension_type = QComboBox(sidebar)
+        self.suspension_type.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.suspension_type.setMinimumContentsLength(8)
+        self.suspension_type.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self.suspension_type.setAccessibleName(tr('workspace_flow.type'))
+        self.suspension_type.currentTextChanged.connect(self.suspension_type.setToolTip)
+        sidebar_layout.addWidget(self.suspension_type)
+        self.support_hint = QLabel(sidebar)
+        self.support_hint.setObjectName('WorkspaceSubtitle')
+        self.support_hint.setWordWrap(True)
+        sidebar_layout.addWidget(self.support_hint)
+        sidebar_layout.addWidget(QLabel(tr('workspace_flow.part'), sidebar))
+        self.part = QComboBox(sidebar)
+        self.part.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.part.setMinimumContentsLength(8)
+        self.part.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self.part.setAccessibleName(tr('workspace_flow.part'))
+        self.part.currentTextChanged.connect(self.part.setToolTip)
+        sidebar_layout.addWidget(self.part)
+        self.editor = QWidget(sidebar)
+        self.editor_layout = QVBoxLayout(self.editor)
+        self.editor_layout.setContentsMargins(0, 0, 0, 0)
+        sidebar_layout.addWidget(self.editor)
+        sidebar_layout.addStretch(1)
+        self.editor_scroll.setWidget(sidebar)
+        splitter.addWidget(self.editor_scroll)
+
         self.view_scroll = QScrollArea(splitter)
         self.view_scroll.setWidgetResizable(True)
-        left = QWidget(self.view_scroll)
-        self.view_scroll.setWidget(left)
-        left_layout = QVBoxLayout(left)
-        left_layout.setContentsMargins(0, 0, 0, 0)
+        main = QWidget(self.view_scroll)
+        self.view_scroll.setWidget(main)
+        main_layout = QVBoxLayout(main)
+        main_layout.setContentsMargins(6, 0, 0, 0)
         controls = QHBoxLayout()
         self.camera = CameraViews(self)
-        self.reset = QPushButton('Сбросить вид', self)
+        self.reset = QPushButton(tr('workspace_flow.reset'), self)
+        self.volume_button = QToolButton(self)
+        self.volume_button.setText(tr('workspace_flow.volume'))
+        self.volume_button.setToolTip(tr('workspace_flow.volume_tip'))
+        self.volume_button.setCheckable(True)
+        self.volume_button.setChecked(True)
         controls.addWidget(self.camera)
         controls.addWidget(self.reset)
+        controls.addWidget(self.volume_button)
         controls.addStretch(1)
-        left_layout.addLayout(controls)
-        self.preview = Scene3DPreview(self, schematic=True, title_override='3D-схема (не CAD)',
-                                      legend_override='Мышь: вращение • колесо: масштаб')
-        self.preview.volumetric = False
-        # The surrounding window has several docks; the default 250px minimum
-        # can force controls to overlap on a 700px-high screen.
-        self.preview.setMinimumSize(240, 110)
-        left_layout.addWidget(self.preview, 1)
+        main_layout.addLayout(controls)
+        self.preview = Scene3DPreview(self, schematic=True, title_override=tr('workspace_flow.scene_title'),
+                                      legend_override=tr('workspace_flow.scene_hint'))
+        self.preview.volumetric = True
+        self.volume_button.toggled.connect(self._set_volumetric)
+        self.preview.setMinimumSize(240, 180)
+        main_layout.addWidget(self.preview, 1)
         grid = QHBoxLayout()
         self.start = self._spin(-150, 0, -30, ' мм')
         self.end = self._spin(0, 150, 30, ' мм')
         self.spacing = self._spin(5, 30, 10, ' мм')
-        for text, widget in (('От', self.start), ('До', self.end), ('Шаг ≤', self.spacing)):
+        for text, widget in ((tr('workspace_flow.from'), self.start), (tr('workspace_flow.to'), self.end),
+                             (tr('workspace_flow.step'), self.spacing)):
             widget.setMaximumWidth(90)
             grid.addWidget(QLabel(text, self))
             grid.addWidget(widget)
         grid.addStretch(1)
-        left_layout.addLayout(grid)
-        self.status = QLabel(self)
-        self.status.setWordWrap(True)
-        self.status.setTextFormat(Qt.TextFormat.PlainText)
-        left_layout.addWidget(self.status)
+        main_layout.addLayout(grid)
         self.travel = QSlider(Qt.Orientation.Horizontal, self)
         self.travel.setEnabled(False)
-        left_layout.addWidget(self.travel)
-        self.sample = QLabel(self)
+        self.travel.setAccessibleName(tr('workspace_flow.travel'))
+        main_layout.addWidget(self.travel)
+
+        self.results_tabs = QTabWidget(self)
+        self.results_tabs.setMinimumHeight(180)
+        self.results_tabs.setMaximumHeight(220)
+        results_scroll = QScrollArea(self.results_tabs)
+        results_scroll.setWidgetResizable(True)
+        results = QWidget(results_scroll)
+        result_layout = QVBoxLayout(results)
+        result_layout.setContentsMargins(8, 8, 8, 8)
+        self.status = QLabel(results)
+        self.status.setWordWrap(True)
+        self.status.setTextFormat(Qt.TextFormat.PlainText)
+        result_layout.addWidget(self.status)
+        self.sample = QLabel(results)
         self.sample.setWordWrap(True)
-        left_layout.addWidget(self.sample)
-        self.elements_sample = QLabel(self)
+        result_layout.addWidget(self.sample)
+        self.elements_sample = QLabel(results)
         self.elements_sample.setWordWrap(True)
-        left_layout.addWidget(self.elements_sample)
-        self.summary = QLabel(self)
+        result_layout.addWidget(self.elements_sample)
+        self.summary_toggle = QToolButton(results)
+        self.summary_toggle.setText(tr('workspace_flow.summary'))
+        self.summary_toggle.setCheckable(True)
+        self.summary_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.summary_toggle.setArrowType(Qt.ArrowType.RightArrow)
+        result_layout.addWidget(self.summary_toggle)
+        self.summary = QLabel(results)
         self.summary.setWordWrap(True)
         self.summary.setTextFormat(Qt.TextFormat.PlainText)
-        left_layout.addWidget(self.summary)
-        warning = QLabel('Только дискретная кинематика и явно заданные пределы длин между креплениями. '
-                         'Между точками, смыкание витков, упоры, столкновения, руление, нагрузки, '
-                         'прочность и безопасность не проверены.', self)
+        self.summary.hide()
+        result_layout.addWidget(self.summary)
+        self.summary_toggle.toggled.connect(self.summary.setVisible)
+        self.summary_toggle.toggled.connect(
+            lambda checked: self.summary_toggle.setArrowType(Qt.ArrowType.DownArrow if checked else Qt.ArrowType.RightArrow))
+        warning = QLabel(tr('workspace_flow.warning'), results)
         warning.setWordWrap(True)
-        left_layout.addWidget(warning)
+        result_layout.addWidget(warning)
+        result_layout.addStretch(1)
+        results_scroll.setWidget(results)
+        self.results_tabs.addTab(results_scroll, tr('workspace_flow.results'))
+
+        graph_scroll = QScrollArea(self.results_tabs)
+        graph_scroll.setWidgetResizable(True)
+        self.plot_panel = QWidget(graph_scroll)
+        plot_layout = QVBoxLayout(self.plot_panel)
+        plot_layout.setContentsMargins(8, 8, 8, 8)
+        metrics = ('camber', 'toe', 'spring_length', 'damper_length')
+        self.plot_metric = QComboBox(self.plot_panel)
+        for metric in metrics:
+            self.plot_metric.addItem(tr(f'workspace_flow.graph_labels.{metric}'), metric)
+        plot_layout.addWidget(self.plot_metric)
+        self.plot = SweepPlot(self.plot_panel, metrics=metrics, label_prefix='workspace_flow.graph_labels')
+        plot_layout.addWidget(self.plot)
+        plot_notice = QLabel(tr('workspace_flow.graph_notice'), self.plot_panel)
+        plot_notice.setWordWrap(True)
+        plot_layout.addWidget(plot_notice)
+        graph_scroll.setWidget(self.plot_panel)
+        self.results_tabs.addTab(graph_scroll, tr('workspace_flow.graph_tab'))
+        self.plot_metric.currentIndexChanged.connect(self.plot.set_metric)
+        self.plot.rowSelected.connect(self.travel.setValue)
+        main_layout.addWidget(self.results_tabs)
         splitter.addWidget(self.view_scroll)
-        self.editor_scroll = QScrollArea(splitter)
-        self.editor_scroll.setWidgetResizable(True)
-        self.editor_scroll.setMinimumWidth(310)
-        self.editor = QWidget(self.editor_scroll)
-        self.editor_layout = QVBoxLayout(self.editor)
-        self.editor_scroll.setWidget(self.editor)
-        splitter.addWidget(self.editor_scroll)
-        splitter.setStretchFactor(0, 3)
-        splitter.setStretchFactor(1, 2)
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([340, 800])
         outer.addWidget(splitter, 1)
         self.camera.viewSelected.connect(self.preview.set_standard_view)
         self.reset.clicked.connect(self.preview.reset_camera)
         self.preview.linksClicked.connect(self._select_hits)
         self.role.currentIndexChanged.connect(self._role_changed)
+        self.suspension_type.activated.connect(self._choose_suspension_type)
         self.part.currentIndexChanged.connect(self._part_changed)
         self.travel.valueChanged.connect(self._show_sample)
         for field in (self.start, self.end, self.spacing):
@@ -188,6 +291,15 @@ class KinematicsWorkspace(QWidget):
         controller.unitsChanged.connect(self._rebuild_editor)
         controller.selectionChanged.connect(self._external_selection)
         self._role_changed()
+
+    def _choose_role(self, index: int) -> None:
+        self.role.setCurrentIndex(index)
+        self.front_button.setChecked(index == 0)
+        self.rear_button.setChecked(index == 1)
+
+    def _set_volumetric(self, enabled: bool) -> None:
+        self.preview.volumetric = enabled
+        self.preview.update()
 
     def _spin(self, minimum: float, maximum: float, value: float, suffix: str) -> QDoubleSpinBox:
         box = QDoubleSpinBox(self)
@@ -209,6 +321,9 @@ class KinematicsWorkspace(QWidget):
 
     def _role_changed(self, *_args) -> None:
         axle = self._axle()
+        self.front_button.setChecked(axle.role == 'front')
+        self.rear_button.setChecked(axle.role == 'rear')
+        self._sync_suspension_type()
         old = self.part.currentData()
         self.part.blockSignals(True)
         self.part.clear()
@@ -230,9 +345,39 @@ class KinematicsWorkspace(QWidget):
             index = self._part_index(('link', axle.spec.links[0].code))
         self.part.setCurrentIndex(max(0, index))
         self.part.blockSignals(False)
+        self.part.setToolTip(self.part.currentText())
         self._rebuild_editor()
         self._invalidate()
         self._show_sample()
+
+    def _sync_suspension_type(self) -> None:
+        axle = self._axle()
+        self.suspension_type.blockSignals(True)
+        self.suspension_type.clear()
+        for code in types_for_role(axle.role):
+            # Only these two explicit models have an implemented travel solver.
+            has_solver = (axle.role, code) in (('front', 'double_wishbone'), ('rear', 'multilink_rear'))
+            suffix = tr('workspace_flow.solver_available' if has_solver else 'workspace_flow.solver_unavailable')
+            self.suspension_type.addItem(f'{tr(f"type.{code}.name")} — {suffix}', code)
+        self.suspension_type.setCurrentIndex(self.suspension_type.findData(axle.type_code))
+        self.suspension_type.blockSignals(False)
+        self.suspension_type.setToolTip(self.suspension_type.currentText())
+        self.support_hint.setText(tr('workspace_flow.supported' if supported(axle) else 'workspace_flow.unsupported'))
+
+    def _choose_suspension_type(self, _index: int) -> None:
+        axle = self._axle()
+        code = self.suspension_type.currentData()
+        if not isinstance(code, str) or code == axle.type_code:
+            return
+        old_type = axle.type_code
+        answer = QMessageBox.question(
+            self, tr('workspace_flow.change_title'), tr('workspace_flow.change_notice'),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No,
+        )
+        if (answer != QMessageBox.StandardButton.Yes or self._axle() is not axle or axle.type_code != old_type):
+            self._sync_suspension_type()
+            return
+        self.controller.set_axle_type(axle.role, code)
 
     def _point_codes(self) -> list[str]:
         axle = self._axle()
@@ -260,6 +405,7 @@ class KinematicsWorkspace(QWidget):
             self.part.setCurrentIndex(index)
 
     def _rebuild_editor(self, *_args) -> None:
+        self.preview.select_point(None)
         while self.editor_layout.count():
             item = self.editor_layout.takeAt(0)
             widget = item.widget() if item else None
@@ -291,14 +437,31 @@ class KinematicsWorkspace(QWidget):
             self.editor_layout.addWidget(group)
         if kind == 'group' and code in ('spring', 'damper'):
             self._add_element_editor(code)
-        for point_code in self._point_codes():
+        self.point_toggles: dict[str, QToolButton] = {}
+        for index, point_code in enumerate(self._point_codes()):
             point = axle.hardpoints[point_code]
             ps = axle.spec.point(point_code)
             group = QGroupBox(self.editor)
             layout = QVBoxLayout(group)
-            title = QLabel(tr(ps.name_key) if ps else point_code, group)
-            title.setWordWrap(True)
-            layout.addWidget(title)
+            toggle = QToolButton(group)
+            toggle.setText(tr(ps.name_key) if ps else point_code)
+            toggle.setToolTip(toggle.text())
+            toggle.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+            toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+            toggle.setCheckable(True)
+            toggle.setChecked(index == 0)
+            toggle.setArrowType(Qt.ArrowType.DownArrow if index == 0 else Qt.ArrowType.RightArrow)
+            self.point_toggles[point_code] = toggle
+            layout.addWidget(toggle)
+            coordinates = QWidget(group)
+            coordinate_layout = QVBoxLayout(coordinates)
+            coordinate_layout.setContentsMargins(0, 0, 0, 0)
+            coordinates.setVisible(index == 0)
+            toggle.toggled.connect(coordinates.setVisible)
+            toggle.toggled.connect(lambda checked, code=point_code: self._select_editor_point(code, checked))
+            toggle.toggled.connect(lambda checked, button=toggle: button.setArrowType(
+                Qt.ArrowType.DownArrow if checked else Qt.ArrowType.RightArrow))
+            layout.addWidget(coordinates)
             for original_spec in point_specs(point, point_code)[0].params[:3]:
                 value = float(original_spec.value())
                 spec = replace(original_spec, minimum=min(original_spec.minimum, value - 100),
@@ -314,9 +477,15 @@ class KinematicsWorkspace(QWidget):
                 field.lockChanged.connect(lambda locked, k=key: self.controller.set_lock(k, locked))
                 field.helpRequested.connect(self._show_help)
                 self._rows[(point_code, spec.attr)] = field
-                layout.addWidget(field)
+                coordinate_layout.addWidget(field)
             self.editor_layout.addWidget(group)
         self.editor_layout.addStretch(1)
+
+    def _select_editor_point(self, code: str, expanded: bool) -> None:
+        if expanded:
+            self.preview.select_point(code)
+        elif self.preview.selected_point == code:
+            self.preview.select_point(None)
 
     def _active_setup(self, name: str) -> ElementSetup:
         axle = self._axle()
@@ -449,6 +618,7 @@ class KinematicsWorkspace(QWidget):
     def _invalidate(self, *_args) -> None:
         self._revision += 1
         self.result = None
+        self.plot.set_points(())
         self._timer.stop()
         self.travel.setEnabled(False)
         self.sample.setText('')
@@ -493,6 +663,17 @@ class KinematicsWorkspace(QWidget):
             self.status.setText(errors[axle.role])
             return
         self.result = result
+        points = []
+        for sample in result.samples:
+            metrics = sample.metrics if sample.scene is not None else None
+            spring = sample.spring if sample.scene is not None else None
+            damper = sample.damper if sample.scene is not None else None
+            values = (metrics.camber_deg if metrics else None, metrics.toe_deg if metrics else None,
+                      spring.length_mm if spring else None, damper.length_mm if damper else None)
+            conflict = any(element is not None and element.status in ('below', 'above', 'invalid', 'error')
+                           for element in (spring, damper))
+            points.append(PlotPoint(sample.travel_mm, values, conflict))
+        self.plot.set_points(tuple(points))
         success = sum(sample.scene is not None for sample in result.samples)
         failures = [sample for sample in result.samples if sample.error]
         model_description = ('Левая сторона, неподвижная рейка' if axle.role == 'front' else
@@ -518,6 +699,7 @@ class KinematicsWorkspace(QWidget):
             self.preview.update()
             return
         sample = self.result.samples[self.travel.value()]
+        self.plot.set_row(self.travel.value())
         self.preview.show_frame(sample.scene, 'Нет решения для этого положения')
         self.preview.link_targets = ()
         if sample.scene is not None:

@@ -288,3 +288,11 @@ QFrame#Section {
     border: 1px solid #2b3138;
     border-radius: 6px;
 }
+
+/* Основная рабочая область подвески */
+QLabel#WorkspaceTitle { color: #35d6b0; font-size: 17px; font-weight: 700; }
+QLabel#WorkspaceSubtitle { color: #a5b4c5; font-size: 12px; }
+QLabel#WorkspaceSectionTitle { color: #e7eef8; font-size: 16px; font-weight: 700; }
+QWidget#WorkspaceSidebar { background: #111a26; }
+QPushButton#WorkspaceAxisButton { padding: 8px 12px; background: #1b2838; border: 1px solid #2c4059; }
+QPushButton#WorkspaceAxisButton:checked { background: #126e65; border: 1px solid #35d6b0; color: #ffffff; }

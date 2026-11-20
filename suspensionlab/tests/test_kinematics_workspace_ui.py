@@ -287,3 +287,174 @@ def test_summary_counts_failures_and_does_not_claim_limits_checked(workspace, mo
     view.travel.setValue(view.travel.maximum())
     assert 'не рассчитано' in view.elements_sample.text()
     assert view.result.samples[-1].spring is None
+
+
+def test_workspace_suspension_choice_confirm_cancel_and_undo(workspace, qtbot, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    controller, view = workspace
+    assert view.suspension_type.currentData() == controller.project.front.type_code == 'double_wishbone'
+    assert 'экспериментальная кинематика' in view.support_hint.text()
+    assert 'только статическая схема' in view.suspension_type.itemText(
+        view.suspension_type.findData('macpherson_front'))
+    original = controller.project.front.to_dict()
+    monkeypatch.setattr(QMessageBox, 'question', lambda *args: QMessageBox.StandardButton.No)
+    index = view.suspension_type.findData('macpherson_front')
+    view.suspension_type.setCurrentIndex(index)
+    view._choose_suspension_type(index)
+    assert controller.project.front.to_dict() == original
+    assert view.suspension_type.currentData() == 'double_wishbone'
+    monkeypatch.setattr(QMessageBox, 'question', lambda *args: QMessageBox.StandardButton.Yes)
+    view.suspension_type.setCurrentIndex(index)
+    view._choose_suspension_type(index)
+    assert controller.project.front.type_code == 'macpherson_front'
+    assert 'не реализован' in view.support_hint.text()
+    qtbot.waitUntil(lambda: 'не реализован' in view.status.text(), timeout=10000)
+    assert view.result is None and not view.travel.isEnabled()
+    controller.undo_last()
+    assert controller.project.front.to_dict() == original
+    assert view.suspension_type.currentData() == 'double_wishbone'
+    qtbot.waitUntil(lambda: view.result is not None, timeout=10000)
+    controller.redo_last()
+    assert view.suspension_type.currentData() == 'macpherson_front'
+    view.role.setCurrentIndex(1)
+    assert view.suspension_type.currentData() == controller.project.rear.type_code
+    assert view.suspension_type.findData('double_wishbone') == -1
+
+
+def test_workspace_collapsible_points_and_summary_preserve_editing(workspace, qtbot):
+    controller, view = workspace
+    assert len(view.point_toggles) == 3
+    first, second = list(view.point_toggles)[:2]
+    assert view.point_toggles[first].isChecked() and not view.point_toggles[second].isChecked()
+    field = view._rows[(second, 'z')]
+    assert not field.isVisible()
+    view.point_toggles[second].click()
+    assert field.isVisible()
+    point = controller.project.front.hardpoints[second]
+    previous = point.z
+    field.set_value(previous + 1, emit=True)
+    assert point.z == previous + 1 and view.result is None
+    qtbot.waitUntil(lambda: view.result is not None, timeout=10000)
+    assert not view.summary_toggle.isChecked() and not view.summary.isVisible()
+    view.summary_toggle.click()
+    assert view.summary.isVisible() and 'Передняя' in view.summary.text()
+
+
+def test_workspace_graph_tracks_samples_gaps_and_invalidation(workspace, qtbot, monkeypatch):
+    from suspensionlab.core.double_wishbone import DoubleWishbone, KinematicsError
+    from suspensionlab.core.sweep_plot import plot_segments
+
+    controller, view = workspace
+    assert view.results_tabs.currentIndex() == 0
+    assert len(view.plot.points) == len(view.result.samples)
+    assert view.plot.row == view.travel.value()
+    view.results_tabs.setCurrentIndex(1)
+    assert view.plot_panel.isVisible()
+    view.plot.rowSelected.emit(0)
+    assert view.travel.value() == 0 and view.plot.row == 0
+    original = DoubleWishbone._step
+    def fail(self, pose, travel):
+        if travel > 11:
+            raise KinematicsError(travel, 'тестовый отказ')
+        return original(self, pose, travel)
+    monkeypatch.setattr(DoubleWishbone, '_step', fail)
+    view.end.setValue(40)
+    assert view.result is None and view.plot.points == ()
+    qtbot.waitUntil(lambda: view.result is not None, timeout=10000)
+    failed = [i for i, sample in enumerate(view.result.samples) if sample.scene is None]
+    assert failed and all(view.plot.points[i].values == (None, None, None, None) for i in failed)
+    assert all(i not in (a, b) for a, b in plot_segments(view.plot.points, 0, 4) for i in failed)
+    view.plot.rowSelected.emit(failed[0])
+    assert view.preview.frame is None and 'нет решения' in view.sample.text()
+    controller.new_project('live_axle')
+    view.role.setCurrentIndex(1)
+    qtbot.waitUntil(lambda: 'не реализован' in view.status.text(), timeout=10000)
+    assert view.plot.points == () and view.result is None
+
+
+def test_workspace_type_confirmation_does_not_change_replaced_project(workspace, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    controller, view = workspace
+    def replace_during_question(*args):
+        controller.new_project('ring')
+        return QMessageBox.StandardButton.Yes
+    monkeypatch.setattr(QMessageBox, 'question', replace_during_question)
+    index = view.suspension_type.findData('macpherson_front')
+    view.suspension_type.setCurrentIndex(index)
+    view._choose_suspension_type(index)
+    assert controller.project.front.type_code == 'double_wishbone'
+    assert view.suspension_type.currentData() == 'double_wishbone'
+
+
+def test_workspace_web_style_navigation_does_not_change_project(workspace, qtbot):
+    controller, view = workspace
+    assert view.front_button.isChecked() and not view.rear_button.isChecked()
+    before = controller.project.to_dict()
+    view.front_button.click()
+    assert view.front_button.isChecked() and not view.rear_button.isChecked()
+    view.rear_button.click()
+    assert view.role.currentData() == 'rear' and view.rear_button.isChecked() and not view.front_button.isChecked()
+    qtbot.waitUntil(lambda: view.result is not None, timeout=10000)
+    assert view.preview.volumetric and view.volume_button.isChecked()
+    view.volume_button.click()
+    assert not view.preview.volumetric
+    view.volume_button.click()
+    assert view.preview.volumetric
+    point = list(view.point_toggles)[1]
+    view.point_toggles[point].click()
+    assert view.preview.selected_point == point
+    view.point_toggles[point].click()
+    assert view.preview.selected_point is None
+    assert controller.project.to_dict() == before
+
+
+def test_new_window_hides_advanced_docks_but_keeps_actions_and_layout_access(qtbot, tmp_path):
+    from PySide6.QtCore import QSettings
+
+    from suspensionlab.ui.main_window import MainWindow
+
+    settings = QSettings(str(tmp_path / 'settings.ini'), QSettings.Format.IniFormat)
+    window = MainWindow(settings=settings)
+    qtbot.addWidget(window)
+    window.show()
+    assert all(not dock.isVisible() for dock in (window._tree_dock, window._inspector_dock, window._diagnostics_dock))
+    menu_file = window.menuBar().actions()[0].menu()
+    experiments = next(a.menu() for a in menu_file.actions() if a.menu() is not None and
+                       window.action_fixed_arm_skeleton in a.menu().actions())
+    assert window.action_cad_registration in experiments.actions()
+    assert window.action_cad_preview in menu_file.actions()
+    window._tree_dock.toggleViewAction().trigger()
+    assert window._tree_dock.isVisible()
+    window._save_settings()
+    window.controller.dirty = False
+    window.close()
+    reopened = MainWindow(settings=settings)
+    qtbot.addWidget(reopened)
+    reopened.show()
+    assert reopened._tree_dock.isVisible()
+    reopened.controller.dirty = False
+    reopened.close()
+
+
+def test_sidebar_is_not_horizontally_clipped_on_compact_window(qtbot, tmp_path):
+    from PySide6.QtCore import QSettings
+
+    from suspensionlab.ui.main_window import MainWindow
+
+    settings = QSettings(str(tmp_path / 'settings.ini'), QSettings.Format.IniFormat)
+    window = MainWindow(settings=settings)
+    qtbot.addWidget(window)
+    window.controller.new_project('ring')
+    window._tabs.setCurrentWidget(window._kinematics)
+    window._show_workspace()
+    window.resize(1100, 700)
+    window.show()
+    view = window._kinematics
+    qtbot.waitUntil(lambda: view.result is not None, timeout=10000)
+    assert view.editor_scroll.horizontalScrollBar().maximum() == 0
+    assert view.front_button.isVisible() and view.rear_button.isVisible()
+    assert view.front_button.geometry().right() < view.rear_button.geometry().left()
+    window.controller.dirty = False
+    window.close()
