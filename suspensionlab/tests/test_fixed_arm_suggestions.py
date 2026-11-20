@@ -172,3 +172,109 @@ def test_candidates_must_preserve_other_explicit_requirements(monkeypatch):
         _parse_suggestion(forged, params)
     with pytest.raises(ValueError):
         smart.validate_request({**params, 'minimum_mm': 1})
+
+
+def test_candidate_options_expand_zero_and_existing_cuts_without_replacement():
+    from suspensionlab.model.fixed_arm_housings import make_housing_preview
+
+    doc = document()
+    options, constrained = smart.candidate_options(doc, 'tube_front', 'tube_rear', 0)
+    assert not constrained and {v for _, _, v in options} == {0, .5, 1, 2}
+    existing = make_housing_preview(doc, None, None, {'target': 'rear', 'radial_clearance_mm': .75})
+    options, constrained = smart.candidate_options(existing, 'tube_front', 'tube_rear', 0)
+    assert constrained and options == [('joint', 'rear', 1.25), ('joint', 'rear', 1.75), ('joint', 'rear', 2.75)]
+    capped = make_housing_preview(doc, None, None, {'target': 'rear', 'radial_clearance_mm': 100})
+    assert smart.candidate_options(capped, 'tube_front', 'tube_rear', 0) == ([], True)
+    options, _ = smart.candidate_options(doc, 'tube_front', 'tube_rear', 100)
+    assert len(options) <= 12 and all(0 <= item[2] <= 100 for item in options)
+
+
+def test_zero_requirement_can_use_larger_cut_not_guess_an_engineering_minimum(monkeypatch):
+    doc = document()
+    def measure(candidate):
+        if candidate == doc:
+            return row(0, 10)
+        return row(0, 0 if candidate['tube_joint']['radial_clearance_mm'] == .5 else 10)
+    monkeypatch.setattr(smart, 'measure_proximity', measure)
+    req = {**request(doc), 'minimum_mm': 0}
+    result = smart.suggest(req)
+    assert result['outcome'] == 'candidate' and result['radial_clearance_mm'] == .5
+    parsed = _parse_suggestion({'status': 'ok', **result}, req)
+    assert parsed.after is not None and parsed.after.pairs[0].overlap_mm3 == 0
+    forged = deepcopy(result)
+    forged['radial_clearance_mm'] = .7
+    with pytest.raises(OverlapJobError):
+        _parse_suggestion({'status': 'ok', **forged}, req)
+
+
+def test_reasons_report_observations_without_claiming_a_global_impossibility(monkeypatch):
+    from itertools import combinations
+
+    from test_fixed_arm_housings import housings
+
+    from suspensionlab.model.fixed_arm_housings import make_housing_preview
+
+    doc = make_housing_preview(document(), housings())
+    names = ('tube_front', 'tube_rear', 'housing_front', 'housing_rear')
+    def measured(candidate):
+        rows = [{'left': a, 'right': b, 'distance_mm': 3, 'overlap_mm3': 0, 'threshold_mm3': 1e-6}
+                for a, b in combinations(names, 2)]
+        if candidate == doc:
+            rows[0].update(distance_mm=0, overlap_mm3=1)
+        else:
+            rows[0].update(distance_mm=1, overlap_mm3=0)
+            rows[1]['distance_mm'] = 1
+        return rows
+    monkeypatch.setattr(smart, 'measure_proximity', measured)
+    req = {**request(doc), 'requirements': {'tube_front|tube_rear': .5, 'tube_front|housing_front': 2}}
+    outcome = smart.suggest(req)
+    assert outcome['outcome'] == 'no_candidate' and 'other_requirement' in outcome['reasons']
+    assert _parse_suggestion({'status': 'ok', **outcome}, req).reasons == tuple(outcome['reasons'])
+    forged = deepcopy(outcome)
+    forged['reasons'] = ['unknown']
+    with pytest.raises(OverlapJobError):
+        _parse_suggestion({'status': 'ok', **forged}, req)
+    forged['reasons'] = ['cad_error', 'cad_error']
+    with pytest.raises(OverlapJobError):
+        _parse_suggestion({'status': 'ok', **forged}, req)
+    for invalid in ('unsupported', 'existing_cut', 'baseline_error', 'baseline_ambiguous', 'cad_error'):
+        forged['reasons'] = [invalid]
+        with pytest.raises(OverlapJobError):
+            _parse_suggestion({'status': 'ok', **forged}, req)
+
+
+def test_reason_existing_cut_limit_and_unsupported_pair(monkeypatch):
+    from test_fixed_arm_housings import housings
+
+    from suspensionlab.model.fixed_arm_housings import make_housing_preview
+
+    capped = make_housing_preview(document(), None, None, {'target': 'rear', 'radial_clearance_mm': 100})
+    monkeypatch.setattr(smart, 'measure_proximity', lambda candidate: row(0, 1))
+    outcome = smart.suggest({**request(capped), 'minimum_mm': 0})
+    assert outcome['outcome'] == 'no_candidate' and outcome['reasons'] == ['existing_cut']
+    hdoc = make_housing_preview(document(), housings())
+    from test_fixed_arm_auto import report
+    # Convert to the worker's JSON pair representation.
+    rows = [{'left': p.left, 'right': p.right, 'distance_mm': p.distance_mm,
+             'overlap_mm3': p.overlap_mm3, 'threshold_mm3': p.threshold_mm3} for p in report().pairs]
+    monkeypatch.setattr(smart, 'measure_proximity', lambda candidate: rows)
+    outcome = smart.suggest({'document': hdoc, 'left': 'tube_front', 'right': 'housing_rear', 'minimum_mm': .5})
+    assert outcome['outcome'] == 'no_candidate' and outcome['reasons'] == ['unsupported']
+
+
+def test_real_existing_housing_cut_is_increased_and_all_pairs_checked():
+    pytest.importorskip('OCP', reason='Опциональное CAD-ядро', exc_type=ImportError)
+    from test_fixed_arm_housings import housings
+
+    from suspensionlab.core.cad_fixed_arm_overlap_job import FixedArmOverlapJob
+    from suspensionlab.model.fixed_arm_housings import make_housing_preview
+
+    h = housings()
+    h['front']['axis'] = [1, 0, 0]
+    h['front']['length_mm'] = 40
+    doc = make_housing_preview(document(), h, {'front': .5})
+    before = deepcopy(doc)
+    result = FixedArmOverlapJob().run_suggestion(doc, 'tube_front', 'housing_front', 1, timeout=90)
+    assert result.outcome == 'candidate' and result.target == 'front' and result.radial_clearance_mm == 1.5
+    assert result.after is not None and len(result.after.pairs) == 6
+    assert result.after.pairs[1].distance_mm >= 1.00001 and doc == before

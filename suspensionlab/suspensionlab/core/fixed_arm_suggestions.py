@@ -60,6 +60,37 @@ def candidate_document(doc: dict[str, Any], kind: str, target: str, clearance: f
     return make_housing_preview(tubes, housings, notches or None, joint)
 
 
+def candidate_options(doc: dict[str, Any], left: str, right: str, minimum: float) -> tuple[list[tuple[str, str, float]], bool]:
+    """Детерминированный конечный набор размеров реза, не норматив зазора."""
+    if (left, right) == ('tube_front', 'tube_rear'):
+        options = [('joint', 'front'), ('joint', 'rear')]
+    elif (left, right) in (('tube_front', 'housing_front'), ('tube_rear', 'housing_rear')):
+        options = [('housing', 'front' if left == 'tube_front' else 'rear')]
+    else:
+        return [], False
+    preview = doc.get('format') == PREVIEW_FORMAT
+    joint = doc.get('tube_joint') if preview else None
+    notches = (doc.get('notches') or {}) if preview else {}
+    candidates = []
+    constrained = False
+    for kind, target in options:
+        if kind == 'joint' and joint is not None and joint['target'] != target:
+            constrained = True
+            continue
+        existing = (joint['radial_clearance_mm'] if kind == 'joint' and joint is not None else
+                    notches.get(target) if kind == 'housing' else None)
+        base = float(existing) if existing is not None else 0.0
+        values = {min(100.0, minimum * factor) for factor in (1, 2, 4)}
+        values.update(min(100.0, base + step) for step in (0.5, 1.0, 2.0))
+        if existing is not None:
+            values = {v for v in values if v > base}
+            constrained = True
+        for value in sorted(values):
+            candidates.append((kind, target, value))
+    candidates.sort(key=lambda item: (item[2], item[1]))
+    return candidates, constrained
+
+
 def satisfies(pair: PairProximity, minimum: float) -> bool:
     """Нулевой минимум допускает контакт; малые объёмы остаются неопределёнными."""
     if minimum == 0:
@@ -96,48 +127,60 @@ def _requirements_not_worse(old: PairProximity, new: PairProximity, minimum: flo
 
 
 def suggest(value: Any) -> dict[str, Any]:
-    """Перебор до шести вариантов; не оптимизация и не гарантия безопасности."""
+    """Ограниченный перебор вариантов; не оптимизация и не гарантия безопасности."""
     doc, left, right, minimum = validate_request(value)
     requirements: dict[str, float] = value.get('requirements', {})
     initial_rows = measure_proximity(doc)
     initial = _parse_proximity(initial_rows, doc)
-    if any(p.status in ('error', 'uncertain_overlap') for p in initial.pairs):
-        return {'outcome': 'unverified', 'baseline': initial_rows}
+    baseline_reasons = {('baseline_error' if p.status == 'error' else 'baseline_ambiguous')
+                        for p in initial.pairs if p.status in ('error', 'uncertain_overlap')}
+    if baseline_reasons:
+        return {'outcome': 'unverified', 'baseline': initial_rows, 'reasons': sorted(baseline_reasons)}
     original = next(p for p in initial.pairs if (p.left, p.right) == (left, right))
     if satisfies(original, minimum):
         return {'outcome': 'already', 'baseline': initial_rows}
-    if (left, right) == ('tube_front', 'tube_rear'):
-        options = [('joint', 'front'), ('joint', 'rear')]
-    elif (left, right) in (('tube_front', 'housing_front'), ('tube_rear', 'housing_rear')):
-        options = [('housing', 'front' if left == 'tube_front' else 'rear')]
-    else:
-        options = []
-    values = sorted({min(100.0, minimum * scale) for scale in (1, 2, 4)})
+    options, constrained = candidate_options(doc, left, right, minimum)
+    supported = (left, right) in {('tube_front', 'tube_rear'), ('tube_front', 'housing_front'),
+                                  ('tube_rear', 'housing_rear')}
+    reasons: set[str] = set()
+    if not supported:
+        reasons.add('unsupported')
+    if constrained:
+        reasons.add('existing_cut')
     unverified = False
-    for clearance in values:
-        for kind, target in options:
-            try:
-                candidate = candidate_document(doc, kind, target, clearance)
-            except ValueError:
-                # A forbidden replacement or decrease is not a failed CAD calculation.
-                continue
-            try:
-                rows = measure_proximity(candidate)
-                measured = _parse_proximity(rows, candidate)
-                if any(pair.status in ('error', 'uncertain_overlap') for pair in measured.pairs):
-                    unverified = True
-                    continue
-                checked = next(p for p in measured.pairs if (p.left, p.right) == (left, right))
-                if not satisfies(checked, minimum):
-                    continue
-                if not all((a.left, a.right) == (b.left, b.right) and
-                           ((a.left, a.right) == (left, right) or
-                            _requirements_not_worse(a, b, requirements.get(f'{a.left}|{a.right}')))
-                           for a, b in zip(initial.pairs, measured.pairs, strict=True)):
-                    continue
-                return {'outcome': 'candidate', 'baseline': initial_rows, 'kind': kind, 'target': target,
-                        'radial_clearance_mm': clearance, 'after': rows}
-            except Exception:
-                # One failed CAD operation cannot make a candidate verified.
+    for kind, target, clearance in options:
+        try:
+            candidate = candidate_document(doc, kind, target, clearance)
+        except ValueError:
+            unverified = True
+            reasons.add('candidate_unverified')
+            continue
+        try:
+            rows = measure_proximity(candidate)
+            measured = _parse_proximity(rows, candidate)
+            if any(pair.status in ('error', 'uncertain_overlap') for pair in measured.pairs):
                 unverified = True
-    return {'outcome': 'unverified' if unverified else 'no_candidate', 'baseline': initial_rows}
+                reasons.add('candidate_unverified')
+                continue
+            checked = next(p for p in measured.pairs if (p.left, p.right) == (left, right))
+            if not satisfies(checked, minimum):
+                reasons.add('selected_not_met')
+                continue
+            conflicts = [(a, b) for a, b in zip(initial.pairs, measured.pairs, strict=True)
+                         if (a.left, a.right) != (left, right) and
+                         not _requirements_not_worse(a, b, requirements.get(f'{a.left}|{a.right}'))]
+            if conflicts:
+                for a, b in conflicts:
+                    if not _not_worse(a, b):
+                        reasons.add('other_geometry')
+                    else:
+                        reasons.add('other_requirement')
+                continue
+            return {'outcome': 'candidate', 'baseline': initial_rows, 'kind': kind, 'target': target,
+                    'radial_clearance_mm': clearance, 'after': rows}
+        except Exception:
+            # One failed CAD operation cannot make a candidate verified.
+            unverified = True
+            reasons.add('cad_error')
+    return {'outcome': 'unverified' if unverified else 'no_candidate', 'baseline': initial_rows,
+            'reasons': sorted(reasons)}

@@ -123,6 +123,11 @@ def test_real_auto_applies_only_after_confirmation_and_rechecks(qtbot, monkeypat
     view._start_auto()
     qtbot.waitUntil(lambda: view._worker is None, timeout=120000)
     assert view._table.item(0, 7).text() == 'Есть предложение', view._auto_summary.text()
+    assert view._comparison.rowCount() == 1 and view._comparison_button.isEnabled()
+    view._open_comparison()
+    assert view._comparison_dialog.isVisible()
+    assert 'пересечение' in view._comparison.item(0, 2).text()
+    assert view._comparison.item(0, 5).text() == '0: касание допускается'
     assert dialog._tube_joint_values() is None and view._apply_button.isEnabled()
     view._confirm_suggestion()
     qtbot.waitUntil(lambda: view._worker is None, timeout=120000)
@@ -187,5 +192,93 @@ def test_auto_report_is_not_saved_or_restored(qtbot, monkeypatch, tmp_path):
     dialog._open_file()
     assert view.requirements() == {'tube_front|tube_rear': .5}
     assert not view._auto_results and view._table.isHidden() and not view._apply_button.isEnabled()
+    assert dialog.shutdown()
+    dialog.close()
+
+
+def test_candidate_comparison_shows_all_pairs_and_is_cleared_on_selection_or_edits(qtbot, monkeypatch):
+    _, dialog = make_dialog(qtbot, monkeypatch, with_housings=True)
+    view = dialog._overlap
+    base = report()
+    rows = list(base.pairs)
+    rows[0] = PairProximity('tube_front', 'tube_rear', 0, 1e-6, 1)
+    after = ProximityResult(tuple(rows))
+    candidate = SuggestionResult('candidate', base, 'joint', 'rear', .5, after)
+    view.set_requirements({'tube_front|tube_rear': .5, 'tube_front|housing_front': 1}, housings=True)
+    entries = tuple(AutoPairResult(p.left, p.right, 'candidate' if i == 0 else 'no_requirement',
+                                   candidate if i == 0 else None) for i, p in enumerate(base.pairs))
+    view._completed(view.generation, AutoSuggestionResult(base, entries))
+    assert view._comparison.rowCount() == 6 and view._comparison_button.isEnabled()
+    view._open_comparison()
+    assert view._comparison_dialog.isVisible()
+    assert view._comparison.item(0, 1).text() == '0.5'
+    assert 'пересечение' in view._comparison.item(0, 2).text()
+    assert view._comparison.item(0, 3).text() == 'Не выполнено: пересечение'
+    assert view._comparison.item(0, 4).text() == '1 (зазор)'
+    assert view._comparison.item(0, 5).text() == 'Выполнено на снимке'
+    assert view._comparison.item(1, 1).text() == '1'
+    assert view._comparison.item(5, 1).text() == 'Не задано'
+    assert view._comparison.item(5, 3).text() == view._comparison.item(5, 5).text() == 'Не задано'
+    view._table.selectRow(1)
+    assert view._comparison_dialog.isHidden() and view._comparison.rowCount() == 0
+    view._table.selectRow(0)
+    assert view._comparison_button.isEnabled() and view._comparison.rowCount() == 6
+    view._open_comparison()
+    assert view._comparison_dialog.isVisible()
+    dialog._radius.setValue(dialog._radius.value() + 1)
+    assert view._comparison_dialog.isHidden() and view._comparison.rowCount() == 0
+    assert dialog.shutdown()
+    dialog.close()
+
+
+def test_failed_suggestion_explains_only_observed_reasons(qtbot, monkeypatch):
+    _, dialog = make_dialog(qtbot, monkeypatch, with_housings=False)
+    view = dialog._overlap
+    base = ProximityResult((PairProximity('tube_front', 'tube_rear', 1, 1e-6, 0),))
+    view._completed(view.generation, base)
+    view._minimum.setText('.5')
+    view._commit_requirement()
+    result = SuggestionResult('unverified', base, reasons=('existing_cut', 'cad_error'))
+    view._show_suggestion(result)
+    text = view._suggest_status.text()
+    assert 'ограничивает варианты' in text and 'Ошибка CAD' in text
+    assert view._comparison_dialog.isHidden() and not view._apply_button.isEnabled()
+    assert dialog.shutdown()
+    dialog.close()
+
+
+def test_incomplete_comparison_never_enables_proposal(qtbot, monkeypatch):
+    _, dialog = make_dialog(qtbot, monkeypatch, with_housings=False)
+    view = dialog._overlap
+    base = ProximityResult((PairProximity('tube_front', 'tube_rear', 1, 1e-6, 0),))
+    view._completed(view.generation, base)
+    view._minimum.setText('.5')
+    view._commit_requirement()
+    view._show_suggestion(SuggestionResult('candidate', base, 'joint', 'rear', .5, ProximityResult(())))
+    assert view._suggestion is None and not view._apply_button.isEnabled()
+    assert 'неполное' in view._suggest_status.text() and view._comparison_dialog.isHidden()
+    assert dialog.shutdown()
+    dialog.close()
+
+
+def test_comparison_is_hidden_on_unsignalled_project_change_during_confirmation(qtbot, monkeypatch):
+    controller, dialog = make_dialog(qtbot, monkeypatch, with_housings=False)
+    view = dialog._overlap
+    base = ProximityResult((PairProximity('tube_front', 'tube_rear', 1, 1e-6, 0),))
+    after = ProximityResult((PairProximity('tube_front', 'tube_rear', 0, 1e-6, 1),))
+    candidate = SuggestionResult('candidate', base, 'joint', 'rear', .5, after)
+    view.set_requirements({'tube_front|tube_rear': .5}, housings=False)
+    view._completed(view.generation, AutoSuggestionResult(base, (AutoPairResult('tube_front', 'tube_rear',
+                                                                               'candidate', candidate),)))
+    view._open_comparison()
+    assert view._comparison_dialog.isVisible()
+    def change_project(*args):
+        controller.project.front.hardpoints['lbj'].x += 1
+        return QMessageBox.StandardButton.Yes
+    monkeypatch.setattr(QMessageBox, 'question', change_project)
+    view._confirm_suggestion()
+    assert dialog._tube_joint_values() is None and view._comparison_dialog.isHidden() and view._table.isHidden()
+    assert not view._apply_button.isEnabled() and 'устарел' in view._status.text()
+    monkeypatch.setattr(QMessageBox, 'question', lambda *args: QMessageBox.StandardButton.Yes)
     assert dialog.shutdown()
     dialog.close()

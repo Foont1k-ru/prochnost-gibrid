@@ -8,6 +8,7 @@ from typing import Any
 from PySide6.QtCore import QSignalBlocker, QThread, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QDialog,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -189,6 +190,31 @@ class FixedArmOverlap(QWidget):
         self._suggest_status = QLabel('Требуемый зазор не задан; проверка требования не выполнена.', self)
         self._suggest_status.setWordWrap(True)
         layout.addWidget(self._suggest_status)
+        self._comparison_button = QPushButton('Сравнить все пары до и после…', self)
+        self._comparison_button.setEnabled(False)
+        self._comparison_button.clicked.connect(self._open_comparison)
+        layout.addWidget(self._comparison_button)
+        self._comparison_dialog = QDialog(self)
+        self._comparison_dialog.setWindowTitle('Сравнение проверенного предложения')
+        self._comparison_dialog.resize(1100, 360)
+        comparison_layout = QVBoxLayout(self._comparison_dialog)
+        caption = QLabel('Сравнение всех пар: исходная геометрия и проверенный вариант. '
+                         'Статус относится только к заданному минимуму; таблицу можно прокручивать.', self._comparison_dialog)
+        caption.setWordWrap(True)
+        comparison_layout.addWidget(caption)
+        self._comparison = QTableWidget(0, 6, self._comparison_dialog)
+        self._comparison.setHorizontalHeaderLabels(['Пара', 'Минимум, мм', 'До: расстояние / состояние',
+                                                     'До: требование', 'После: расстояние / состояние',
+                                                     'После: требование'])
+        self._comparison.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        for index in range(1, 6):
+            self._comparison.horizontalHeader().setSectionResizeMode(index, QHeaderView.ResizeMode.ResizeToContents)
+        self._comparison.verticalHeader().hide()
+        self._comparison.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        comparison_layout.addWidget(self._comparison)
+        close_comparison = QPushButton('Закрыть сравнение', self._comparison_dialog)
+        close_comparison.clicked.connect(self._comparison_dialog.close)
+        comparison_layout.addWidget(close_comparison)
         self._apply_button = QPushButton('Применить предложение…', self)
         self._apply_button.setEnabled(False)
         self._apply_button.clicked.connect(self._confirm_suggestion)
@@ -280,6 +306,7 @@ class FixedArmOverlap(QWidget):
         self._update_requirement_cells()
 
     def _requirement_changed(self, *_args: object) -> None:
+        self._clear_comparison()
         self._suggestion = None
         self._apply_button.setEnabled(False)
         row = self._table.currentRow()
@@ -345,7 +372,24 @@ class FixedArmOverlap(QWidget):
         self._requirement_changed()
         self._update_requirement_cells()
 
+    def _clear_comparison(self) -> None:
+        self._comparison_dialog.hide()
+        self._comparison.setRowCount(0)
+        self._comparison_button.setEnabled(False)
+
+    def _open_comparison(self) -> None:
+        if self._worker is not None or self._suggestion is None or self._requirement_drafts:
+            return
+        if self._document is None or not self._is_current(self._document):
+            self._failed(self.generation, 'stale')
+            return
+        if self._comparison.rowCount() == 0:
+            return
+        self._comparison_dialog.show()
+        self._comparison_dialog.raise_()
+
     def _clear_auto_results(self) -> None:
+        self._clear_comparison()
         self._auto_results.clear()
         self._auto_summary.clear()
         if self._table.columnCount() == 8:
@@ -411,8 +455,10 @@ class FixedArmOverlap(QWidget):
 
     def _confirm_suggestion(self) -> None:
         candidate, doc, token = self._suggestion, self._document, self.generation
-        if (candidate is None or doc is None or self._requirement_drafts or self._apply_callback is None or
-                not self._is_current(doc)):
+        if candidate is None or doc is None or self._requirement_drafts or self._apply_callback is None:
+            return
+        if not self._is_current(doc):
+            self._failed(token, 'stale')
             return
         if candidate.radial_clearance_mm is None:
             return
@@ -429,6 +475,9 @@ class FixedArmOverlap(QWidget):
         answer = QMessageBox.question(self, 'Применить подрезку?', text,
                                       QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                                       QMessageBox.StandardButton.No)
+        if token == self.generation and self._document is doc and not self._is_current(doc):
+            self._failed(token, 'stale')
+            return
         if (answer == QMessageBox.StandardButton.Yes and token == self.generation and not self._requirement_drafts and
                 self._suggestion is candidate and self._document is doc and self._is_current(doc)):
             auto = any(item.suggestion is candidate for item in self._auto_results.values())
@@ -470,9 +519,7 @@ class FixedArmOverlap(QWidget):
         if self._closed or self._worker is not None or self._document is None:
             return
         if not self._is_current(self._document):
-            self._table.setRowCount(0)
-            self._table.hide()
-            self._status.setText('Снимок устарел; повторите фиксацию и проверку.')
+            self._failed(self.generation, 'stale')
             return
         self._clear_auto_results()
         self._suggestion = None
@@ -516,9 +563,7 @@ class FixedArmOverlap(QWidget):
         if token != self.generation or self._closed or self._document is None:
             return
         if not self._is_current(self._document):
-            self._table.setRowCount(0)
-            self._table.hide()
-            self._status.setText('Снимок устарел; результат скрыт.')
+            self._failed(token, 'stale')
             return
         if isinstance(result, AutoSuggestionResult):
             self._show_auto(result)
@@ -569,6 +614,11 @@ class FixedArmOverlap(QWidget):
         self._requirement_changed()
 
     def _show_suggestion(self, result: SuggestionResult) -> None:
+        self._clear_comparison()
+        self._apply_button.setEnabled(False)
+        if self._document is None or not self._is_current(self._document):
+            self._failed(self.generation, 'stale')
+            return
         self._suggestion = result if result.outcome == 'candidate' else None
         messages = {'already': 'На текущем снимке выбранный минимум уже выполнен; рез не предлагается.',
                     'unverified': 'Некоторые пары или варианты не рассчитаны либо неоднозначны; '
@@ -576,10 +626,27 @@ class FixedArmOverlap(QWidget):
                     'no_candidate': 'Среди ограниченного набора поддержанных резов подходящий вариант не найден. '
                                     'Это не доказывает отсутствие других решений.'}
         if result.outcome != 'candidate':
-            self._suggest_status.setText(messages.get(result.outcome, 'Неизвестный результат; не проверено.'))
+            reasons = {'baseline_error': 'Ошибка проверки исходной пары',
+                       'baseline_ambiguous': 'Неоднозначный исходный малый объём',
+                       'unsupported': 'Тип реза для пары не поддерживается',
+                       'existing_cut': 'Существующая подрезка ограничивает варианты',
+                       'selected_not_met': 'Некоторые варианты не достигли минимума выбранной пары',
+                       'other_geometry': 'Некоторые варианты ухудшили геометрию других пар',
+                       'other_requirement': 'Некоторые варианты нарушили или ухудшили требования других пар',
+                       'candidate_unverified': 'Некоторые варианты неоднозначны или не проверены',
+                       'cad_error': 'Ошибка CAD при проверке некоторых вариантов'}
+            explanation = '; '.join(reasons[reason] for reason in result.reasons if reason in reasons)
+            text = messages.get(result.outcome, 'Неизвестный результат; не проверено.')
+            if explanation:
+                text += ' При переборе: ' + explanation + '.'
+            self._suggest_status.setText(text)
             self._status.setText('Подбор завершён без предложения. Проверьте исходный отчёт.')
             return
         assert result.after is not None and result.radial_clearance_mm is not None
+        if tuple((p.left, p.right) for p in result.baseline.pairs) != tuple((p.left, p.right) for p in result.after.pairs):
+            self._suggestion = None
+            self._suggest_status.setText('Сравнение неполное; предложение не подтверждено.')
+            return
         row = self._table.currentRow()
         if self._proximity is None or not 0 <= row < len(self._proximity.pairs):
             self._suggestion = None
@@ -601,8 +668,31 @@ class FixedArmOverlap(QWidget):
                                      f'пересечений после реза: {conflicts}; заданных требований не подтверждено: {unconfirmed}. '
                                      'Прочность, сварка и движение не удостоверены.')
         self._status.setText('Предложение не применено. Проверены только рассчитанные CAD-тела и ограниченный набор резов.')
+        self._show_comparison(result)
         self._apply_button.setEnabled(self._worker is None and not self._requirement_drafts and
                                       self._apply_callback is not None)
+
+    def _show_comparison(self, result: SuggestionResult) -> None:
+        assert result.after is not None
+        names = {'tube_front': 'Передняя труба', 'tube_rear': 'Задняя труба',
+                 'housing_front': 'Передний корпус', 'housing_rear': 'Задний корпус'}
+        labels = {'intersection': 'пересечение', 'near': 'касание / в допуске',
+                  'uncertain_overlap': 'неоднозначно', 'gap': 'зазор', 'error': 'ошибка'}
+
+        def distance(pair: PairProximity) -> str:
+            number = '—' if pair.status in ('error', 'uncertain_overlap') or pair.distance_mm is None else f'{pair.distance_mm:.8g}'
+            return f'{number} ({labels[pair.status]})'
+
+        self._comparison.setRowCount(len(result.baseline.pairs))
+        for row, (before, after) in enumerate(zip(result.baseline.pairs, result.after.pairs, strict=True)):
+            minimum = self._requirements.get(f'{before.left}|{before.right}')
+            cells = (f'{names[before.left]} — {names[before.right]}',
+                     'Не задано' if minimum is None else f'{minimum:g}',
+                     distance(before), _requirement_status(before, minimum),
+                     distance(after), _requirement_status(after, minimum))
+            for column, text in enumerate(cells):
+                self._comparison.setItem(row, column, QTableWidgetItem(text))
+        self._comparison_button.setEnabled(self._worker is None and not self._requirement_drafts)
 
     def _show_pairs(self, result: PairwiseResult) -> None:
         names = {'tube_front': 'Передняя труба', 'tube_rear': 'Задняя труба',
@@ -670,6 +760,8 @@ class FixedArmOverlap(QWidget):
     def _failed(self, token: int, code: str) -> None:
         if token != self.generation or self._closed:
             return
+        self._clear_auto_results()
+        self.markersRequested.emit(())
         self._proximity = None
         self._suggestion = None
         self._suggest_button.setEnabled(False)
@@ -706,8 +798,11 @@ class FixedArmOverlap(QWidget):
                                         not self._requirement_drafts)
         self._apply_button.setEnabled(enabled and not self._requirement_drafts and self._suggestion is not None and
                                       self._apply_callback is not None)
+        self._comparison_button.setEnabled(enabled and not self._requirement_drafts and self._suggestion is not None and
+                                           self._comparison.rowCount() > 0)
 
     def shutdown(self) -> bool:
+        self._clear_comparison()
         self._closed = True
         self.generation += 1
         self._document = None

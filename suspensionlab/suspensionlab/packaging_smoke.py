@@ -434,6 +434,9 @@ def run_cad_check() -> None:
         _require(overlap._worker is None and fixed_dialog._cad_candidate == before_candidate and
                  ('Подбор завершён' in overlap._status.text() or 'Предложение не применено' in overlap._status.text()),
                  "Проверка предложений недоступна или изменила исходные параметры: " + overlap._status.text())
+        if overlap._suggestion is not None:
+            _require(overlap._comparison_button.isEnabled() and overlap._comparison.rowCount() == 6,
+                     "Не показано сравнение всех пар до и после предложения")
         overlap._start_auto()
         deadline = monotonic() + 240
         while overlap._worker is not None and monotonic() < deadline:

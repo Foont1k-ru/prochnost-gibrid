@@ -79,6 +79,7 @@ class SuggestionResult:
     target: str | None = None
     radial_clearance_mm: float | None = None
     after: ProximityResult | None = None
+    reasons: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -170,7 +171,13 @@ def _parse_proximity(value: Any, document: dict[str, Any]) -> ProximityResult:
 
 
 def _parse_suggestion(result: Any, request: dict[str, Any]) -> SuggestionResult:
-    from .fixed_arm_suggestions import _requirements_not_worse, candidate_document, satisfies, validate_request
+    from .fixed_arm_suggestions import (
+        _requirements_not_worse,
+        candidate_document,
+        candidate_options,
+        satisfies,
+        validate_request,
+    )
 
     doc, left, right, minimum = validate_request(request)
     if not isinstance(result, dict) or result.get('outcome') not in ('candidate', 'already', 'unverified', 'no_candidate'):
@@ -179,16 +186,34 @@ def _parse_suggestion(result: Any, request: dict[str, Any]) -> SuggestionResult:
     keys = {'status', 'outcome', 'baseline'}
     if outcome == 'candidate':
         keys |= {'kind', 'target', 'radial_clearance_mm', 'after'}
+    elif outcome in ('no_candidate', 'unverified') and 'reasons' in result:
+        keys.add('reasons')
     if set(result) != keys:
         raise OverlapJobError('output')
+    reasons = result.get('reasons', [])
+    allowed_reasons = {'baseline_error', 'baseline_ambiguous', 'unsupported', 'existing_cut', 'selected_not_met',
+                       'other_geometry', 'other_requirement', 'candidate_unverified', 'cad_error'}
+    if (not isinstance(reasons, list) or len(reasons) > len(allowed_reasons) or
+            any(not isinstance(reason, str) or reason not in allowed_reasons for reason in reasons) or
+            len(set(reasons)) != len(reasons)):
+        raise OverlapJobError('output')
     baseline = _parse_proximity(result['baseline'], doc)
+    options, constrained = candidate_options(doc, left, right, minimum)
+    supported = (left, right) in {('tube_front', 'tube_rear'), ('tube_front', 'housing_front'),
+                                  ('tube_rear', 'housing_rear')}
+    if (('unsupported' in reasons and supported) or ('existing_cut' in reasons and not constrained) or
+            ('baseline_error' in reasons and not any(p.status == 'error' for p in baseline.pairs)) or
+            ('baseline_ambiguous' in reasons and not any(p.status == 'uncertain_overlap' for p in baseline.pairs)) or
+            (outcome == 'no_candidate' and any(r in reasons for r in
+                                               ('baseline_error', 'baseline_ambiguous', 'candidate_unverified', 'cad_error')))):
+        raise OverlapJobError('output')
     if outcome == 'already':
         selected = next((pair for pair in baseline.pairs if (pair.left, pair.right) == (left, right)), None)
         if (selected is None or not satisfies(selected, minimum) or
                 any(pair.status in ('error', 'uncertain_overlap') for pair in baseline.pairs)):
             raise OverlapJobError('output')
     if outcome != 'candidate':
-        return SuggestionResult(outcome, baseline)
+        return SuggestionResult(outcome, baseline, reasons=tuple(reasons))
     if any(pair.status in ('error', 'uncertain_overlap') for pair in baseline.pairs):
         raise OverlapJobError('output')
     kind, target, clearance = result['kind'], result['target'], result['radial_clearance_mm']
@@ -197,7 +222,7 @@ def _parse_suggestion(result: Any, request: dict[str, Any]) -> SuggestionResult:
                ('tube_rear', 'housing_rear'): {('housing', 'rear')}}
     if (kind, target) not in allowed.get((left, right), set()) or type(clearance) not in (int, float):
         raise OverlapJobError('output')
-    if not math.isfinite(clearance) or clearance not in {min(100.0, minimum * scale) for scale in (1, 2, 4)}:
+    if not math.isfinite(clearance) or (kind, target, clearance) not in options:
         raise OverlapJobError('output')
     try:
         candidate = candidate_document(doc, kind, target, clearance)
