@@ -200,6 +200,12 @@ class KinematicsWorkspace(QWidget):
                                       legend_override=tr('workspace_flow.scene_hint'))
         self.preview.volumetric = True
         self.preview.point_selection_enabled = True
+        self.preview.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.drag_point_button = QToolButton(self)
+        self.drag_point_button.setText(tr('workspace_flow.point_drag'))
+        self.drag_point_button.setToolTip(tr('workspace_flow.point_drag_hint'))
+        self.drag_point_button.setCheckable(True)
+        main_layout.addWidget(self.drag_point_button, 0, Qt.AlignmentFlag.AlignLeft)
         point_hint = QLabel(tr('workspace_flow.point_pick_hint'), self)
         point_hint.setWordWrap(True)
         main_layout.addWidget(point_hint)
@@ -286,14 +292,19 @@ class KinematicsWorkspace(QWidget):
         splitter.setStretchFactor(1, 1)
         splitter.setSizes([340, 800])
         outer.addWidget(splitter, 1)
+        self.camera.viewSelected.connect(lambda _view: self.drag_point_button.setChecked(False))
         self.camera.viewSelected.connect(self.preview.set_standard_view)
+        self.reset.clicked.connect(lambda: self.drag_point_button.setChecked(False))
         self.reset.clicked.connect(self.preview.reset_camera)
+        self.drag_point_button.toggled.connect(self._set_point_drag_mode)
         self.preview.linksClicked.connect(self._select_hits)
         self.preview.pointsClicked.connect(self._select_point_hits)
+        self.preview.pointDragged.connect(self._commit_point_drag)
         self.role.currentIndexChanged.connect(self._role_changed)
         self.suspension_type.activated.connect(self._choose_suspension_type)
         self.part.currentIndexChanged.connect(self._part_changed)
         self.travel.valueChanged.connect(self._show_sample)
+        self.travel.valueChanged.connect(self._disable_drag_for_nonzero)
         for field in (self.start, self.end, self.spacing):
             field.valueChanged.connect(self._invalidate)
         controller.modelChanged.connect(self._model_changed)
@@ -331,6 +342,55 @@ class KinematicsWorkspace(QWidget):
         self.preview.volumetric = enabled
         self.preview.update()
 
+    def _set_point_drag_mode(self, enabled: bool) -> None:
+        self.preview.cancel_point_drag()
+        self.preview.point_drag_enabled = False
+        if not enabled:
+            return
+        code = self.preview.selected_point
+        if code is None:
+            self.sample.setText(tr('workspace_flow.drag_select_first'))
+            self.drag_point_button.setChecked(False)
+            return
+        result = self.result
+        if result is not None:
+            index = min(range(len(result.samples)), key=lambda i: abs(result.samples[i].travel_mm))
+            self.travel.setValue(index)
+        frame = self.preview.frame
+        point = self._axle().hardpoints.get(code)
+        shown = frame.point(code) if frame is not None else None
+        if (frame is None or point is None or shown is None or abs(frame.travel_mm) > 1e-7 or
+                any(abs(a - b) > 1e-4 for a, b in zip(shown, point.as_tuple(), strict=True))):
+            self.sample.setText(tr('workspace_flow.drag_no_original'))
+            self.drag_point_button.setChecked(False)
+            return
+        self.preview.set_standard_view('top')
+        self.preview.point_drag_enabled = True
+        self.sample.setText(tr('workspace_flow.drag_active'))
+
+    def _disable_drag_for_nonzero(self, *_args) -> None:
+        if self.preview.frame is None or abs(self.preview.frame.travel_mm) > 1e-7:
+            self.drag_point_button.setChecked(False)
+
+    def _commit_point_drag(self, code: str, frame, dx: float, dy: float) -> None:
+        if (not self.drag_point_button.isChecked() or not self.preview.point_drag_enabled or
+                frame is not self.preview.frame or code != self.preview.selected_point or
+                abs(frame.travel_mm) > 1e-7):
+            return
+        point = self._axle().hardpoints.get(code)
+        shown = frame.point(code)
+        if (point is None or shown is None or
+                any(abs(a - b) > 1e-4 for a, b in zip(shown, point.as_tuple(), strict=True))):
+            return
+        old = point.as_tuple()
+        xyz = (old[0] + dx, old[1] + dy, old[2])
+        try:
+            if any(abs(value) > 1_000_000 for value in xyz):
+                raise ValueError('Out of display range')
+            self.controller.move_points({(self.role.currentData(), code): xyz})
+        except (ValueError, KeyError):
+            self.sample.setText(tr('workspace_flow.drag_locked'))
+
     def _spin(self, minimum: float, maximum: float, value: float, suffix: str) -> QDoubleSpinBox:
         box = QDoubleSpinBox(self)
         box.setRange(minimum, maximum)
@@ -350,6 +410,7 @@ class KinematicsWorkspace(QWidget):
         return next((i for i in range(self.part.count()) if self.part.itemData(i) == data), -1)
 
     def _role_changed(self, *_args) -> None:
+        self.drag_point_button.setChecked(False)
         axle = self._axle()
         self.preview.editable_point_codes = frozenset(p.code for p in axle.spec.points if p.code in axle.hardpoints)
         self.front_button.setChecked(axle.role == 'front')

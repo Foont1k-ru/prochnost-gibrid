@@ -30,6 +30,7 @@ class Scene3DPreview(QWidget):
 
     linksClicked = Signal(object, object)
     pointsClicked = Signal(object, object)
+    pointDragged = Signal(str, object, float, float)
 
     def __init__(self, parent: QWidget | None = None, *, schematic: bool = False,
                  title_override: str | None = None, legend_override: str | None = None) -> None:
@@ -43,6 +44,9 @@ class Scene3DPreview(QWidget):
         # Opt-in: other schematic previews retain their existing click behaviour.
         self.point_selection_enabled = False
         self.editable_point_codes: frozenset[str] = frozenset()
+        self.point_drag_enabled = False
+        self._point_drag: tuple[str, Scene3D, QPointF, float] | None = None
+        self._point_drag_pos: QPointF | None = None
         self.selected_link: tuple[str, str] | None = None
         self._click_press: QPointF | None = None
         self._click_moved = False
@@ -57,7 +61,13 @@ class Scene3DPreview(QWidget):
         self._pan_button: Qt.MouseButton | None = None
         self.reset_camera()
 
+    def cancel_point_drag(self) -> None:
+        self._point_drag = None
+        self._point_drag_pos = None
+        self.update()
+
     def reset_camera(self) -> None:
+        self.cancel_point_drag()
         self.yaw = -0.65
         self.elevation = 0.35
         self.zoom = 1.0
@@ -70,6 +80,7 @@ class Scene3DPreview(QWidget):
 
     def set_standard_view(self, name: str) -> None:
         """Изменяет только направление, сохраняя масштаб и сдвиг."""
+        self.cancel_point_drag()
         yaw, elevation = camera_view_angles(name)
         self.yaw, self.elevation = yaw, elevation
         self._drag = None
@@ -79,6 +90,8 @@ class Scene3DPreview(QWidget):
         self.update()
 
     def select_point(self, code: str | None) -> None:
+        if code != self.selected_point:
+            self.cancel_point_drag()
         self.selected_point = code
         self.update()
 
@@ -92,6 +105,7 @@ class Scene3DPreview(QWidget):
         self.update()
 
     def clear(self, message: str | None = None) -> None:
+        self.cancel_point_drag()
         self.frame = None
         self._visual = None
         self.link_targets = ()
@@ -101,6 +115,8 @@ class Scene3DPreview(QWidget):
         self.update()
 
     def show_frame(self, frame: Scene3D | None, message: str | None = None) -> None:
+        if frame is not self.frame:
+            self.cancel_point_drag()
         self.frame = frame
         self._visual = make_schematic_visual(frame) if self.schematic and frame is not None else None
         self.message = message or tr("analysis.preview_no_pose")
@@ -153,6 +169,12 @@ class Scene3DPreview(QWidget):
             painter.setPen(QPen(QColor("#211a00"), 2))
             painter.setBrush(QColor("#ffd43b"))
             painter.drawEllipse(pos, 6, 6)
+            if self._point_drag is not None and self._point_drag_pos is not None:
+                delta = self._point_drag_pos - self._point_drag[2]
+                painter.setPen(QPen(QColor('#d48700'), 2, Qt.PenStyle.DashLine))
+                painter.drawLine(pos, pos + delta)
+                painter.setBrush(QColor('#ffb83b'))
+                painter.drawEllipse(pos + delta, 6, 6)
             painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.setPen(self.palette().text().color())
         painter.drawText(QRectF(8, 4, self.width() - 16, 22), int(Qt.AlignmentFlag.AlignLeft),
@@ -256,10 +278,23 @@ class Scene3DPreview(QWidget):
         painter.setBrush(Qt.BrushStyle.NoBrush)
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
-        if event.button() in (Qt.MouseButton.MiddleButton, Qt.MouseButton.RightButton) and self._drag is None and self._pan_drag is None:
+        if (self.point_drag_enabled and event.button() == Qt.MouseButton.LeftButton and
+                not event.modifiers() & Qt.KeyboardModifier.ShiftModifier and
+                self.frame is not None and self.bounds is not None and self.selected_point is not None and
+                self.selected_point in self._point_hits(event.position()) and
+                abs(self.yaw) < 1e-9 and abs(self.elevation - pi / 2) < 1e-9):
+            scale = max(1.0, min(self.width() - 36, self.height() - 70)) / (2 * self.bounds[1]) * self.zoom
+            self._point_drag = (self.selected_point, self.frame, event.position(), scale)
+            self._point_drag_pos = event.position()
+            self.setFocus()
+            event.accept()
+        elif event.button() in (Qt.MouseButton.MiddleButton, Qt.MouseButton.RightButton) and self._drag is None and self._pan_drag is None:
             self._pan_drag = event.position()
             self._pan_button = event.button()
             event.accept()
+        elif (self.point_drag_enabled and event.button() == Qt.MouseButton.LeftButton and
+              not event.modifiers() & Qt.KeyboardModifier.ShiftModifier):
+            event.accept()  # In edit mode a blank drag must not rotate the plane.
         elif event.button() == Qt.MouseButton.LeftButton and self._pan_drag is None:
             self._drag = event.position()
             self._click_press = event.position() if self.schematic else None
@@ -269,7 +304,11 @@ class Scene3DPreview(QWidget):
             super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:  # noqa: N802
-        if self._pan_drag is not None and self._pan_button is not None and event.buttons() & self._pan_button:
+        if self._point_drag is not None and event.buttons() & Qt.MouseButton.LeftButton:
+            self._point_drag_pos = event.position()
+            self.update()
+            event.accept()
+        elif self._pan_drag is not None and self._pan_button is not None and event.buttons() & self._pan_button:
             now = event.position()
             delta, self._pan_drag = now - self._pan_drag, now
             self.pan_x += delta.x()
@@ -285,6 +324,9 @@ class Scene3DPreview(QWidget):
                 self._click_moved = True
             delta = now - self._drag
             self._drag = now
+            if self.point_drag_enabled:
+                event.accept()
+                return
             self.yaw = remainder(self.yaw + delta.x() * 0.01, 2 * pi)
             self.elevation = remainder(self.elevation + delta.y() * 0.01, 2 * pi)
             self.update()
@@ -293,7 +335,15 @@ class Scene3DPreview(QWidget):
             super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802
-        if self._pan_button is not None and event.button() == self._pan_button:
+        if self._point_drag is not None and event.button() == Qt.MouseButton.LeftButton:
+            code, frame, start, scale = self._point_drag
+            delta = event.position() - start
+            self.cancel_point_drag()
+            if delta.manhattanLength() >= 6:
+                # Top view projects +X right and +Y up; Z is held fixed.
+                self.pointDragged.emit(code, frame, delta.x() / scale, -delta.y() / scale)
+            event.accept()
+        elif self._pan_button is not None and event.button() == self._pan_button:
             self._pan_drag = None
             self._pan_button = None
             event.accept()
@@ -314,7 +364,29 @@ class Scene3DPreview(QWidget):
         else:
             super().mouseReleaseEvent(event)
 
+    def keyPressEvent(self, event) -> None:  # noqa: N802
+        if event.key() == Qt.Key.Key_Escape and self._point_drag is not None:
+            self.cancel_point_drag()
+            event.accept()
+        else:
+            super().keyPressEvent(event)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        self.cancel_point_drag()
+        super().resizeEvent(event)
+
+    def focusOutEvent(self, event) -> None:  # noqa: N802
+        self.cancel_point_drag()
+        super().focusOutEvent(event)
+
+    def hideEvent(self, event) -> None:  # noqa: N802
+        self.cancel_point_drag()
+        super().hideEvent(event)
+
     def wheelEvent(self, event) -> None:  # noqa: N802
+        if self._point_drag is not None:
+            event.accept()
+            return
         steps = event.angleDelta().y() / 120.0
         if steps:
             # Граница расчёта не позволяет редкому событию с огромной дельтой переполнить степень.

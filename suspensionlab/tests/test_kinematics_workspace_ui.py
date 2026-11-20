@@ -557,3 +557,132 @@ def test_point_selection_tracks_rear_and_unsupported_static_scheme(workspace, qt
     view._apply_point_hit(code, view._revision, frame)
     assert view.preview.selected_point == code
     assert view.point_toggles[code].isChecked()
+
+
+def _drag_selected_point(qtbot, view, delta, *, escape=False):
+    from PySide6.QtCore import QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+    from PySide6.QtWidgets import QApplication
+
+    from suspensionlab.core.scene3d import project_orthographic
+
+    preview = view.preview
+    center, radius = preview.bounds
+    scale = max(1.0, min(preview.width() - 36, preview.height() - 70)) / (2 * radius) * preview.zoom
+    x, y = project_orthographic(preview.frame.point(preview.selected_point), center, preview.yaw, preview.elevation)
+    pos = QPointF(preview.width() / 2 + preview.pan_x + x * scale,
+                  preview.height() / 2 + 8 + preview.pan_y - y * scale)
+    target = pos + QPointF(*delta)
+    QApplication.sendEvent(preview, QMouseEvent(QMouseEvent.Type.MouseButtonPress, pos,
+                           Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier))
+    assert preview._point_drag is not None
+    QApplication.sendEvent(preview, QMouseEvent(QMouseEvent.Type.MouseMove, target,
+                           Qt.MouseButton.NoButton, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier))
+    if escape:
+        qtbot.keyClick(preview, Qt.Key.Key_Escape)
+    QApplication.sendEvent(preview, QMouseEvent(QMouseEvent.Type.MouseButtonRelease, target,
+                           Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier))
+    return scale
+
+
+def test_drag_point_top_view_is_single_undo_and_recalculates(workspace, qtbot):
+    controller, view = workspace
+    view.point_toggles['lbj'].setChecked(True)
+    view.travel.setValue(view.travel.maximum())
+    view.drag_point_button.setChecked(True)
+    assert view.drag_point_button.isChecked()
+    assert view.preview.frame.travel_mm == 0
+    assert view.preview.point_drag_enabled
+    point = controller.project.front.hardpoints['lbj']
+    old = point.as_tuple()
+    scale = _drag_selected_point(qtbot, view, (30., -20.))
+    assert point.as_tuple() == pytest.approx((old[0] + 30 / scale, old[1] + 20 / scale, old[2]))
+    assert view.result is None
+    controller.undo_last()
+    assert point.as_tuple() == pytest.approx(old)
+    qtbot.waitUntil(lambda: view.result is not None, timeout=10000)
+
+
+def test_drag_locks_cancel_escape_and_nonzero_pose(workspace, qtbot):
+    controller, view = workspace
+    view.point_toggles['lbj'].setChecked(True)
+    view.drag_point_button.setChecked(True)
+    point = controller.project.front.hardpoints['lbj']
+    original = point.as_tuple()
+    _drag_selected_point(qtbot, view, (30., 20.), escape=True)
+    assert point.as_tuple() == original
+    controller.set_lock('front.point.lbj.x', True)
+    qtbot.waitUntil(lambda: view.result is not None, timeout=10000)
+    _drag_selected_point(qtbot, view, (30., 20.))
+    assert point.as_tuple() == original
+    assert 'зафиксирована' in view.sample.text()
+    view.travel.setValue(view.travel.maximum())
+    assert not view.drag_point_button.isChecked()
+    assert not view.preview.point_drag_enabled
+
+
+def test_drag_mode_requires_selection_and_turns_off_with_camera_change(workspace):
+    _, view = workspace
+    assert view.preview.selected_point is None
+    view.drag_point_button.setChecked(True)
+    assert not view.drag_point_button.isChecked()
+    assert 'Сначала выберите' in view.sample.text()
+    view.point_toggles['lbj'].setChecked(True)
+    view.drag_point_button.setChecked(True)
+    assert view.preview.point_drag_enabled
+    view.camera.viewSelected.emit('front')
+    assert not view.drag_point_button.isChecked()
+    assert not view.preview.point_drag_enabled
+
+
+def test_drag_rear_and_ignore_stale_frame(workspace, qtbot):
+    controller, view = workspace
+    view.role.setCurrentIndex(1)
+    qtbot.waitUntil(lambda: view.result is not None, timeout=10000)
+    code = 'uf_out'
+    view.point_toggles[code].setChecked(True)
+    view.drag_point_button.setChecked(True)
+    assert view.drag_point_button.isChecked()
+    point = controller.project.rear.hardpoints[code]
+    old = point.as_tuple()
+    old_frame = view.preview.frame
+    scale = _drag_selected_point(qtbot, view, (-18., 25.))
+    assert point.as_tuple() == pytest.approx((old[0] - 18 / scale, old[1] - 25 / scale, old[2]))
+    after = point.as_tuple()
+    view._commit_point_drag(code, old_frame, 100., 100.)
+    assert point.as_tuple() == after
+    controller.undo_last()
+    assert point.as_tuple() == pytest.approx(old)
+    qtbot.waitUntil(lambda: view.result is not None, timeout=10000)
+
+
+def test_drag_is_cancelled_when_geometry_or_frame_changes(workspace, qtbot):
+    from PySide6.QtCore import QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+    from PySide6.QtWidgets import QApplication
+
+    from suspensionlab.core.scene3d import project_orthographic
+
+    controller, view = workspace
+    view.point_toggles['lbj'].setChecked(True)
+    view.drag_point_button.setChecked(True)
+    preview = view.preview
+    center, radius = preview.bounds
+    scale = max(1., min(preview.width() - 36, preview.height() - 70)) / (2 * radius) * preview.zoom
+    x, y = project_orthographic(preview.frame.point('lbj'), center, preview.yaw, preview.elevation)
+    pos = QPointF(preview.width() / 2 + preview.pan_x + x * scale,
+                  preview.height() / 2 + 8 + preview.pan_y - y * scale)
+    QApplication.sendEvent(preview, QMouseEvent(QMouseEvent.Type.MouseButtonPress, pos,
+                           Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier))
+    assert preview._point_drag is not None
+    point = controller.project.front.hardpoints['lbj']
+    old = point.as_tuple()
+    view._change_point('lbj', 'z', old[2] + 2.)
+    assert preview._point_drag is None
+    target = pos + QPointF(50., 50.)
+    QApplication.sendEvent(preview, QMouseEvent(QMouseEvent.Type.MouseButtonRelease, target,
+                           Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier))
+    assert point.as_tuple() == pytest.approx((old[0], old[1], old[2] + 2.))
+    controller.undo_last()
+    assert point.as_tuple() == pytest.approx(old)
+    qtbot.waitUntil(lambda: view.result is not None, timeout=10000)
