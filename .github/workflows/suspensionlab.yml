@@ -247,7 +247,8 @@ jobs:
             if (-not (Test-Path $console)) { throw 'Report and console missing' }
             $text = Get-Content -Raw -Encoding utf8 $console
             if (-not $text) { throw 'Report missing and console empty' }
-            $tail = $text.Substring([Math]::Max(0, $text.Length - 10000))
+            # GitHub truncates annotations at 4096 characters; preserve the end.
+            $tail = $text.Substring([Math]::Max(0, $text.Length - 2500))
             $tail = $tail.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
             Write-Output "::warning title=JUnit отсутствует; хвост консоли::$tail"
             exit 0
