@@ -69,3 +69,77 @@ def test_roundtrip_optional_config_and_malformed_input_rejected():
     saved['front_axle']['kinematic_elements']['spring']['minimum_mm'] = 'not a number'
     with pytest.raises(ValueError):
         Project.from_dict(saved)
+
+
+def _rocker_setup(axle, code, *, enabled=True, mount='upright'):
+    from suspensionlab.model.kinematic_elements import RockerSetup
+
+    bx, by, bz = axle.hardpoints[code].as_tuple()
+    x, y, z = bx + 30., by - 20., bz + 10.
+    return RockerSetup(enabled, mount, (x + 100, y + 20, z + 100), (1, 0, 0),
+                       (x + 100, y + 70, z + 100), (x, y, z),
+                       (x + 100, y + 20, z + 130), (x + 100, y + 100, z + 160))
+
+
+def test_saved_rocker_and_direct_mode_roundtrip_and_invalid_input():
+    from suspensionlab.model.kinematic_elements import RockerSetup
+
+    project = load_template('ring')
+    rocker = _rocker_setup(project.front, 'lbj')
+    config = KinematicElements('double_wishbone', ElementSetup('body', 'upright'),
+                               ElementSetup('upright', 'body', 50., 200.), rocker)
+    project.front.kinematic_elements = config
+    saved = project.to_dict()
+    import json
+    decoded = Project.from_dict(json.loads(json.dumps(saved)))
+    assert decoded.front.kinematic_elements == config
+    assert decoded.to_dict() == saved
+    data = config.to_dict()
+    data['rocker']['pivot'] = [True, 0., 0.]
+    with pytest.raises(ValueError):
+        KinematicElements.from_dict(data)
+    with pytest.raises(ValueError):
+        KinematicElements('multilink_rear', rocker=replace(rocker, mount='lower_arm'))
+    with pytest.raises(ValueError):
+        replace(rocker, enabled='yes')
+    with pytest.raises(ValueError):
+        RockerSetup.from_dict({'enabled': True})
+
+
+def test_active_rocker_replaces_direct_damper_without_stale_fallback():
+    axle = load_template('ring').front
+    rocker = _rocker_setup(axle, 'lbj', mount='lower_arm')
+    direct = ElementSetup('upright', 'body', 20., 500.)
+    axle.kinematic_elements = KinematicElements(axle.type_code, damper=direct, rocker=rocker)
+    model = DoubleWishbone(axle)
+    single = measure_element(axle, model, model.initial_pose(), 'damper')
+    assert single.length_mm is None and single.status == 'unknown'
+    result = calculate(axle, -27, 23, 9)
+    assert len(result.samples) > 2
+    assert all(s.scene is not None and s.rocker is not None and s.rocker.pose is not None for s in result.samples)
+    for sample in result.samples:
+        assert sample.damper.length_mm == pytest.approx(sample.rocker.pose.damper_length_mm)
+        assert sample.damper.status == 'inside'
+        assert {'rod', 'rocker', 'damper'} <= {seg.kind for seg in sample.scene.segments}
+        assert sample.scene.point('damper_lo') is None
+    assert all(s.rocker.motion_ratio is not None for s in result.samples[1:-1])
+    axle.kinematic_elements = replace(axle.kinematic_elements, rocker=replace(rocker, enabled=False))
+    direct_result = calculate(axle, -27, 23, 9)
+    assert all(s.rocker is None for s in direct_result.samples)
+    assert all(s.scene.point('damper_lo') is not None for s in direct_result.samples)
+    assert abs(direct_result.samples[0].damper.length_mm - result.samples[0].damper.length_mm) > 1
+    invalid = replace(rocker, axis=(0., 0., 0.))
+    axle.kinematic_elements = replace(axle.kinematic_elements, rocker=invalid)
+    failed = calculate(axle, -6, 6, 5)
+    assert all(s.damper.status == 'error' and s.damper.length_mm is None for s in failed.samples)
+    assert all(not any(seg.kind in ('damper', 'rod', 'rocker') for seg in s.scene.segments) for s in failed.samples)
+
+
+def test_rear_rocker_and_unknown_force_ratio_are_separate_from_spring():
+    axle = load_template('ring').rear
+    rocker = _rocker_setup(axle, 'uf_out')
+    axle.kinematic_elements = KinematicElements(axle.type_code, spring=ElementSetup('upright', 'body'), rocker=rocker)
+    samples = calculate(axle, -6, 6, 5).samples
+    assert all(s.rocker is not None and s.rocker.pose is not None for s in samples)
+    assert all(s.spring.length_mm is not None for s in samples)
+    assert all(s.damper.status == 'partial' for s in samples)

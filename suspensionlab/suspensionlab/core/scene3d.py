@@ -12,7 +12,7 @@ from .double_wishbone import DoubleWishbone, Pose, RigidFiveLinkSolver
 from .metrics import _wheel_directions
 from .pose_view import Point, PoseView
 
-SegmentKind = Literal["arm", "knuckle", "steering", "spring", "damper", "wheel"]
+SegmentKind = Literal["arm", "knuckle", "steering", "spring", "damper", "wheel", "rod", "rocker"]
 POINT_CODES = ("wheel_center", "uca_f_in", "uca_r_in", "ubj", "lca_f_in", "lca_r_in", "lbj",
                "tierod_in", "tierod_out", "spring_lo", "spring_up", "damper_lo", "damper_up")
 

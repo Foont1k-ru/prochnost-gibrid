@@ -101,3 +101,16 @@ def test_undetermined_static_rocker_does_not_return_a_false_length():
                               (x + 100, y + 30, z + 100), (x + 100, y + 30, z + 180))
     result = calculate_rocker(axle, geometry, 'upright', -6, 6)
     assert all(sample.pose is None and sample.motion_ratio is None and sample.error for sample in result)
+
+
+def test_requested_samples_are_in_dense_continuation_grid():
+    axle = load_template('ring').front
+    geometry = example_geometry(axle, 'lbj')
+    targets = [-27., -18., -9., 0., 7.666666666666667, 15.333333333333334, 23.]
+    samples = calculate_rocker(axle, geometry, 'upright', -27, 23, targets=targets)
+    times = [s.travel_mm for s in samples]
+    assert all(target in times for target in targets)
+    assert all(0 < b - a <= 2.000000001 for a, b in zip(times, times[1:], strict=False))
+    for invalid in ([float('nan')], [24.], [True]):
+        with pytest.raises(ValueError):
+            calculate_rocker(axle, geometry, 'upright', -27, 23, targets=invalid)

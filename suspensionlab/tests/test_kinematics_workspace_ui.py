@@ -363,8 +363,8 @@ def test_workspace_graph_tracks_samples_gaps_and_invalidation(workspace, qtbot, 
     assert view.result is None and view.plot.points == ()
     qtbot.waitUntil(lambda: view.result is not None, timeout=10000)
     failed = [i for i, sample in enumerate(view.result.samples) if sample.scene is None]
-    assert failed and all(view.plot.points[i].values == (None, None, None, None) for i in failed)
-    assert all(i not in (a, b) for a, b in plot_segments(view.plot.points, 0, 4) for i in failed)
+    assert failed and all(view.plot.points[i].values == (None,) * 5 for i in failed)
+    assert all(i not in (a, b) for a, b in plot_segments(view.plot.points, 0, 5) for i in failed)
     view.plot.rowSelected.emit(failed[0])
     assert view.preview.frame is None and 'нет решения' in view.sample.text()
     controller.new_project('live_axle')
@@ -686,3 +686,150 @@ def test_drag_is_cancelled_when_geometry_or_frame_changes(workspace, qtbot):
     controller.undo_last()
     assert point.as_tuple() == pytest.approx(old)
     qtbot.waitUntil(lambda: view.result is not None, timeout=10000)
+
+
+def _example_rocker(axle, code='lbj', mount='upright'):
+    from suspensionlab.model.kinematic_elements import RockerSetup
+
+    bx, by, bz = axle.hardpoints[code].as_tuple()
+    x, y, z = bx + 30., by - 20., bz + 10.
+    return RockerSetup(True, mount, (x + 100, y + 20, z + 100), (1, 0, 0),
+                       (x + 100, y + 70, z + 100), (x, y, z),
+                       (x + 100, y + 20, z + 130), (x + 100, y + 100, z + 160))
+
+
+def test_rocker_dialog_requires_explicit_valid_geometry_and_keeps_disabled_setup(qtbot):
+    from PySide6.QtWidgets import QDialog
+
+    from suspensionlab.model.templates import load_template
+    from suspensionlab.ui.rocker_setup_dialog import RockerSetupDialog
+
+    setup = _example_rocker(load_template('ring').front)
+    dialog = RockerSetupDialog('double_wishbone', None)
+    qtbot.addWidget(dialog)
+    dialog.show()
+    assert all(not edit.text() for edit in dialog.inputs.values())
+    dialog.mode.setCurrentIndex(1)
+    dialog._apply()
+    assert dialog.result() != QDialog.DialogCode.Accepted and dialog.error.text()
+    dialog.mount.setCurrentIndex(dialog.mount.findData('upright'))
+    for (name, axis), edit in dialog.inputs.items():
+        edit.setText(str(getattr(setup, name)[axis]).replace('.', ','))
+    dialog.inputs[('axis', 0)].setText('0')
+    dialog._apply()
+    assert dialog.result() != QDialog.DialogCode.Accepted
+    dialog.inputs[('axis', 0)].setText('1')
+    dialog._apply()
+    assert dialog.result() == QDialog.DialogCode.Accepted
+    assert dialog.result_setup == setup
+    direct = RockerSetupDialog('double_wishbone', setup)
+    qtbot.addWidget(direct)
+    direct.mode.setCurrentIndex(0)
+    direct._apply()
+    assert direct.result_setup == __import__('dataclasses').replace(setup, enabled=False)
+    rear = RockerSetupDialog('multilink_rear', None)
+    qtbot.addWidget(rear)
+    assert rear.mount.findData('lower_arm') == -1
+    rear.close()
+
+
+def test_rocker_workspace_save_undo_direct_and_plot(workspace, qtbot, monkeypatch, tmp_path):
+    from dataclasses import replace
+
+    from PySide6.QtWidgets import QDialog
+
+    from suspensionlab.ui import kinematics_workspace
+
+    controller, view = workspace
+    view.part.setCurrentIndex(view._part_index(('group', 'damper')))
+    setup = _example_rocker(controller.project.front, mount='lower_arm')
+    result = [setup]
+    class Dialog:
+        def __init__(self, type_code, initial, parent):
+            self.result_setup = result[0]
+        def exec(self):
+            return QDialog.DialogCode.Accepted
+        def deleteLater(self):  # noqa: N802
+            pass
+    monkeypatch.setattr(kinematics_workspace, 'RockerSetupDialog', Dialog)
+    view._edit_rocker()
+    assert controller.project.front.kinematic_elements.rocker == setup
+    assert not view._element_controls['lower'].isEnabled()
+    assert all(toggle.parentWidget().isHidden() for toggle in view.point_toggles.values())
+    assert view.result is None
+    qtbot.waitUntil(lambda: view.result is not None, timeout=15000)
+    zero = view.result.samples[view.travel.value()]
+    assert zero.rocker is not None and zero.rocker.pose is not None
+    assert zero.damper.length_mm == pytest.approx(zero.rocker.pose.damper_length_mm)
+    assert 'Коромысло' in view.elements_sample.text()
+    assert any(seg.kind == 'rocker' for seg in view.preview.frame.segments)
+    view.plot_metric.setCurrentIndex(view.plot_metric.findData('rocker_ratio'))
+    assert view.plot.points[view.travel.value()].values[-1] is not None
+    path = controller.save_project(tmp_path / 'with-rocker')
+    controller.undo_last()
+    assert controller.project.front.kinematic_elements is None
+    controller.redo_last()
+    assert controller.project.front.kinematic_elements.rocker == setup
+    controller.open_project(path)
+    assert controller.project.front.kinematic_elements.rocker == setup
+    qtbot.waitUntil(lambda: view.result is not None, timeout=15000)
+    view.part.setCurrentIndex(view._part_index(('group', 'damper')))
+    result[0] = replace(setup, enabled=False)
+    view._edit_rocker()
+    assert not controller.project.front.kinematic_elements.rocker.enabled
+    assert view._element_controls['lower'].isEnabled()
+    assert all(not toggle.parentWidget().isHidden() for toggle in view.point_toggles.values())
+    qtbot.waitUntil(lambda: view.result is not None, timeout=15000)
+    assert all(s.rocker is None for s in view.result.samples)
+
+
+def test_rocker_dialog_does_not_apply_to_changed_project(workspace, monkeypatch, qtbot):
+    from PySide6.QtWidgets import QDialog
+
+    from suspensionlab.ui import kinematics_workspace
+
+    controller, view = workspace
+    view.part.setCurrentIndex(view._part_index(('group', 'damper')))
+    setup = _example_rocker(controller.project.front)
+    class StaleDialog:
+        def __init__(self, type_code, initial, parent):
+            self.result_setup = setup
+        def exec(self):
+            view.role.setCurrentIndex(1)
+            return QDialog.DialogCode.Accepted
+        def deleteLater(self):  # noqa: N802
+            pass
+    monkeypatch.setattr(kinematics_workspace, 'RockerSetupDialog', StaleDialog)
+    view._edit_rocker()
+    assert controller.project.front.kinematic_elements is None
+    assert controller.project.rear.kinematic_elements is None
+    assert 'не применены' in view.sample.text()
+    qtbot.waitUntil(lambda: view.result is not None, timeout=10000)
+
+
+def test_rear_rocker_real_dialog_drives_calculation(workspace, qtbot):
+    from PySide6.QtCore import QTimer
+
+    from suspensionlab.ui.rocker_setup_dialog import RockerSetupDialog
+
+    controller, view = workspace
+    view.role.setCurrentIndex(1)
+    qtbot.waitUntil(lambda: view.result is not None, timeout=10000)
+    view.part.setCurrentIndex(view._part_index(('group', 'damper')))
+    setup = _example_rocker(controller.project.rear, code='uf_out')
+    def populate():
+        dialog = view.findChild(RockerSetupDialog)
+        assert dialog is not None
+        dialog.mode.setCurrentIndex(1)
+        dialog.mount.setCurrentIndex(dialog.mount.findData('upright'))
+        for (name, axis), edit in dialog.inputs.items():
+            edit.setText(str(getattr(setup, name)[axis]))
+        dialog._apply()
+    QTimer.singleShot(0, populate)
+    view._edit_rocker()
+    assert controller.project.rear.kinematic_elements.rocker == setup
+    qtbot.waitUntil(lambda: view.result is not None, timeout=15000)
+    assert view.result.samples[view.travel.value()].rocker.pose is not None
+    assert 'Коромысло:' in view.elements_sample.text()
+    assert not view._element_controls['upper'].isEnabled()
+    assert controller.project.front.kinematic_elements is None

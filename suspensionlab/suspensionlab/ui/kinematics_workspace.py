@@ -7,6 +7,7 @@ from dataclasses import replace
 from PySide6.QtCore import QEvent, Qt, QTimer
 from PySide6.QtWidgets import (
     QComboBox,
+    QDialog,
     QDoubleSpinBox,
     QFormLayout,
     QGroupBox,
@@ -43,6 +44,7 @@ from ..model.suspension_types import types_for_role
 from .canvas.scene3d_preview import Scene3DPreview
 from .canvas.sweep_plot import SweepPlot
 from .controller import AppController, Selection
+from .rocker_setup_dialog import RockerSetupDialog
 from .widgets.camera_views import CameraViews
 from .widgets.slider_field import SliderField
 
@@ -272,7 +274,7 @@ class KinematicsWorkspace(QWidget):
         self.plot_panel = QWidget(graph_scroll)
         plot_layout = QVBoxLayout(self.plot_panel)
         plot_layout.setContentsMargins(8, 8, 8, 8)
-        metrics = ('camber', 'toe', 'spring_length', 'damper_length')
+        metrics = ('camber', 'toe', 'spring_length', 'damper_length', 'rocker_ratio')
         self.plot_metric = QComboBox(self.plot_panel)
         for metric in metrics:
             self.plot_metric.addItem(tr(f'workspace_flow.graph_labels.{metric}'), metric)
@@ -506,6 +508,7 @@ class KinematicsWorkspace(QWidget):
                 widget.deleteLater()
         self._rows.clear()
         self._element_controls: dict[str, QComboBox | QDoubleSpinBox] = {}
+        self._rocker_status: QLabel | None = None
         axle = self._axle()
         role = self.role.currentData()
         kind, code = self.part.currentData() or ('all', '')
@@ -572,6 +575,7 @@ class KinematicsWorkspace(QWidget):
                 coordinate_layout.addWidget(field)
             self.editor_layout.addWidget(group)
         self.editor_layout.addStretch(1)
+        self._refresh_element_controls()
 
     def _select_editor_point(self, code: str, expanded: bool) -> None:
         if expanded:
@@ -600,6 +604,13 @@ class KinematicsWorkspace(QWidget):
             self.editor_layout.addWidget(group)
             return
         setup = self._active_setup(name)
+        if name == 'damper':
+            rocker_button = QPushButton(tr('rocker_setup.button'), group)
+            rocker_button.clicked.connect(self._edit_rocker)
+            form.addRow(rocker_button)
+            self._rocker_status = QLabel(group)
+            self._rocker_status.setWordWrap(True)
+            form.addRow(self._rocker_status)
         for attr, label in (('lower', 'Нижняя точка'), ('upper', 'Верхняя точка')):
             combo = QComboBox(group)
             combo.addItem('Не задано', None)
@@ -626,6 +637,28 @@ class KinematicsWorkspace(QWidget):
             form.addRow(label, box)
         self.editor_layout.addWidget(group)
 
+    def _edit_rocker(self) -> None:
+        axle = self._axle()
+        old = axle.kinematic_elements
+        initial = old.rocker if old is not None and old.type_code == axle.type_code else None
+        revision = self._revision
+        dialog = RockerSetupDialog(axle.type_code, initial, self)
+        try:
+            accepted = dialog.exec() == QDialog.DialogCode.Accepted
+            result = dialog.result_setup
+        finally:
+            dialog.deleteLater()
+        if not accepted:
+            return
+        if self._axle() is not axle or axle.kinematic_elements != old or revision != self._revision:
+            self.sample.setText(tr('rocker_setup.changed'))
+            return
+        if old is None and result is None:
+            return
+        config = old if old is not None and old.type_code == axle.type_code else KinematicElements(axle.type_code)
+        self.controller.set_value(axle, 'kinematic_elements', replace(config, rocker=result),
+                                  merge_key=f'rocker-setup:{id(axle)}:{self._revision}')
+
     def _change_element(self, name: str, field: str) -> None:
         axle = self._axle()
         if not supported(axle) or len(self._element_controls) != 4:
@@ -647,7 +680,21 @@ class KinematicsWorkspace(QWidget):
         if kind != 'group' or name not in ('spring', 'damper') or not self._element_controls:
             return
         setup = self._active_setup(name)
+        config = self._axle().kinematic_elements
+        rocker_active = (name == 'damper' and config is not None and config.type_code == self._axle().type_code and
+                         config.rocker is not None and config.rocker.enabled)
+        if self._rocker_status is not None:
+            self._rocker_status.setText(tr('rocker_setup.rocker_status' if rocker_active else 'rocker_setup.direct_status'))
+        if name == 'damper':
+            for toggle in self.point_toggles.values():
+                container = toggle.parentWidget()
+                if container is not None:
+                    container.setVisible(not rocker_active)
+            if rocker_active and self.preview.selected_point in self.point_toggles:
+                self.preview.select_point(None)
         for attr, widget in self._element_controls.items():
+            if attr in ('lower', 'upper'):
+                widget.setEnabled(not rocker_active)
             widget.blockSignals(True)
             if isinstance(widget, QComboBox):
                 value = getattr(setup, attr)
@@ -761,7 +808,8 @@ class KinematicsWorkspace(QWidget):
             spring = sample.spring if sample.scene is not None else None
             damper = sample.damper if sample.scene is not None else None
             values = (metrics.camber_deg if metrics else None, metrics.toe_deg if metrics else None,
-                      spring.length_mm if spring else None, damper.length_mm if damper else None)
+                      spring.length_mm if spring else None, damper.length_mm if damper else None,
+                      sample.rocker.motion_ratio if sample.rocker is not None and sample.scene is not None else None)
             conflict = any(element is not None and element.status in ('below', 'above', 'invalid', 'error')
                            for element in (spring, damper))
             points.append(PlotPoint(sample.travel_mm, values, conflict))
@@ -803,8 +851,16 @@ class KinematicsWorkspace(QWidget):
                     if start is not None and end is not None:
                         targets.append(SelectableLink(self.role.currentData(), spec.code, Segment3D(start, end, 'arm')))
             self.preview.link_targets = tuple(targets)
-        self.elements_sample.setText(f'Пружина: {_element_text(sample.spring)}\n'
-                                     f'Амортизатор: {_element_text(sample.damper)}')
+        elements_text = (f'Пружина: {_element_text(sample.spring)}\n'
+                         f'Амортизатор: {_element_text(sample.damper)}')
+        if sample.rocker is not None and sample.rocker.pose is not None:
+            from math import degrees
+
+            ratio = sample.rocker.motion_ratio
+            ratio_text = f'{ratio:+.4f}' if ratio is not None else 'не определено'
+            elements_text += (f'\nКоромысло: {degrees(sample.rocker.pose.angle_rad):+.2f}°; '
+                              f'−dL/dh ≈ {ratio_text} (по соседним точкам).')
+        self.elements_sample.setText(elements_text)
         if sample.error:
             self.sample.setText(f'Ход {sample.travel_mm:+.1f} мм: нет решения. {sample.error}')
         elif sample.metrics is None:

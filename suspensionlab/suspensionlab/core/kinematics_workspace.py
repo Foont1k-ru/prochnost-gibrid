@@ -12,6 +12,7 @@ from .double_wishbone import DoubleWishbone, Pose, RigidFiveLinkSolver
 from .metrics import wheel_angles
 from .pose_view import Point, pose_view
 from .rear_five_link import LINKS, RearFiveLink
+from .rocker_kinematics import RockerError, RockerGeometry, RockerSample
 from .scene3d import Scene3D, Segment3D, pose_scene, wheel_segments
 from .springs import lower_arm_point
 from .sweep import limited_sweep, travel_grid
@@ -42,6 +43,7 @@ class WorkspaceSample:
     error: str | None
     spring: ElementMeasurement | None = None
     damper: ElementMeasurement | None = None
+    rocker: RockerSample | None = None
 
 
 @dataclass(frozen=True)
@@ -71,6 +73,10 @@ def static_scene(axle: Axle) -> tuple[Scene3D, tuple[SelectableLink, ...]]:
             segments.append(segment)
             targets.append(SelectableLink(axle.role, spec.code, segment))
     for prefix, kind in (('spring', 'spring'), ('damper', 'damper')):
+        config = axle.kinematic_elements
+        if (prefix == 'damper' and config is not None and config.type_code == axle.type_code and
+                config.rocker is not None and config.rocker.enabled):
+            continue  # Do not display the direct mount as if it were the rocker mechanism.
         low, high = axle.hardpoints.get(prefix + '_lo'), axle.hardpoints.get(prefix + '_up')
         if low is not None and high is not None:
             segments.append(Segment3D(low.as_tuple(), high.as_tuple(), kind))  # type: ignore[arg-type]
@@ -120,6 +126,8 @@ def measure_element(axle: Axle, model: RigidFiveLinkSolver, pose: Pose, name: st
         return unknown
     if config.type_code != axle.type_code:
         return ElementMeasurement(None, None, None, 'unknown', False, 'настройки относятся к другой схеме')
+    if name == 'damper' and config.rocker is not None and config.rocker.enabled:
+        return ElementMeasurement(None, None, None, 'unknown', False, 'для коромысла нужен расчёт ветви хода')
     setup: ElementSetup = getattr(config, name)
     if setup.lower is None or setup.upper is None:
         return unknown
@@ -148,6 +156,10 @@ def measure_element(axle: Axle, model: RigidFiveLinkSolver, pose: Pose, name: st
             raise ValueError('центры креплений совпадают или некорректны')
     except (KeyError, ValueError, ArithmeticError) as error:
         return ElementMeasurement(None, None, None, 'error', False, str(error))
+    return _classify_element(setup, low, high, length)
+
+
+def _classify_element(setup: ElementSetup, low: Point, high: Point, length: float) -> ElementMeasurement:
     minimum, maximum = setup.minimum_mm, setup.maximum_mm
     if minimum is not None and maximum is not None and minimum >= maximum:
         return ElementMeasurement(length, low, high, 'invalid', False, 'не проверено: минимум должен быть меньше максимума')
@@ -168,6 +180,28 @@ def measure_element(axle: Axle, model: RigidFiveLinkSolver, pose: Pose, name: st
     return ElementMeasurement(length, low, high, status, complete, detail)
 
 
+def _rocker_error_text(error: str | None) -> str:
+    messages = {
+        'zero rocker axis': 'нулевое направление оси',
+        'rocker attachment on axis': 'крепление находится на оси коромысла',
+        'zero rod length': 'нулевая длина тяги',
+        'zero damper length': 'совпадают центры амортизатора',
+        'undetermined or unreachable rocker angle': 'угол коромысла не определён или недостижим',
+        'unreachable or ambiguous rocker angle': 'положение недостижимо или неоднозначно',
+        'ambiguous rocker branch': 'неоднозначная ветвь коромысла',
+        'no suspension pose at zero': 'нет решения подвески в исходном положении',
+        'zero pose differs from rocker reference': 'исходное положение не совпадает с геометрией',
+        'zero pose does not match reference branch': 'не найдена исходная ветвь',
+        'not evaluated: zero rocker pose failed': 'не рассчитано из-за отказа в исходном положении',
+        'no suspension pose': 'нет положения подвески или крепления тяги',
+        'not evaluated after branch failure': 'не рассчитано после отказа на этой ветви',
+        'rocker angle step too large to track branch': 'слишком большой шаг угла для отслеживания ветви',
+        'invalid damper length': 'длина амортизатора некорректна',
+        'invalid point': 'некорректные координаты',
+    }
+    return messages.get(error or '', 'ошибка или неполные данные коромысла')
+
+
 def calculate(axle: Axle, start: float, end: float, spacing: float) -> WorkspaceResult:
     """Левая сторона поддержанной схемы, дискретная сетка с неподвижным кузовом."""
     if not supported(axle):
@@ -175,6 +209,21 @@ def calculate(axle: Axle, start: float, end: float, spacing: float) -> Workspace
     if not (-150 <= start <= 0 <= end <= 150) or not (5 <= spacing <= 30):
         raise ValueError('Диапазон должен включать ноль и быть в пределах −150…+150 мм; шаг 5…30 мм')
     travels = travel_grid(start, end, max_spacing_mm=spacing)
+    config = axle.kinematic_elements
+    rocker_setup = config.rocker if config is not None and config.type_code == axle.type_code else None
+    rocker_active = rocker_setup is not None and rocker_setup.enabled
+    rocker_by_travel: dict[float, RockerSample] = {}
+    rocker_error: str | None = None
+    if rocker_active and rocker_setup is not None:
+        from .rocker_workspace import calculate_rocker
+
+        try:
+            geometry = RockerGeometry(rocker_setup.pivot, rocker_setup.axis, rocker_setup.rod_rocker,
+                                      rocker_setup.rod_suspension, rocker_setup.damper_rocker, rocker_setup.damper_body)
+            rocker_by_travel = {s.travel_mm: s for s in
+                                calculate_rocker(axle, geometry, rocker_setup.mount, start, end, targets=travels)}
+        except (RockerError, ValueError, ArithmeticError) as error:
+            rocker_error = str(error)
     model = DoubleWishbone(axle, 'left') if axle.role == 'front' else RearFiveLink(axle, 'left')
     sweep = limited_sweep(model, travels, max_step_mm=2)
     samples = []
@@ -195,18 +244,39 @@ def calculate(axle: Axle, start: float, end: float, spacing: float) -> Workspace
         except ValueError:
             metrics = None
         spring = measure_element(axle, model, pose, 'spring')
-        damper = measure_element(axle, model, pose, 'damper')
-        extra = []
+        rocker = rocker_by_travel.get(item.travel_mm) if rocker_active else None
+        if rocker_active:
+            if rocker_error or rocker is None or rocker.pose is None:
+                detail = _rocker_error_text(rocker_error or (rocker.error if rocker is not None else None))
+                damper = ElementMeasurement(None, None, None, 'error', False, f'коромысло: {detail}')
+            else:
+                assert config is not None and rocker_setup is not None
+                damper = _classify_element(config.damper, rocker.pose.damper_rocker,
+                                           rocker_setup.damper_body, rocker.pose.damper_length_mm)
+        else:
+            damper = measure_element(axle, model, pose, 'damper')
+        extra: list[Segment3D] = []
         points = list(scene.points)
+        if rocker_active and rocker is not None and rocker.pose is not None and rocker_setup is not None:
+            original = np.array(rocker_setup.rod_suspension, dtype=float)
+            if rocker_setup.mount == 'lower_arm' and isinstance(model, DoubleWishbone):
+                rod_point = lower_arm_point(model, pose, original)
+            else:
+                rod_point = pose.point(original, model.center0)
+            moving_rod = (float(rod_point[0]), float(rod_point[1]), float(rod_point[2]))
+            extra.extend((Segment3D(moving_rod, rocker.pose.rod_rocker, 'rod'),
+                          Segment3D(rocker_setup.pivot, rocker.pose.rod_rocker, 'rocker'),
+                          Segment3D(rocker_setup.pivot, rocker.pose.damper_rocker, 'rocker')))
         for name, measurement in (('spring', spring), ('damper', damper)):
             if measurement.lower is not None and measurement.upper is not None:
                 if name == 'spring':
                     extra.append(Segment3D(measurement.lower, measurement.upper, 'spring'))
                 else:
                     extra.append(Segment3D(measurement.lower, measurement.upper, 'damper'))
-                points.extend(((name + '_lo', measurement.lower), (name + '_up', measurement.upper)))
+                if name != 'damper' or not rocker_active:
+                    points.extend(((name + '_lo', measurement.lower), (name + '_up', measurement.upper)))
         scene = Scene3D(scene.travel_mm, (*scene.segments, *extra), tuple(points))
-        samples.append(WorkspaceSample(item.travel_mm, scene, metrics, None, spring, damper))
+        samples.append(WorkspaceSample(item.travel_mm, scene, metrics, None, spring, damper, rocker))
     return WorkspaceResult(tuple(samples), sweep.reachable_droop_mm, sweep.reachable_bump_mm)
 
 

@@ -1,11 +1,12 @@
 """Экспериментальная связь тяги с дискретной кинематикой одной оси.
 
-Пока это программный API, не настройка проекта и не интерфейс. Геометрия
-коромысла задана в координатах левой стороны и неподвижного кузова.
+Геометрия коромысла задана в координатах левой стороны и неподвижного кузова.
+Этот API также используется рабочей областью при явно включённом коромысле.
 """
 from __future__ import annotations
 
-from math import isfinite
+from collections.abc import Sequence
+from math import ceil, isfinite
 
 import numpy as np
 
@@ -19,7 +20,7 @@ from .sweep import limited_sweep, travel_grid
 
 
 def calculate_rocker(axle: Axle, geometry: RockerGeometry, rod_mount: str,
-                     start_mm: float, end_mm: float) -> tuple[RockerSample, ...]:
+                     start_mm: float, end_mm: float, *, targets: Sequence[float] | None = None) -> tuple[RockerSample, ...]:
     """Кинематика тяги и амортизатора на сетке не крупнее 2 мм.
 
     Шарнир тяги жёстко связан с кулаком либо (только спереди) нижним рычагом.
@@ -35,7 +36,19 @@ def calculate_rocker(axle: Axle, geometry: RockerGeometry, rod_mount: str,
     if (type(start_mm) not in (int, float) or type(end_mm) not in (int, float) or
             not isfinite(start_mm) or not isfinite(end_mm) or not -150 <= start_mm <= 0 <= end_mm <= 150):
         raise ValueError('Диапазон должен включать ноль и быть в пределах −150…+150 мм')
-    travels = travel_grid(start_mm, end_mm, max_spacing_mm=2.)
+    if targets is None:
+        travels = travel_grid(start_mm, end_mm, max_spacing_mm=2.)
+    else:
+        if (len(targets) > 5000 or any(type(t) not in (int, float) or not isfinite(t) or
+                                       not start_mm <= t <= end_mm for t in targets)):
+            raise ValueError('Некорректные точки хода')
+        boundaries = sorted({start_mm, 0., end_mm, *targets})
+        travels = [boundaries[0]]
+        for a, b in zip(boundaries, boundaries[1:], strict=False):
+            count = ceil((b - a) / 2.)
+            travels.extend(b if i == count else a + (b - a) * i / count for i in range(1, count + 1))
+        if len(travels) > 5000:
+            raise ValueError('Слишком много точек хода')
     model = DoubleWishbone(axle, 'left') if axle.role == 'front' else RearFiveLink(axle, 'left')
     sweep = limited_sweep(model, travels, max_step_mm=2.)
     original = np.array(geometry.rod_suspension, dtype=float)

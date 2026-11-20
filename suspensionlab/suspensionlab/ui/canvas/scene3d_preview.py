@@ -22,7 +22,7 @@ from ...core.vehicle_schematic_visual import (
 from ...i18n import tr
 
 _COLORS = {"arm": "#3689e6", "knuckle": "#3689e6", "steering": "#bb8ce2", "spring": "#2ea86f",
-           "damper": "#dd9748", "wheel": "#8a98a8"}
+           "damper": "#dd9748", "wheel": "#8a98a8", "rod": "#e1ca58", "rocker": "#f07b83"}
 
 
 class Scene3DPreview(QWidget):
