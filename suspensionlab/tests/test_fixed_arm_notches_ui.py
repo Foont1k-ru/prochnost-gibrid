@@ -1,4 +1,4 @@
-"""Временная подрезка: явные зазоры, отдельные ветви и запрет устаревшего CAD."""
+"""Подрезка: явные зазоры, восстановление и запрет устаревшего CAD."""
 import json
 
 from PySide6.QtWidgets import QDialog, QFileDialog, QMessageBox
@@ -27,14 +27,14 @@ def editor(qtbot, monkeypatch):
     return controller, dialog
 
 
-def test_explicit_values_independent_and_not_saved(qtbot, monkeypatch, tmp_path):
+def test_explicit_values_independent_and_saved(qtbot, monkeypatch, tmp_path):
     controller, dialog = editor(qtbot, monkeypatch)
     anchors = dialog.preview.anchors
     assert all(not c.isChecked() for c in dialog._notch_checks.values())
     assert all(not f.text() for f in dialog._notch_clearances.values())
     old = dialog._cad_candidate
     dialog._notch_checks['front'].setChecked(True)
-    assert dialog.preview is not None and dialog._save.isEnabled()
+    assert dialog.preview is not None and not dialog._save.isEnabled()
     assert dialog._cad_candidate is None and not dialog._cad_is_current(old)
     assert 'зазор' in dialog._notch_status.text()
     front = dialog._notch_clearances['front']
@@ -55,13 +55,16 @@ def test_explicit_values_independent_and_not_saved(qtbot, monkeypatch, tmp_path)
     monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(path), ''))
     dialog._save_file()
     data = json.loads(path.read_text(encoding='utf-8'))
-    assert 'notches' not in data['geometry'] and data['geometry']['housings'] == housings()
+    assert data['version'] == '3' and data['geometry']['housings'] == housings()
+    assert data['geometry']['notches'] == {'front': 1.25, 'rear': 0.0}
+    assert dialog.confirm_close()
+    dialog._notch_checks['front'].setChecked(False)
+    assert dialog._state() != dialog._saved_state
     monkeypatch.setattr(QFileDialog, 'getOpenFileName', lambda *args: (str(path), ''))
     dialog._open_file()
-    assert all(not c.isChecked() for c in dialog._notch_checks.values())
-    assert all(not f.text() for f in dialog._notch_clearances.values())
+    assert all(c.isChecked() for c in dialog._notch_checks.values())
+    assert dialog._notch_values() == {'front': 1.25, 'rear': 0.0}
     assert dialog._housings == housings() and dialog.preview.anchors == anchors
-    dialog._notch_checks['front'].setChecked(True)
     dialog._notch_clearances['front'].setText('0')
     controller.project.front.hardpoints['lbj'].x += 1
     dialog._refresh()

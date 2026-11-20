@@ -45,6 +45,7 @@ from .canvas.fixed_arm_projection import SkeletonProjection
 from .canvas.fixed_arm_scene import LABELS, FixedArmScene, skeleton_scene
 from .controller import AppController
 from .fixed_arm_housings_dialog import FixedArmHousingsDialog
+from .fixed_arm_overlap import FixedArmOverlap
 from .weldment_3d import Weldment3D
 
 
@@ -149,7 +150,7 @@ class FixedArmSkeletonDialog(QDialog):
         cad_layout.addWidget(self._cad_note)
         notch_note = QLabel('Подрезка только в CAD-просмотре, отдельно для каждой ветви по её корпусу. '
                             'Укажите радиальный зазор явно (0 — без зазора), мм. '
-                            'Корпус не удлиняется; параметры подрезки в .slarm не сохраняются.', cad_tab)
+                            'Корпус не удлиняется. В .slarm сохраняются параметры, не CAD-результат.', cad_tab)
         notch_note.setWordWrap(True)
         cad_layout.addWidget(notch_note)
         self._notch_checks: dict[str, QCheckBox] = {}
@@ -173,6 +174,8 @@ class FixedArmSkeletonDialog(QDialog):
         self._notch_status = QLabel('', cad_tab)
         self._notch_status.setWordWrap(True)
         cad_layout.addWidget(self._notch_status)
+        self._overlap = FixedArmOverlap(self._cad_is_current, cad_tab)
+        cad_layout.addWidget(self._overlap)
         self._cad = Weldment3D(cad_tab, is_current=self._cad_is_current, fixed_skeleton=True)
         cad_layout.addWidget(self._cad, 1)
         self._tabs.addTab(cad_tab, '3D · детали (CAD)')
@@ -259,8 +262,11 @@ class FixedArmSkeletonDialog(QDialog):
 
     def _state(self) -> tuple[object, ...]:
         housing_state = json.dumps(self._housings, sort_keys=True, allow_nan=False)
+        notch_state = tuple((leg, self._notch_clearances[leg].text()) for leg in ('front', 'rear')
+                            if self._notch_checks[leg].isChecked())
         return (self.snapshot, self._from.value(), self._to.value(), self._spacing.value(),
-                self._radius.value(), self._wall.value(), self._bend_editor.state(), self._draft, housing_state)
+                self._radius.value(), self._wall.value(), self._bend_editor.state(), self._draft, housing_state,
+                notch_state)
 
     def _reset_notches(self) -> None:
         for leg in ('front', 'rear'):
@@ -306,8 +312,10 @@ class FixedArmSkeletonDialog(QDialog):
         return answer == QMessageBox.StandardButton.Yes and self._state() == state
 
     def shutdown(self) -> bool:
-        """Остановить CAD-процесс до уничтожения Qt-виджета."""
-        return self._cad.shutdown()
+        """Остановить оба CAD-процесса до уничтожения Qt-виджета."""
+        cad_stopped = self._cad.shutdown()
+        overlap_stopped = self._overlap.shutdown()
+        return cad_stopped and overlap_stopped
 
     def reject(self) -> None:
         if self.confirm_close() and self.shutdown():
@@ -334,6 +342,7 @@ class FixedArmSkeletonDialog(QDialog):
         self._cad_candidate = None
         self._cad_snapshot = None
         self._cad.set_document(None)
+        self._overlap.set_document(None)
         self._save.setEnabled(False)
         self._housing_edit.setEnabled(False)
         self._housing_remove.setEnabled(False)
@@ -416,6 +425,7 @@ class FixedArmSkeletonDialog(QDialog):
         self._cad_candidate = None
         self._cad_snapshot = None
         self._cad.set_document(None)
+        self._overlap.set_document(None)
         self._save.setEnabled(False)
         self._housing_edit.setEnabled(False)
         self._housing_remove.setEnabled(False)
@@ -659,6 +669,10 @@ class FixedArmSkeletonDialog(QDialog):
         self.snapshot = loaded.snapshot
         self._housings = loaded.housings
         self._reset_notches()
+        for leg, clearance in (loaded.notches or {}).items():
+            with QSignalBlocker(self._notch_checks[leg]), QSignalBlocker(self._notch_clearances[leg]):
+                self._notch_clearances[leg].setText(repr(clearance))
+                self._notch_checks[leg].setChecked(True)
         self._refresh()
         if self.snapshot is None or self.preview is None:
             self._file_status.setText('Схема изменилась во время открытия; снимок не принят.')
@@ -686,13 +700,14 @@ class FixedArmSkeletonDialog(QDialog):
             if self.controller.is_protected_export_target(path):
                 raise SkeletonFileError('Нельзя записать поверх проекта или автосохранения')
             write_skeleton(path, self.snapshot, self.controller.project, self._radius.value(),
-                           self._wall.value(), self._bend_editor.values(), self._housings)
+                           self._wall.value(), self._bend_editor.values(), self._housings, self._notch_values())
         except (SkeletonFileError, KimFormatError, OSError, ValueError, RuntimeError) as error:
             QMessageBox.warning(self, 'Сохранение скелета', str(error))
             self._refresh()
             return
         self._saved_state = self._state()
-        self._file_status.setText(f'Сохранён новый файл: {path}. Проект не изменён.')
+        self._file_status.setText(f'Сохранён новый файл: {path}. Проект не изменён; '
+                                  'параметры подрезки не подтверждают успешное CAD-построение.')
 
     def _range_changed(self, *_args: object) -> None:
         self._file_status.clear()
@@ -788,10 +803,12 @@ class FixedArmSkeletonDialog(QDialog):
                 cad_document = make_housing_preview(document['tubes'], self._housings, notches)
             except (HousingError, ValueError) as error:
                 cad_document = None
-                self._notch_status.setText(f'CAD скрыт: {error}. Скелет и корпуса можно сохранить отдельно.')
+                self._save.setEnabled(False)
+                self._notch_status.setText(f'CAD и сохранение скрыты: {error}. Исправьте ввод или отключите подрезку.')
         self._cad_candidate = cad_document
         self._cad_snapshot = self.snapshot if cad_document is not None else None
         self._cad.set_document(cad_document)
+        self._overlap.set_document(cad_document)
         self._housing_status.setText('Оба корпуса заданы и центры опор подтверждены.' if self._housings is not None
                                      else 'Корпуса не заданы.')
         self._cad_note.setText('Предварительный CAD: выбранные ветви подрезаются только по своим корпусам; '

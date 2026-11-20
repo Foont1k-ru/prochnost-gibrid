@@ -57,6 +57,10 @@ def main() -> int:
         from suspensionlab.core.cad_weldment_worker import main as weldment_main
 
         return weldment_main(sys.argv[2:])
+    if len(sys.argv) == 4 and sys.argv[1] == "--fixed-arm-overlap-worker":
+        from suspensionlab.core.cad_fixed_arm_overlap import main as overlap_main
+
+        return overlap_main(sys.argv[2:])
     from suspensionlab.app import main as app_main
 
     return app_main()

@@ -7,6 +7,8 @@ on:
       - 'suspensionlab/suspensionlab/model/fixed_arm_skeleton*.py'
       - 'suspensionlab/suspensionlab/model/fixed_arm_housings.py'
       - 'suspensionlab/suspensionlab/ui/fixed_arm_housings_dialog.py'
+      - 'suspensionlab/suspensionlab/ui/fixed_arm_overlap.py'
+      - 'suspensionlab/suspensionlab/core/cad_fixed_arm_overlap*.py'
       - 'suspensionlab/suspensionlab/ui/fixed_arm_skeleton_dialog.py'
       - 'suspensionlab/suspensionlab/ui/canvas/fixed_arm_*.py'
       - 'suspensionlab/tests/test_fixed_arm*.py'
@@ -46,6 +48,7 @@ jobs:
           tests/test_fixed_arm_interactive_ui.py tests/test_fixed_arm_tubes_cad.py tests/test_fixed_arm_tubes_cad_ui.py
           tests/test_fixed_arm_housings.py tests/test_fixed_arm_housings_ui.py tests/test_fixed_arm_housings_cad.py
           tests/test_fixed_arm_notches.py tests/test_fixed_arm_notches_ui.py tests/test_fixed_arm_notches_cad.py
+          tests/test_fixed_arm_notches_io.py tests/test_fixed_arm_overlap_ui.py tests/test_fixed_arm_overlap_cad.py
           --junitxml=fixed-arm-results.xml
       - name: Сохранить отчёт
         if: always()

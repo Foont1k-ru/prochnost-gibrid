@@ -88,6 +88,15 @@ def test_weldment_worker_is_dispatched_before_gui(monkeypatch) -> None:
     assert packaging_entry.main() == 11 and called == [["source", "output", "report", "2.0"]]
 
 
+def test_fixed_arm_overlap_worker_is_dispatched_before_gui(monkeypatch) -> None:
+    worker = ModuleType('suspensionlab.core.cad_fixed_arm_overlap')
+    called: list[list[str]] = []
+    worker.main = lambda args: called.append(args) or 31  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, 'suspensionlab.core.cad_fixed_arm_overlap', worker)
+    monkeypatch.setattr(sys, 'argv', ['app', '--fixed-arm-overlap-worker', 'source', 'output'])
+    assert packaging_entry.main() == 31 and called == [['source', 'output']]
+
+
 def test_sketch_worker_routes_both_old_and_direction_arguments(monkeypatch) -> None:
     worker = ModuleType("suspensionlab.core.sketch_solid_worker")
     called: list[list[str]] = []

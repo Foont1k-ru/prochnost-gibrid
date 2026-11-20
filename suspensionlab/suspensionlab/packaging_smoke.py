@@ -391,6 +391,14 @@ def run_cad_check() -> None:
         _require(len(mesh.part_names) == 4 and fixed_dialog._cad_candidate is not None and
                  fixed_dialog._cad_candidate.get('notches') == {'front': 0.},
                  "Подрезка передней трубы по корпусу не построена")
+        overlap = fixed_dialog._overlap
+        overlap._start()
+        deadline = monotonic() + 60
+        while overlap._worker is not None and monotonic() < deadline:
+            app.processEvents()
+            sleep(0.02)
+        _require(overlap._worker is None and 'не проверка касания' in overlap._status.text(),
+                 "Изолированная проверка пересечения труб недоступна: " + overlap._status.text())
         with TemporaryDirectory(prefix="suspensionlab-fixed-arm-reopen-") as directory:
             source = Path(directory) / "скелет.slarm"
             with patch.object(QFileDialog, "getSaveFileName", return_value=(str(source), "")):
@@ -400,11 +408,12 @@ def run_cad_check() -> None:
             with patch.object(QFileDialog, "getOpenFileName", return_value=(str(source), "")):
                 fixed_dialog._open_file()
             _require(fixed_dialog.preview is not None and fixed_dialog.preview.anchors == anchors and
-                     fixed_dialog._housings is not None and not fixed_dialog._notch_checks['front'].isChecked() and
-                     source.read_bytes() == original,
-                     "Снимок с корпусами не открыт без изменения файла или режим подрезки не сброшен")
+                     fixed_dialog._housings is not None and fixed_dialog._notch_checks['front'].isChecked() and
+                     fixed_dialog._notch_values() == {'front': 0.} and source.read_bytes() == original,
+                     "Снимок с корпусами и параметрами подрезки не восстановлен")
             mesh = wait_for_mesh()
-            _require(len(mesh.part_names) == 4, "Корпуса не восстановлены в CAD")
+            _require(len(mesh.part_names) == 4 and panel._document is not None and
+                     panel._document.get('notches') == {'front': 0.}, "Подрезка не восстановлена в CAD")
     finally:
         with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes):
             fixed_dialog.close()
