@@ -28,6 +28,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..core.cad_fixed_arm_overlap_job import SuggestionResult
+from ..core.fixed_arm_suggestions import candidate_document
 from ..model.bent_tube import make_bend_path
 from ..model.fixed_arm_housings import (
     HousingError,
@@ -154,6 +156,16 @@ class FixedArmSkeletonDialog(QDialog):
                                 'Шаровой, швов и проверки зазоров или прочности нет.', cad_tab)
         self._cad_note.setWordWrap(True)
         cad_layout.addWidget(self._cad_note)
+        trim_history_row = QHBoxLayout()
+        self._trim_undo = QPushButton('Отменить подрезку', cad_tab)
+        self._trim_redo = QPushButton('Повторить подрезку', cad_tab)
+        self._trim_undo.setEnabled(False)
+        self._trim_redo.setEnabled(False)
+        self._trim_undo.clicked.connect(self._undo_trim)
+        self._trim_redo.clicked.connect(self._redo_trim)
+        trim_history_row.addWidget(self._trim_undo)
+        trim_history_row.addWidget(self._trim_redo)
+        cad_layout.addLayout(trim_history_row)
         self._cad_tools = QTabWidget(cad_tab)
         self._cad_tools.setMaximumHeight(185)
         self._cad_tools.setMinimumHeight(145)
@@ -189,8 +201,8 @@ class FixedArmSkeletonDialog(QDialog):
             housing_layout.addLayout(row)
             self._notch_checks[leg] = check
             self._notch_clearances[leg] = field
-            check.toggled.connect(self._refresh)
-            field.textChanged.connect(self._refresh)
+            check.toggled.connect(self._trim_edited)
+            field.textChanged.connect(self._trim_edited)
         housing_layout.addStretch(1)
         self._cad_tools.addTab(housing_area, 'По корпусам')
         joint_area, joint_body, joint_layout = tool_page()
@@ -216,10 +228,14 @@ class FixedArmSkeletonDialog(QDialog):
         joint_layout.addLayout(joint_row)
         joint_layout.addStretch(1)
         self._cad_tools.addTab(joint_area, 'По другой трубе')
-        self._tube_joint.currentIndexChanged.connect(self._refresh)
-        self._joint_clearance.textChanged.connect(self._refresh)
+        self._tube_joint.currentIndexChanged.connect(self._trim_edited)
+        self._joint_clearance.textChanged.connect(self._trim_edited)
+        self._trim_history: list[tuple[Any, ...]] = [self._trim_state()]
+        self._trim_history_index = 0
         overlap_area, overlap_body, overlap_layout = tool_page()
         self._overlap = FixedArmOverlap(self._cad_is_current, overlap_body)
+        self._overlap.set_apply_callback(self._apply_cut_suggestion)
+        self._overlap.markersRequested.connect(self._show_closest_points)
         overlap_layout.addWidget(self._overlap)
         overlap_layout.addStretch(1)
         self._cad_tools.addTab(overlap_area, 'Пересечения и расстояния')
@@ -315,6 +331,60 @@ class FixedArmSkeletonDialog(QDialog):
         self._edit_radius.setVisible(skeleton_view)
         self._remove_bend.setVisible(skeleton_view)
 
+    def _trim_state(self) -> tuple[Any, ...]:
+        return (self._notch_checks['front'].isChecked(), self._notch_clearances['front'].text(),
+                self._notch_checks['rear'].isChecked(), self._notch_clearances['rear'].text(),
+                self._tube_joint.currentData(), self._joint_clearance.text())
+
+    def _trim_buttons(self) -> None:
+        enabled = self.snapshot is not None and self._draft is None
+        self._trim_undo.setEnabled(enabled and self._trim_history_index > 0)
+        self._trim_redo.setEnabled(enabled and self._trim_history_index + 1 < len(self._trim_history))
+
+    def _reset_trim_history(self) -> None:
+        self._trim_history = [self._trim_state()]
+        self._trim_history_index = 0
+        self._trim_buttons()
+
+    def _record_trim_state(self) -> None:
+        state = self._trim_state()
+        if state != self._trim_history[self._trim_history_index]:
+            del self._trim_history[self._trim_history_index + 1:]
+            self._trim_history.append(state)
+            if len(self._trim_history) > 101:
+                self._trim_history.pop(0)
+            self._trim_history_index = len(self._trim_history) - 1
+        self._trim_buttons()
+
+    def _trim_edited(self, *_args: object) -> None:
+        self._record_trim_state()
+        self._refresh()
+
+    def _restore_trim_state(self, index: int) -> None:
+        if self.snapshot is None or self._draft is not None or not 0 <= index < len(self._trim_history):
+            return
+        front, front_value, rear, rear_value, target, joint_value = self._trim_history[index]
+        controls = [self._notch_checks['front'], self._notch_clearances['front'],
+                    self._notch_checks['rear'], self._notch_clearances['rear'],
+                    self._tube_joint, self._joint_clearance]
+        blockers = [QSignalBlocker(widget) for widget in controls]
+        self._notch_checks['front'].setChecked(front)
+        self._notch_clearances['front'].setText(front_value)
+        self._notch_checks['rear'].setChecked(rear)
+        self._notch_clearances['rear'].setText(rear_value)
+        self._tube_joint.setCurrentIndex(self._tube_joint.findData(target))
+        self._joint_clearance.setText(joint_value)
+        del blockers
+        self._trim_history_index = index
+        self._trim_buttons()
+        self._refresh()
+
+    def _undo_trim(self) -> None:
+        self._restore_trim_state(self._trim_history_index - 1)
+
+    def _redo_trim(self) -> None:
+        self._restore_trim_state(self._trim_history_index + 1)
+
     def _state(self) -> tuple[object, ...]:
         housing_state = json.dumps(self._housings, sort_keys=True, allow_nan=False)
         notch_state = tuple((leg, self._notch_clearances[leg].text()) for leg in ('front', 'rear')
@@ -339,6 +409,7 @@ class FixedArmSkeletonDialog(QDialog):
             self._tube_joint.setEnabled(False)
             self._joint_clearance.setEnabled(False)
         self._notch_status.clear()
+        self._reset_trim_history()
 
     def _notch_values(self) -> dict[str, float] | None:
         values: dict[str, float] = {}
@@ -359,6 +430,39 @@ class FixedArmSkeletonDialog(QDialog):
         except ValueError as error:
             raise HousingError('Укажите радиальный зазор между трубами (0–100 мм)') from error
         return validate_tube_joint({'target': target, 'radial_clearance_mm': clearance})
+
+    def _show_closest_points(self, points: object) -> None:
+        if not hasattr(self, '_cad'):
+            return
+        if (not isinstance(points, tuple) or not points or self._cad_candidate is None or
+                not self._cad_is_current(self._cad_candidate) or self._cad._document != self._cad_candidate or
+                not self._cad._ready or self._cad._view.mesh is None):
+            self._cad._view.set_markers(())
+            return
+        self._cad._view.set_markers(points)
+
+    def _apply_cut_suggestion(self, document: dict[str, Any], result: SuggestionResult) -> None:
+        if (not self._cad_is_current(document) or result.outcome != 'candidate' or result.kind not in ('joint', 'housing') or
+                result.target not in ('front', 'rear') or result.radial_clearance_mm is None):
+            return
+        try:
+            proposed = candidate_document(document, result.kind, result.target, result.radial_clearance_mm)
+        except (ValueError, TypeError, KeyError):
+            return
+        if result.kind == 'joint':
+            with QSignalBlocker(self._tube_joint), QSignalBlocker(self._joint_clearance):
+                self._tube_joint.setCurrentIndex(self._tube_joint.findData(result.target))
+                self._joint_clearance.setText(repr(result.radial_clearance_mm))
+        else:
+            check, field = self._notch_checks[result.target], self._notch_clearances[result.target]
+            with QSignalBlocker(check), QSignalBlocker(field):
+                check.setChecked(True)
+                field.setText(repr(result.radial_clearance_mm))
+        self._record_trim_state()
+        self._refresh()
+        if self._cad_candidate != proposed:
+            self._notch_status.setText('Применённые параметры не совпадают с проверенным кандидатом; '
+                                       'повторите проверку перед использованием.')
 
     def _cad_is_current(self, candidate: dict[str, Any]) -> bool:
         if (self.snapshot is None or self.preview is None or self.snapshot != self._cad_snapshot or
@@ -412,6 +516,7 @@ class FixedArmSkeletonDialog(QDialog):
 
     def _clear_preview(self) -> None:
         self._draft = None
+        self._trim_buttons()
         self.preview = None
         self._cad_candidate = None
         self._cad_snapshot = None
@@ -505,6 +610,7 @@ class FixedArmSkeletonDialog(QDialog):
         if leg in bends:
             return
         self._draft = (leg, point)
+        self._trim_buttons()
         # The draft is not committed geometry: never display the old CAD as its result.
         self._cad_candidate = None
         self._cad_snapshot = None
@@ -763,6 +869,7 @@ class FixedArmSkeletonDialog(QDialog):
             with QSignalBlocker(self._tube_joint), QSignalBlocker(self._joint_clearance):
                 self._tube_joint.setCurrentIndex(self._tube_joint.findData(loaded.tube_joint['target']))
                 self._joint_clearance.setText(repr(loaded.tube_joint['radial_clearance_mm']))
+        self._reset_trim_history()
         self._refresh()
         if self.snapshot is None or self.preview is None:
             self._file_status.setText('Схема изменилась во время открытия; снимок не принят.')

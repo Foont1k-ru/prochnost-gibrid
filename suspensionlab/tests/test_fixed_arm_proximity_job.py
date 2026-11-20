@@ -65,3 +65,16 @@ def test_timeout_has_no_results():
     document = fixed_arm_tube_document(snapshot, project, 10, 2)
     with pytest.raises(OverlapJobError, match='timeout'):
         FixedArmOverlapJob().run_proximity(document, timeout=0.000001)
+
+
+def test_points_validated_and_only_accepted_for_separated_shapes():
+    doc = {'format': PREVIEW_FORMAT, 'housings': None}
+    row = {'left': 'tube_front', 'right': 'tube_rear', 'distance_mm': 2, 'overlap_mm3': 0,
+           'threshold_mm3': 1e-6, 'points': [[0, 0, 0], [2, 0, 0]], 'solutions': 2}
+    pair = _parse_proximity([row], doc).pairs[0]
+    assert pair.points == ((0, 0, 0), (2, 0, 0)) and pair.solutions == 2
+    for key, value in (('points', [[0, 0, 0], [3, 0, 0]]), ('solutions', True), ('overlap_mm3', 1)):
+        invalid = deepcopy(row)
+        invalid[key] = value
+        with pytest.raises(OverlapJobError):
+            _parse_proximity([invalid], doc)

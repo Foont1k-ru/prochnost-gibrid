@@ -99,6 +99,8 @@ def test_fixed_arm_overlap_worker_is_dispatched_before_gui(monkeypatch) -> None:
     assert packaging_entry.main() == 31 and called[-1] == ['source', 'output', 'all']
     monkeypatch.setattr(sys, 'argv', ['app', '--fixed-arm-overlap-worker', 'source', 'output', 'proximity'])
     assert packaging_entry.main() == 31 and called[-1] == ['source', 'output', 'proximity']
+    monkeypatch.setattr(sys, 'argv', ['app', '--fixed-arm-overlap-worker', 'source', 'output', 'suggest'])
+    assert packaging_entry.main() == 31 and called[-1] == ['source', 'output', 'suggest']
 
 
 def test_sketch_worker_routes_both_old_and_direction_arguments(monkeypatch) -> None:

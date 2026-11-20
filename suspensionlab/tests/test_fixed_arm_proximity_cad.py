@@ -42,6 +42,12 @@ def test_analytic_boxes(monkeypatch, offset, status, distance, volume):
     assert pair.status == status
     assert pair.distance_mm == pytest.approx(distance, abs=1e-7)
     assert pair.overlap_mm3 == pytest.approx(volume, abs=1e-8)
+    if status == 'gap':
+        assert pair.points is not None and pair.solutions >= 1
+        assert pair.points[0][0] == pytest.approx(1)
+        assert pair.points[1][0] == pytest.approx(offset)
+    else:
+        assert pair.points is None
 
 
 def test_complete_containment_is_intersection_not_positive_surface_gap(monkeypatch):

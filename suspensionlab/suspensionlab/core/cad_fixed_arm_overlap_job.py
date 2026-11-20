@@ -52,6 +52,8 @@ class PairProximity:
     overlap_mm3: float | None
     threshold_mm3: float | None
     distance_mm: float | None
+    points: tuple[tuple[float, float, float], tuple[float, float, float]] | None = None
+    solutions: int | None = None
 
     @property
     def status(self) -> str:
@@ -69,6 +71,16 @@ class PairProximity:
 @dataclass(frozen=True, slots=True)
 class ProximityResult:
     pairs: tuple[PairProximity, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class SuggestionResult:
+    outcome: str
+    baseline: ProximityResult
+    kind: str | None = None
+    target: str | None = None
+    radial_clearance_mm: float | None = None
+    after: ProximityResult | None = None
 
 
 def _read_numbers(item: dict[str, Any]) -> tuple[float, float]:
@@ -116,17 +128,77 @@ def _parse_proximity(value: Any, document: dict[str, Any]) -> ProximityResult:
         if set(item) == {'left', 'right', 'error'} and item['error'] == 'measurement_failed':
             result.append(PairProximity(left, right, None, None, None))
             continue
-        if set(item) != {'left', 'right', 'overlap_mm3', 'threshold_mm3', 'distance_mm'}:
+        base_keys = {'left', 'right', 'overlap_mm3', 'threshold_mm3', 'distance_mm'}
+        if set(item) not in (base_keys, base_keys | {'points', 'solutions'}):
             raise OverlapJobError('output')
         overlap, threshold = _read_numbers(item)
         distance = item['distance_mm']
         try:
             if type(distance) not in (int, float) or not math.isfinite(distance) or not 0 <= distance <= 1e12:
                 raise OverlapJobError('output')
-            result.append(PairProximity(left, right, overlap, threshold, float(distance)))
+            points = None
+            solutions = None
+            if 'points' in item:
+                values = item['points']
+                solutions = item['solutions']
+                if (overlap != 0 or distance <= DISTANCE_TOLERANCE_MM or type(solutions) is not int or
+                        not 1 <= solutions <= 1000000 or not isinstance(values, list) or len(values) != 2 or
+                        any(not isinstance(p, list) or len(p) != 3 for p in values)):
+                    raise OverlapJobError('output')
+                if any(type(v) not in (int, float) or not math.isfinite(v) or abs(v) > 1e10 for p in values for v in p):
+                    raise OverlapJobError('output')
+                points = ((float(values[0][0]), float(values[0][1]), float(values[0][2])),
+                          (float(values[1][0]), float(values[1][1]), float(values[1][2])))
+                if abs(math.dist(points[0], points[1]) - distance) > max(1e-5, distance * 1e-8):
+                    raise OverlapJobError('output')
+            result.append(PairProximity(left, right, overlap, threshold, float(distance), points, solutions))
         except (TypeError, ValueError, OverflowError) as error:
             raise OverlapJobError('output') from error
     return ProximityResult(tuple(result))
+
+
+def _parse_suggestion(result: Any, request: dict[str, Any]) -> SuggestionResult:
+    from .fixed_arm_suggestions import _not_worse, candidate_document, satisfies, validate_request
+
+    doc, left, right, minimum = validate_request(request)
+    if not isinstance(result, dict) or result.get('outcome') not in ('candidate', 'already', 'unverified', 'no_candidate'):
+        raise OverlapJobError('output')
+    outcome = result['outcome']
+    keys = {'status', 'outcome', 'baseline'}
+    if outcome == 'candidate':
+        keys |= {'kind', 'target', 'radial_clearance_mm', 'after'}
+    if set(result) != keys:
+        raise OverlapJobError('output')
+    baseline = _parse_proximity(result['baseline'], doc)
+    if outcome == 'already':
+        selected = next((pair for pair in baseline.pairs if (pair.left, pair.right) == (left, right)), None)
+        if (selected is None or not satisfies(selected, minimum) or
+                any(pair.status in ('error', 'uncertain_overlap') for pair in baseline.pairs)):
+            raise OverlapJobError('output')
+    if outcome != 'candidate':
+        return SuggestionResult(outcome, baseline)
+    if any(pair.status in ('error', 'uncertain_overlap') for pair in baseline.pairs):
+        raise OverlapJobError('output')
+    kind, target, clearance = result['kind'], result['target'], result['radial_clearance_mm']
+    allowed = {('tube_front', 'tube_rear'): {('joint', 'front'), ('joint', 'rear')},
+               ('tube_front', 'housing_front'): {('housing', 'front')},
+               ('tube_rear', 'housing_rear'): {('housing', 'rear')}}
+    if (kind, target) not in allowed.get((left, right), set()) or type(clearance) not in (int, float):
+        raise OverlapJobError('output')
+    if not math.isfinite(clearance) or clearance not in {min(100.0, minimum * scale) for scale in (1, 2, 4)}:
+        raise OverlapJobError('output')
+    try:
+        candidate = candidate_document(doc, kind, target, clearance)
+        after = _parse_proximity(result['after'], candidate)
+        selected = next(p for p in after.pairs if (p.left, p.right) == (left, right))
+        if (not satisfies(selected, minimum) or
+                not all((a.left, a.right) == (b.left, b.right) and
+                        ((a.left, a.right) == (left, right) or _not_worse(a, b))
+                        for a, b in zip(baseline.pairs, after.pairs, strict=True))):
+            raise OverlapJobError('output')
+    except (ValueError, TypeError, KeyError, StopIteration, OverflowError) as error:
+        raise OverlapJobError('output') from error
+    return SuggestionResult(outcome, baseline, kind, target, float(clearance), after)
 
 
 class FixedArmOverlapJob:
@@ -160,8 +232,16 @@ class FixedArmOverlapJob:
             raise OverlapJobError('output')
         return result
 
-    def _run(self, document: dict[str, Any], *, timeout: float,
-             mode: str) -> OverlapResult | PairwiseResult | ProximityResult:
+    def run_suggestion(self, document: dict[str, Any], left: str, right: str, minimum_mm: float,
+                       *, timeout: float = 180) -> SuggestionResult:
+        request = {'document': document, 'left': left, 'right': right, 'minimum_mm': minimum_mm}
+        result = self._run(document, timeout=timeout, mode='suggest', request=request)
+        if not isinstance(result, SuggestionResult):
+            raise OverlapJobError('output')
+        return result
+
+    def _run(self, document: dict[str, Any], *, timeout: float, mode: str,
+             request: dict[str, Any] | None = None) -> OverlapResult | PairwiseResult | ProximityResult | SuggestionResult:
         if self._cancelled.is_set():
             raise OverlapJobError('cancelled')
         try:
@@ -169,7 +249,11 @@ class FixedArmOverlapJob:
                 validate_housing_preview(document)
             elif not weldment_source_matches(document):
                 raise ValueError('source')
-            content = json.dumps(document, ensure_ascii=False, allow_nan=False).encode('utf-8')
+            if mode == 'suggest':
+                from .fixed_arm_suggestions import validate_request
+                validate_request(request)
+            content = json.dumps(request if mode == 'suggest' else document,
+                                 ensure_ascii=False, allow_nan=False).encode('utf-8')
             if len(content) > MAX_PROJECT_BYTES:
                 raise ValueError('size')
             snapshot = json.loads(content)
@@ -210,13 +294,15 @@ class FixedArmOverlapJob:
             if self._cancelled.is_set():
                 raise OverlapJobError('cancelled')
             try:
-                if code != 0 or not target.is_file() or target.stat().st_size > 4096:
+                if code != 0 or not target.is_file() or target.stat().st_size > 16384:
                     raise OverlapJobError('failed')
                 from ..model.project_io import _unique_object
 
                 result = json.loads(target.read_text(encoding='utf-8'), object_pairs_hook=_unique_object)
                 if not isinstance(result, dict) or result.get('status') != 'ok':
                     raise OverlapJobError('output')
+                if mode == 'suggest':
+                    return _parse_suggestion(result, snapshot)
                 if mode in ('all', 'proximity'):
                     if set(result) != {'status', 'pairs'}:
                         raise OverlapJobError('output')

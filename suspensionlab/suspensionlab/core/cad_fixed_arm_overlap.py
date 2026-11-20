@@ -86,8 +86,8 @@ def measure_all_pairs(document: dict[str, Any]) -> list[dict[str, Any]]:
     return result
 
 
-def _distance(left: Any, right: Any) -> float:
-    """Минимальное расстояние между CAD-телами, включая вложение одного в другое."""
+def _distance(left: Any, right: Any) -> tuple[float, list[list[float]], int]:
+    """Расстояние и одна из пар ближайших точек на CAD-телах."""
     from OCP.BRepExtrema import BRepExtrema_DistShapeShape
 
     calculation = BRepExtrema_DistShapeShape(left, right)
@@ -96,7 +96,13 @@ def _distance(left: Any, right: Any) -> float:
     value = float(calculation.Value())
     if not math.isfinite(value) or value < 0 or value > 1e12:
         raise ValueError('distance_failed')
-    return value
+    points = []
+    for p in (calculation.PointOnShape1(1), calculation.PointOnShape2(1)):
+        coordinates = [float(p.X()), float(p.Y()), float(p.Z())]
+        if any(not math.isfinite(v) or abs(v) > 1e10 for v in coordinates):
+            raise ValueError('distance_failed')
+        points.append(coordinates)
+    return value, points, calculation.NbSolution()
 
 
 def measure_proximity(document: dict[str, Any]) -> list[dict[str, Any]]:
@@ -105,6 +111,8 @@ def measure_proximity(document: dict[str, Any]) -> list[dict[str, Any]]:
     Ошибка отдельной пары не выдаётся за нулевое расстояние и не скрывает другие пары.
     Ошибка построения исходных тел отклоняет весь отчёт.
     """
+    from .cad_fixed_arm_overlap_job import DISTANCE_TOLERANCE_MM
+
     parts = _build_parts(document)
     names = ('tube_front', 'tube_rear', 'housing_front', 'housing_rear')[:len(parts)]
     volumes = [_volume(part) for part in parts]
@@ -115,8 +123,10 @@ def measure_proximity(document: dict[str, Any]) -> list[dict[str, Any]]:
         pair: dict[str, Any] = {'left': names[left], 'right': names[right]}
         try:
             measured = _measure_pair(parts[left], parts[right], volumes[left], volumes[right])
-            distance = _distance(parts[left], parts[right])
+            distance, points, solutions = _distance(parts[left], parts[right])
             pair.update(measured, distance_mm=distance)
+            if measured['overlap_mm3'] == 0 and distance > DISTANCE_TOLERANCE_MM:
+                pair.update(points=points, solutions=solutions)
         except Exception:
             pair['error'] = 'measurement_failed'
         result.append(pair)
@@ -125,7 +135,7 @@ def measure_proximity(document: dict[str, Any]) -> list[dict[str, Any]]:
 
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
-    if len(args) not in (2, 3) or (len(args) == 3 and args[2] not in ('all', 'proximity')):
+    if len(args) not in (2, 3) or (len(args) == 3 and args[2] not in ('all', 'proximity', 'suggest')):
         return 2
     source, target = map(Path, args[:2])
     try:
@@ -135,8 +145,11 @@ def main(argv: list[str] | None = None) -> int:
             payload = measure_overlap(data)
         elif args[2] == 'all':
             payload = {'pairs': measure_all_pairs(data)}
-        else:
+        elif args[2] == 'proximity':
             payload = {'pairs': measure_proximity(data)}
+        else:
+            from .fixed_arm_suggestions import suggest
+            payload = suggest(data)
         target.write_text(json.dumps({'status': 'ok', **payload}, allow_nan=False), encoding='utf-8')
         return 0
     except Exception:

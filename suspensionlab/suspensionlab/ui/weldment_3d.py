@@ -145,6 +145,7 @@ class Weldment3D(QWidget):
         self._ready = False
         self._pending = None
         self._timer.stop()
+        self._view.set_markers(())
         self._view.set_mesh(None)
         self._clear_parts()
         self._retry.setEnabled(False)

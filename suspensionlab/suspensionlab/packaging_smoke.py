@@ -422,6 +422,17 @@ def run_cad_check() -> None:
         _require(overlap._worker is None and overlap._table.rowCount() == 6 and
                  'ошибок: 0' in overlap._status.text(),
                  "Проверка расстояний деталей недоступна: " + overlap._status.text())
+        overlap._minimum.setText('0.5')
+        _require(overlap._suggest_button.isEnabled(), "Подбор не принимает явный минимум")
+        before_candidate = fixed_dialog._cad_candidate
+        overlap._start_suggestion()
+        deadline = monotonic() + 180
+        while overlap._worker is not None and monotonic() < deadline:
+            app.processEvents()
+            sleep(0.02)
+        _require(overlap._worker is None and fixed_dialog._cad_candidate == before_candidate and
+                 ('Подбор завершён' in overlap._status.text() or 'Предложение не применено' in overlap._status.text()),
+                 "Проверка предложений недоступна или изменила исходные параметры: " + overlap._status.text())
         with TemporaryDirectory(prefix="suspensionlab-fixed-arm-reopen-") as directory:
             source = Path(directory) / "скелет.slarm"
             with patch.object(QFileDialog, "getSaveFileName", return_value=(str(source), "")):
