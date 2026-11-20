@@ -31,6 +31,7 @@ permissions:
 jobs:
   test:
     name: Python и Qt на Windows
+    if: github.event_name != 'workflow_dispatch' || inputs.diagnostic_run_id == ''
     runs-on: windows-latest
     timeout-minutes: 20
     defaults:
@@ -67,6 +68,7 @@ jobs:
 
   python311-compatibility:
     name: Python 3.11 / Qt — ${{ matrix.os }}
+    if: github.event_name != 'workflow_dispatch' || inputs.diagnostic_run_id == ''
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
     strategy:
@@ -238,6 +240,17 @@ jobs:
           } else { throw 'Invalid report type' }
           gh run download $env:RUN_ID --name $artifact --dir diagnostic-report
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          if (-not (Test-Path $report)) { throw 'Report missing' }
+          if (-not (Test-Path $report)) {
+            # A killed or timed-out pytest cannot write JUnit. Expose the saved
+            # console tail as a notice, not as proof of a successful test.
+            $console = 'diagnostic-report/python311-console.txt'
+            if (-not (Test-Path $console)) { throw 'Report and console missing' }
+            $text = Get-Content -Raw -Encoding utf8 $console
+            if (-not $text) { throw 'Report missing and console empty' }
+            $tail = $text.Substring([Math]::Max(0, $text.Length - 10000))
+            $tail = $tail.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+            Write-Output "::warning title=JUnit отсутствует; хвост консоли::$tail"
+            exit 0
+          }
           python scripts/annotate_pytest.py $report
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
