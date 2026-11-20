@@ -2,14 +2,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import cos, isfinite, pi, sin
+from math import cos, dist, isfinite, pi, sin
+
+import numpy as np
 
 from ..model.entities import Axle
-from .double_wishbone import DoubleWishbone, Pose
+from ..model.kinematic_elements import ElementSetup
+from .double_wishbone import DoubleWishbone, Pose, RigidFiveLinkSolver
 from .metrics import wheel_angles
 from .pose_view import Point, pose_view
 from .rear_five_link import LINKS, RearFiveLink
 from .scene3d import Scene3D, Segment3D, pose_scene, wheel_segments
+from .springs import lower_arm_point
 from .sweep import limited_sweep, travel_grid
 from .vehicle_schematic_scene import SelectableLink
 
@@ -21,11 +25,23 @@ class WorkspaceAngles:
 
 
 @dataclass(frozen=True)
+class ElementMeasurement:
+    length_mm: float | None
+    lower: Point | None
+    upper: Point | None
+    status: str
+    limits_complete: bool
+    detail: str
+
+
+@dataclass(frozen=True)
 class WorkspaceSample:
     travel_mm: float
     scene: Scene3D | None
     metrics: WorkspaceAngles | None
     error: str | None
+    spring: ElementMeasurement | None = None
+    damper: ElementMeasurement | None = None
 
 
 @dataclass(frozen=True)
@@ -94,6 +110,64 @@ def rear_scene(model: RearFiveLink, pose: Pose, axle: Axle) -> Scene3D:
     return Scene3D(pose.travel_mm, tuple(segments), tuple(points))
 
 
+def measure_element(axle: Axle, model: RigidFiveLinkSolver, pose: Pose, name: str) -> ElementMeasurement:
+    """Проверяет только расстояние центров креплений в этом решённом положении."""
+    unknown = ElementMeasurement(None, None, None, 'unknown', False, 'крепления не заданы')
+    if name not in ('spring', 'damper'):
+        raise ValueError('Неизвестный элемент')
+    config = axle.kinematic_elements
+    if config is None:
+        return unknown
+    if config.type_code != axle.type_code:
+        return ElementMeasurement(None, None, None, 'unknown', False, 'настройки относятся к другой схеме')
+    setup: ElementSetup = getattr(config, name)
+    if setup.lower is None or setup.upper is None:
+        return unknown
+
+    def moved(code: str, mount: str) -> Point:
+        source = axle.hardpoints[code]
+        p = np.array((source.x, source.y * model.sign, source.z), dtype=float)
+        if not np.all(np.isfinite(p)):
+            raise ValueError('неконечные координаты крепления')
+        if mount == 'body':
+            current = p
+        elif mount == 'upright':
+            current = pose.point(p, model.center0)
+        elif mount == 'lower_arm' and isinstance(model, DoubleWishbone):
+            current = lower_arm_point(model, pose, p)
+        else:
+            raise ValueError('крепление неприменимо к этой схеме')
+        if not np.all(np.isfinite(current)):
+            raise ValueError('неконечные координаты крепления')
+        return float(current[0]), float(current[1]), float(current[2])
+
+    try:
+        low, high = moved(name + '_lo', setup.lower), moved(name + '_up', setup.upper)
+        length = dist(low, high)
+        if not isfinite(length) or length < 1e-9:
+            raise ValueError('центры креплений совпадают или некорректны')
+    except (KeyError, ValueError, ArithmeticError) as error:
+        return ElementMeasurement(None, None, None, 'error', False, str(error))
+    minimum, maximum = setup.minimum_mm, setup.maximum_mm
+    if minimum is not None and maximum is not None and minimum >= maximum:
+        return ElementMeasurement(length, low, high, 'invalid', False, 'не проверено: минимум должен быть меньше максимума')
+    complete = minimum is not None and maximum is not None
+    # Near-limit classification reflects numerical tolerance, not a clearance guarantee.
+    tolerance = 1e-6
+    if minimum is not None and length < minimum - tolerance:
+        status, detail = 'below', 'меньше заданного минимума'
+    elif maximum is not None and length > maximum + tolerance:
+        status, detail = 'above', 'больше заданного максимума'
+    elif ((minimum is not None and abs(length - minimum) <= tolerance) or
+          (maximum is not None and abs(length - maximum) <= tolerance)):
+        status, detail = 'limit', 'у заданной границы (численный допуск 0,000001 мм)'
+    elif complete:
+        status, detail = 'inside', 'между заданными пределами'
+    else:
+        status, detail = 'partial', 'полностью не проверено: пределы заданы не полностью'
+    return ElementMeasurement(length, low, high, status, complete, detail)
+
+
 def calculate(axle: Axle, start: float, end: float, spacing: float) -> WorkspaceResult:
     """Левая сторона поддержанной схемы, дискретная сетка с неподвижным кузовом."""
     if not supported(axle):
@@ -120,7 +194,19 @@ def calculate(axle: Axle, start: float, end: float, spacing: float) -> Workspace
             metrics = WorkspaceAngles(camber, toe)
         except ValueError:
             metrics = None
-        samples.append(WorkspaceSample(item.travel_mm, scene, metrics, None))
+        spring = measure_element(axle, model, pose, 'spring')
+        damper = measure_element(axle, model, pose, 'damper')
+        extra = []
+        points = list(scene.points)
+        for name, measurement in (('spring', spring), ('damper', damper)):
+            if measurement.lower is not None and measurement.upper is not None:
+                if name == 'spring':
+                    extra.append(Segment3D(measurement.lower, measurement.upper, 'spring'))
+                else:
+                    extra.append(Segment3D(measurement.lower, measurement.upper, 'damper'))
+                points.extend(((name + '_lo', measurement.lower), (name + '_up', measurement.upper)))
+        scene = Scene3D(scene.travel_mm, (*scene.segments, *extra), tuple(points))
+        samples.append(WorkspaceSample(item.travel_mm, scene, metrics, None, spring, damper))
     return WorkspaceResult(tuple(samples), sweep.reachable_droop_mm, sweep.reachable_bump_mm)
 
 

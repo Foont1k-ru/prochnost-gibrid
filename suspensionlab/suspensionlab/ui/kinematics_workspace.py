@@ -8,6 +8,7 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
+    QFormLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -21,10 +22,18 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..core.kinematics_workspace import WorkspaceResult, calculate, moved_link_end, static_scene, supported
+from ..core.kinematics_workspace import (
+    ElementMeasurement,
+    WorkspaceResult,
+    calculate,
+    moved_link_end,
+    static_scene,
+    supported,
+)
 from ..core.scene3d import Segment3D
 from ..core.vehicle_schematic_scene import SelectableLink
 from ..i18n import tr
+from ..model.kinematic_elements import ElementSetup, KinematicElements
 from ..model.param_specs import point_specs
 from .canvas.scene3d_preview import Scene3DPreview
 from .controller import AppController, Selection
@@ -32,6 +41,44 @@ from .widgets.camera_views import CameraViews
 from .widgets.slider_field import SliderField
 
 LOG = logging.getLogger(__name__)
+
+
+def _element_text(measurement: ElementMeasurement | None) -> str:
+    if measurement is None:
+        return 'не рассчитано'
+    if measurement.length_mm is None:
+        return f'не проверено: {measurement.detail}'
+    incomplete = '; полностью не проверено: пределы заданы не полностью' if not measurement.limits_complete and measurement.status in ('below', 'above', 'limit') else ''
+    return f'{measurement.length_mm:.2f} мм — {measurement.detail}{incomplete}'
+
+
+def _summary_text(result: WorkspaceResult) -> str:
+    total = len(result.samples)
+    solved = [sample for sample in result.samples if sample.scene is not None]
+    sections = [f'положения {len(solved)}/{total}, отказов {total - len(solved)}']
+    first_failure = next((sample.error for sample in result.samples if sample.error), None)
+    if first_failure:
+        sections.append(f'пример отказа: {first_failure}')
+    for name, label in (('spring', 'пружина'), ('damper', 'амортизатор')):
+        measurements = [getattr(sample, name) for sample in solved]
+        complete = sum(m is not None and m.limits_complete for m in measurements)
+        conflicts = sum(m is not None and m.status in ('below', 'above') for m in measurements)
+        boundary = sum(m is not None and m.status == 'limit' for m in measurements)
+        invalid = sum(m is not None and m.status in ('invalid', 'error') for m in measurements)
+        text = f'{label}: полные пределы {complete}/{total}, выходы {conflicts}, у границы {boundary}'
+        if invalid:
+            text += f', ошибок {invalid}'
+        missing_mounts = sum(m is not None and m.status == 'unknown' for m in measurements)
+        partial_limits = sum(m is not None and m.length_mm is not None and not m.limits_complete and
+                             m.status != 'invalid' for m in measurements)
+        if missing_mounts:
+            text += f', крепления не заданы/не применимы: {missing_mounts}'
+        if partial_limits:
+            text += f', неполные пределы: {partial_limits}'
+        if complete < total:
+            text += ' (не полностью проверено)'
+        sections.append(text)
+    return '; '.join(sections)
 
 
 class KinematicsWorkspace(QWidget):
@@ -105,8 +152,15 @@ class KinematicsWorkspace(QWidget):
         self.sample = QLabel(self)
         self.sample.setWordWrap(True)
         left_layout.addWidget(self.sample)
-        warning = QLabel('Проверяется только кинематическая сходимость в отдельных точках. '
-                         'Промежутки, пружина, амортизатор, столкновения, руление, нагрузки, '
+        self.elements_sample = QLabel(self)
+        self.elements_sample.setWordWrap(True)
+        left_layout.addWidget(self.elements_sample)
+        self.summary = QLabel(self)
+        self.summary.setWordWrap(True)
+        self.summary.setTextFormat(Qt.TextFormat.PlainText)
+        left_layout.addWidget(self.summary)
+        warning = QLabel('Только дискретная кинематика и явно заданные пределы длин между креплениями. '
+                         'Между точками, смыкание витков, упоры, столкновения, руление, нагрузки, '
                          'прочность и безопасность не проверены.', self)
         warning.setWordWrap(True)
         left_layout.addWidget(warning)
@@ -213,6 +267,7 @@ class KinematicsWorkspace(QWidget):
                 widget.hide()
                 widget.deleteLater()
         self._rows.clear()
+        self._element_controls: dict[str, QComboBox | QDoubleSpinBox] = {}
         axle = self._axle()
         role = self.role.currentData()
         kind, code = self.part.currentData() or ('all', '')
@@ -234,6 +289,8 @@ class KinematicsWorkspace(QWidget):
             note.setWordWrap(True)
             form.addWidget(note)
             self.editor_layout.addWidget(group)
+        if kind == 'group' and code in ('spring', 'damper'):
+            self._add_element_editor(code)
         for point_code in self._point_codes():
             point = axle.hardpoints[point_code]
             ps = axle.spec.point(point_code)
@@ -260,6 +317,84 @@ class KinematicsWorkspace(QWidget):
                 layout.addWidget(field)
             self.editor_layout.addWidget(group)
         self.editor_layout.addStretch(1)
+
+    def _active_setup(self, name: str) -> ElementSetup:
+        axle = self._axle()
+        config = axle.kinematic_elements
+        return getattr(config, name) if config is not None and config.type_code == axle.type_code else ElementSetup()
+
+    def _add_element_editor(self, name: str) -> None:
+        axle = self._axle()
+        title = 'Проверка пружины' if name == 'spring' else 'Проверка амортизатора'
+        group = QGroupBox(title, self.editor)
+        form = QFormLayout(group)
+        hint = QLabel('Укажите, к чему жёстко прикреплён каждый центр. '
+                      'Пределы — расстояния между центрами, не длина штока и не длина витков.', group)
+        hint.setWordWrap(True)
+        form.addRow(hint)
+        if not supported(axle):
+            text = QLabel('Для этой схемы движение креплений не рассчитывается.', group)
+            text.setWordWrap(True)
+            form.addRow(text)
+            self.editor_layout.addWidget(group)
+            return
+        setup = self._active_setup(name)
+        for attr, label in (('lower', 'Нижняя точка'), ('upper', 'Верхняя точка')):
+            combo = QComboBox(group)
+            combo.addItem('Не задано', None)
+            combo.addItem('Кузов', 'body')
+            combo.addItem('Кулак', 'upright')
+            if axle.type_code == 'double_wishbone':
+                combo.addItem('Нижний рычаг', 'lower_arm')
+            value = getattr(setup, attr)
+            index = next((i for i in range(combo.count()) if combo.itemData(i) == value), 0)
+            combo.setCurrentIndex(index)
+            combo.currentIndexChanged.connect(lambda _i, field=attr: self._change_element(name, field))
+            self._element_controls[attr] = combo
+            form.addRow(label, combo)
+        for attr, label in (('minimum_mm', 'Минимум, мм'), ('maximum_mm', 'Максимум, мм')):
+            box = QDoubleSpinBox(group)
+            box.setRange(0, 1_000_000)
+            box.setDecimals(3)
+            box.setSpecialValueText('Не задано')
+            box.setSuffix(' мм')
+            box.setKeyboardTracking(False)
+            box.setValue(getattr(setup, attr) or 0)
+            box.valueChanged.connect(lambda _v, field=attr: self._change_element(name, field))
+            self._element_controls[attr] = box
+            form.addRow(label, box)
+        self.editor_layout.addWidget(group)
+
+    def _change_element(self, name: str, field: str) -> None:
+        axle = self._axle()
+        if not supported(axle) or len(self._element_controls) != 4:
+            return
+        lower, upper = self._element_controls['lower'], self._element_controls['upper']
+        minimum, maximum = self._element_controls['minimum_mm'], self._element_controls['maximum_mm']
+        assert isinstance(lower, QComboBox) and isinstance(upper, QComboBox)
+        assert isinstance(minimum, QDoubleSpinBox) and isinstance(maximum, QDoubleSpinBox)
+        setup = ElementSetup(lower.currentData(), upper.currentData(), minimum.value() or None, maximum.value() or None)
+        config = axle.kinematic_elements
+        if config is None or config.type_code != axle.type_code:
+            config = KinematicElements(axle.type_code)
+        updated = replace(config, **{name: setup})
+        self.controller.set_value(axle, 'kinematic_elements', updated,
+                                  merge_key=f'kinematic-elements:{id(axle)}:{name}:{field}:{self._revision}')
+
+    def _refresh_element_controls(self) -> None:
+        kind, name = self.part.currentData() or ('all', '')
+        if kind != 'group' or name not in ('spring', 'damper') or not self._element_controls:
+            return
+        setup = self._active_setup(name)
+        for attr, widget in self._element_controls.items():
+            widget.blockSignals(True)
+            if isinstance(widget, QComboBox):
+                value = getattr(setup, attr)
+                index = next((i for i in range(widget.count()) if widget.itemData(i) == value), 0)
+                widget.setCurrentIndex(index)
+            else:
+                widget.setValue(getattr(setup, attr) or 0)
+            widget.blockSignals(False)
 
     def _show_help(self, key: str) -> None:
         QMessageBox.information(self, tr('insp.info'), tr(key))
@@ -308,6 +443,7 @@ class KinematicsWorkspace(QWidget):
 
     def _model_changed(self) -> None:
         self._refresh_fields()
+        self._refresh_element_controls()
         self._invalidate()
 
     def _invalidate(self, *_args) -> None:
@@ -316,6 +452,8 @@ class KinematicsWorkspace(QWidget):
         self._timer.stop()
         self.travel.setEnabled(False)
         self.sample.setText('')
+        self.elements_sample.setText('')
+        self.summary.setText('Сводка обеих осей: ожидает пересчёта.')
         try:
             scene, links = static_scene(self._axle())
             self.preview.link_targets = links
@@ -329,17 +467,30 @@ class KinematicsWorkspace(QWidget):
 
     def _calculate(self) -> None:
         axle = self._axle()
-        if not supported(axle):
-            self.status.setText('Расчёт хода для этой схемы пока не реализован. Показана только статическая компоновка.')
-            return
-        try:
-            result = calculate(axle, self.start.value(), self.end.value(), self.spacing.value())
-        except (ValueError, KeyError, OverflowError, ArithmeticError) as error:
-            self.status.setText(f'Расчёт не выполнен: {error}. Показана статическая схема.')
-            return
-        except Exception:
-            LOG.exception('Неожиданная ошибка кинематического расчёта')
-            self.status.setText('Расчёт не выполнен из-за ошибки. Показана статическая схема.')
+        results: dict[str, WorkspaceResult] = {}
+        errors: dict[str, str] = {}
+        summaries = []
+        for role, label in (('front', 'Передняя'), ('rear', 'Задняя')):
+            other = self.controller.project.axle(role)
+            if not supported(other):
+                errors[role] = 'Расчёт хода для этой схемы пока не реализован. Показана только статическая компоновка.'
+                summaries.append(f'{label}: только статическая схема; не проверено')
+                continue
+            try:
+                calculated = calculate(other, self.start.value(), self.end.value(), self.spacing.value())
+                results[role] = calculated
+                summaries.append(f'{label}: {_summary_text(calculated)}')
+            except (ValueError, KeyError, OverflowError, ArithmeticError) as error:
+                errors[role] = f'Расчёт не выполнен: {error}. Показана статическая схема.'
+                summaries.append(f'{label}: расчёт не выполнен: {error}; не проверено')
+            except Exception:
+                LOG.exception('Неожиданная ошибка кинематического расчёта')
+                errors[role] = 'Расчёт не выполнен из-за ошибки. Показана статическая схема.'
+                summaries.append(f'{label}: ошибка расчёта; не проверено')
+        self.summary.setText('Сводка (на заданной сетке хода):\n' + '\n'.join(summaries))
+        result = results.get(axle.role)
+        if result is None:
+            self.status.setText(errors[axle.role])
             return
         self.result = result
         success = sum(sample.scene is not None for sample in result.samples)
@@ -378,6 +529,8 @@ class KinematicsWorkspace(QWidget):
                     if start is not None and end is not None:
                         targets.append(SelectableLink(self.role.currentData(), spec.code, Segment3D(start, end, 'arm')))
             self.preview.link_targets = tuple(targets)
+        self.elements_sample.setText(f'Пружина: {_element_text(sample.spring)}\n'
+                                     f'Амортизатор: {_element_text(sample.damper)}')
         if sample.error:
             self.sample.setText(f'Ход {sample.travel_mm:+.1f} мм: нет решения. {sample.error}')
         elif sample.metrics is None:

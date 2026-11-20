@@ -40,7 +40,27 @@
         "wheel": {"type": "object"}, "spring": {"type": "object"},
         "damper": {"type": "object"}, "arb": {"type": "object"},
         "steering": {"type": "object"}, "drivetrain": {"type": "object"},
-        "setup": {"type": "object"}, "travel": {"type": "object"}
+        "setup": {"type": "object"}, "travel": {"type": "object"},
+        "kinematic_elements": {
+          "type": "object",
+          "required": ["type", "spring", "damper"],
+          "additionalProperties": false,
+          "properties": {
+            "type": {"enum": ["double_wishbone", "multilink_rear"]},
+            "spring": {"$ref": "#/$defs/element_check"},
+            "damper": {"$ref": "#/$defs/element_check"}
+          }
+        }
+      }
+    },
+    "element_check": {
+      "type": "object", "required": ["lower", "upper", "minimum_mm", "maximum_mm"],
+      "additionalProperties": false,
+      "properties": {
+        "lower": {"enum": [null, "body", "upright", "lower_arm"]},
+        "upper": {"enum": [null, "body", "upright", "lower_arm"]},
+        "minimum_mm": {"type": ["number", "null"], "exclusiveMinimum": 0, "maximum": 1000000},
+        "maximum_mm": {"type": ["number", "null"], "exclusiveMinimum": 0, "maximum": 1000000}
       }
     }
   }

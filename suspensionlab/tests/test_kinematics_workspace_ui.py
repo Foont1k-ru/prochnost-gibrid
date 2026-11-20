@@ -230,3 +230,60 @@ def test_unsupported_and_invalid_geometry_do_not_claim_success(workspace, qtbot)
     qtbot.waitUntil(lambda: 'Расчёт не выполнен' in view.status.text(), timeout=10000)
     assert view.result is None and not view.travel.isEnabled()
     assert view.preview.frame is not None and b.as_tuple() == a.as_tuple()
+
+
+def test_element_setup_save_undo_scheme_change_and_recalculation(workspace, qtbot, tmp_path):
+    controller, view = workspace
+    view.part.setCurrentIndex(view._part_index(('group', 'spring')))
+    assert 'Пружина: не проверено' in view.elements_sample.text()
+    controls = view._element_controls
+    controls['lower'].setCurrentIndex(controls['lower'].findData('lower_arm'))
+    controls['upper'].setCurrentIndex(controls['upper'].findData('body'))
+    controls['minimum_mm'].setValue(100)
+    controls['maximum_mm'].setValue(500)
+    assert view.result is None and 'ожидает' in view.summary.text()
+    qtbot.waitUntil(lambda: view.result is not None, timeout=10000)
+    assert view.result.samples[0].spring.limits_complete
+    assert 'Передняя:' in view.summary.text() and 'Задняя:' in view.summary.text()
+    assert view.preview.frame.point('spring_lo') is not None
+    path = controller.save_project(tmp_path / 'elements')
+    controls['maximum_mm'].setValue(1)
+    qtbot.waitUntil(lambda: view.result is not None, timeout=10000)
+    assert 'больше заданного максимума' in view.elements_sample.text() or 'минимум должен быть' in view.elements_sample.text()
+    controller.undo_last()
+    assert controller.project.front.kinematic_elements.spring.maximum_mm == 500
+    qtbot.waitUntil(lambda: view.result is not None, timeout=10000)
+    controller.set_axle_type('front', 'macpherson_front')
+    assert controller.project.front.kinematic_elements is None
+    qtbot.waitUntil(lambda: 'не реализован' in view.status.text(), timeout=10000)
+    controller.undo_last()
+    assert controller.project.front.kinematic_elements.spring.lower == 'lower_arm'
+    qtbot.waitUntil(lambda: view.result is not None, timeout=10000)
+    controller.open_project(path)
+    assert controller.project.front.kinematic_elements.spring.maximum_mm == 500
+    qtbot.waitUntil(lambda: view.result is not None, timeout=10000)
+    assert 'Пружина:' in view.elements_sample.text()
+    view.role.setCurrentIndex(1)
+    view.part.setCurrentIndex(view._part_index(('group', 'damper')))
+    assert view._element_controls['lower'].findData('lower_arm') == -1
+    assert controller.project.rear.kinematic_elements is None
+
+
+def test_summary_counts_failures_and_does_not_claim_limits_checked(workspace, monkeypatch, qtbot):
+    from suspensionlab.core.double_wishbone import DoubleWishbone, KinematicsError
+
+    original = DoubleWishbone._step
+    def fail(self, pose, travel):
+        if travel > 11:
+            raise KinematicsError(travel, 'тестовый отказ')
+        return original(self, pose, travel)
+    monkeypatch.setattr(DoubleWishbone, '_step', fail)
+    _, view = workspace
+    view.end.setValue(40)
+    qtbot.waitUntil(lambda: view.result is not None, timeout=10000)
+    front_summary = view.summary.text().splitlines()[1]
+    assert 'отказов 3' in front_summary
+    assert 'не полностью проверено' in front_summary
+    view.travel.setValue(view.travel.maximum())
+    assert 'не рассчитано' in view.elements_sample.text()
+    assert view.result.samples[-1].spring is None
