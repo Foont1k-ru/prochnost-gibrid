@@ -83,6 +83,22 @@ class SuggestionResult:
 
 
 @dataclass(frozen=True, slots=True)
+class PlanAction:
+    pair: str
+    kind: str
+    target: str
+    radial_clearance_mm: float
+
+
+@dataclass(frozen=True, slots=True)
+class PlanResult:
+    outcome: str
+    baseline: ProximityResult
+    actions: tuple[PlanAction, ...] = ()
+    after: ProximityResult | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class AutoPairResult:
     left: str
     right: str
@@ -239,6 +255,48 @@ def _parse_suggestion(result: Any, request: dict[str, Any]) -> SuggestionResult:
     return SuggestionResult(outcome, baseline, kind, target, float(clearance), after)
 
 
+def _parse_plan(result: Any, request: dict[str, Any]) -> PlanResult:
+    from .fixed_arm_plans import acceptable_plan, plan_document, plan_options, validate_plan_request
+
+    document, requirements = validate_plan_request(request)
+    if not isinstance(result, dict) or result.get('outcome') not in ('candidate', 'insufficient', 'unverified', 'no_candidate'):
+        raise OverlapJobError('output')
+    outcome = result['outcome']
+    keys = {'status', 'outcome', 'baseline'} | ({'actions', 'after'} if outcome == 'candidate' else set())
+    if set(result) != keys:
+        raise OverlapJobError('output')
+    baseline = _parse_proximity(result['baseline'], document)
+    if outcome != 'candidate':
+        return PlanResult(outcome, baseline)
+    actions = result['actions']
+    if not isinstance(actions, list) or len(actions) != 2:
+        raise OverlapJobError('output')
+    parsed = []
+    for item in actions:
+        if (not isinstance(item, dict) or set(item) != {'pair', 'kind', 'target', 'radial_clearance_mm'} or
+                any(not isinstance(item[key], str) for key in ('pair', 'kind', 'target')) or
+                type(item['radial_clearance_mm']) not in (int, float)):
+            raise OverlapJobError('output')
+        try:
+            clearance = float(item['radial_clearance_mm'])
+        except (OverflowError, ValueError) as error:
+            raise OverlapJobError('output') from error
+        if not math.isfinite(clearance):
+            raise OverlapJobError('output')
+        parsed.append((item['pair'], item['kind'], item['target'], clearance))
+    plan = (parsed[0], parsed[1])
+    if plan not in plan_options(document, requirements, baseline):
+        raise OverlapJobError('output')
+    try:
+        candidate = plan_document(document, plan)
+        after = _parse_proximity(result['after'], candidate)
+        if not acceptable_plan(baseline, after, requirements, plan):
+            raise OverlapJobError('output')
+    except (ValueError, TypeError, KeyError, OverflowError) as error:
+        raise OverlapJobError('output') from error
+    return PlanResult(outcome, baseline, tuple(PlanAction(*action) for action in plan), after)
+
+
 class FixedArmOverlapJob:
     def __init__(self) -> None:
         self._cancelled = threading.Event()
@@ -277,6 +335,13 @@ class FixedArmOverlapJob:
             request['requirements'] = requirements
         result = self._run(document, timeout=timeout, mode='suggest', request=request)
         if not isinstance(result, SuggestionResult):
+            raise OverlapJobError('output')
+        return result
+
+    def run_plan(self, document: dict[str, Any], requirements: dict[str, float], *, timeout: float = 240) -> PlanResult:
+        request = {'document': document, 'requirements': requirements}
+        result = self._run(document, timeout=timeout, mode='plan', request=request)
+        if not isinstance(result, PlanResult):
             raise OverlapJobError('output')
         return result
 
@@ -320,7 +385,7 @@ class FixedArmOverlapJob:
         return AutoSuggestionResult(baseline, tuple(results))
 
     def _run(self, document: dict[str, Any], *, timeout: float, mode: str,
-             request: dict[str, Any] | None = None) -> OverlapResult | PairwiseResult | ProximityResult | SuggestionResult:
+             request: dict[str, Any] | None = None) -> OverlapResult | PairwiseResult | ProximityResult | SuggestionResult | PlanResult:
         if self._cancelled.is_set():
             raise OverlapJobError('cancelled')
         try:
@@ -331,7 +396,10 @@ class FixedArmOverlapJob:
             if mode == 'suggest':
                 from .fixed_arm_suggestions import validate_request
                 validate_request(request)
-            content = json.dumps(request if mode == 'suggest' else document,
+            elif mode == 'plan':
+                from .fixed_arm_plans import validate_plan_request
+                validate_plan_request(request)
+            content = json.dumps(request if mode in ('suggest', 'plan') else document,
                                  ensure_ascii=False, allow_nan=False).encode('utf-8')
             if len(content) > MAX_PROJECT_BYTES:
                 raise ValueError('size')
@@ -382,6 +450,8 @@ class FixedArmOverlapJob:
                     raise OverlapJobError('output')
                 if mode == 'suggest':
                     return _parse_suggestion(result, snapshot)
+                if mode == 'plan':
+                    return _parse_plan(result, snapshot)
                 if mode in ('all', 'proximity'):
                     if set(result) != {'status', 'pairs'}:
                         raise OverlapJobError('output')

@@ -30,6 +30,7 @@ from ..core.cad_fixed_arm_overlap_job import (
     OverlapResult,
     PairProximity,
     PairwiseResult,
+    PlanResult,
     ProximityResult,
     SuggestionResult,
 )
@@ -59,7 +60,7 @@ class _OverlapReader(QThread):
     failed = Signal(int, str)
 
     def __init__(self, document: dict[str, Any], token: int, parent: QWidget, *,
-                 all_parts: bool = False, proximity: bool = False, auto: bool = False,
+                 all_parts: bool = False, proximity: bool = False, auto: bool = False, plan: bool = False,
                  suggestion: tuple[str, str, float] | None = None,
                  requirements: dict[str, float] | None = None) -> None:
         super().__init__(parent)
@@ -68,14 +69,17 @@ class _OverlapReader(QThread):
         self.all_parts = all_parts
         self.proximity = proximity
         self.auto = auto
+        self.plan = plan
         self.suggestion = suggestion
         self.requirements = dict(requirements or {})
         self.job = FixedArmOverlapJob()
 
     def run(self) -> None:
         try:
-            result: ProximityResult | PairwiseResult | OverlapResult | SuggestionResult | AutoSuggestionResult
-            if self.auto:
+            result: ProximityResult | PairwiseResult | OverlapResult | SuggestionResult | AutoSuggestionResult | PlanResult
+            if self.plan:
+                result = self.job.run_plan(self.document, self.requirements)
+            elif self.auto:
                 result = self.job.run_auto(self.document, self.requirements)
             elif self.suggestion is not None:
                 result = self.job.run_suggestion(self.document, *self.suggestion, requirements=self.requirements)
@@ -105,8 +109,9 @@ class FixedArmOverlap(QWidget):
         self._requirement_drafts: dict[str, str] = {}
         self._requirement_pair: tuple[str, str] | None = None
         self._suggestion: SuggestionResult | None = None
+        self._plan_result: PlanResult | None = None
         self._auto_results: dict[str, AutoPairResult] = {}
-        self._apply_callback: Callable[[dict[str, Any], SuggestionResult], None] | None = None
+        self._apply_callback: Callable[[dict[str, Any], SuggestionResult | PlanResult], None] | None = None
         self._closed = False
         self.generation = 0
         layout = QVBoxLayout(self)
@@ -139,6 +144,10 @@ class FixedArmOverlap(QWidget):
         self._cancel_button.clicked.connect(self._cancel_check)
         auto_actions.addWidget(self._cancel_button)
         layout.addLayout(auto_actions)
+        self._plan_button = QPushButton('Подобрать два реза для двух проблем', self)
+        self._plan_button.setEnabled(False)
+        self._plan_button.clicked.connect(self._start_plan)
+        layout.addWidget(self._plan_button)
         self._auto_summary = QLabel('', self)
         self._auto_summary.setWordWrap(True)
         layout.addWidget(self._auto_summary)
@@ -220,7 +229,7 @@ class FixedArmOverlap(QWidget):
         self._apply_button.clicked.connect(self._confirm_suggestion)
         layout.addWidget(self._apply_button)
 
-    def set_apply_callback(self, callback: Callable[[dict[str, Any], SuggestionResult], None]) -> None:
+    def set_apply_callback(self, callback: Callable[[dict[str, Any], SuggestionResult | PlanResult], None]) -> None:
         self._apply_callback = callback
 
     def requirements(self) -> dict[str, float]:
@@ -284,6 +293,7 @@ class FixedArmOverlap(QWidget):
         self._all_button.setEnabled(enabled)
         self._distance_button.setEnabled(enabled)
         self._auto_button.setEnabled(enabled)
+        self._plan_button.setEnabled(enabled)
         self._cancel_button.setEnabled(self._worker is not None)
         self._discard_drafts.setEnabled(not self._closed and self._worker is None and bool(self._requirement_drafts))
         self._table.setRowCount(0)
@@ -302,6 +312,8 @@ class FixedArmOverlap(QWidget):
                 self._requirement_drafts[key] = text
             else:
                 self._requirement_drafts.pop(key, None)
+        if self._requirement_drafts:
+            self._plan_result = None
         self._requirement_changed()
         self._update_requirement_cells()
 
@@ -353,6 +365,8 @@ class FixedArmOverlap(QWidget):
             self._suggest_status.setText(self._suggest_status.text() +
                                          f' Непринятых черновиков: {len(self._requirement_drafts)}; '
                                          'до подбора задайте или отмените их.')
+        elif self._plan_result is not None:
+            self._present_plan(self._plan_result)
 
     def _discard_requirement_drafts(self) -> None:
         if self._closed or self._worker is not None or not self._requirement_drafts:
@@ -378,7 +392,7 @@ class FixedArmOverlap(QWidget):
         self._comparison_button.setEnabled(False)
 
     def _open_comparison(self) -> None:
-        if self._worker is not None or self._suggestion is None or self._requirement_drafts:
+        if self._worker is not None or (self._suggestion is None and self._plan_result is None) or self._requirement_drafts:
             return
         if self._document is None or not self._is_current(self._document):
             self._failed(self.generation, 'stale')
@@ -390,6 +404,7 @@ class FixedArmOverlap(QWidget):
 
     def _clear_auto_results(self) -> None:
         self._clear_comparison()
+        self._plan_result = None
         self._auto_results.clear()
         self._auto_summary.clear()
         if self._table.columnCount() == 8:
@@ -454,6 +469,9 @@ class FixedArmOverlap(QWidget):
         self._run_check(all_parts=False, suggestion=(pair.left, pair.right, value))
 
     def _confirm_suggestion(self) -> None:
+        if self._plan_result is not None:
+            self._confirm_plan()
+            return
         candidate, doc, token = self._suggestion, self._document, self.generation
         if candidate is None or doc is None or self._requirement_drafts or self._apply_callback is None:
             return
@@ -482,7 +500,28 @@ class FixedArmOverlap(QWidget):
                 self._suggestion is candidate and self._document is doc and self._is_current(doc)):
             auto = any(item.suggestion is candidate for item in self._auto_results.values())
             self._apply_callback(doc, candidate)
-            if auto and self._document is not None and self._document is not doc and self._is_current(self._document):
+            if auto and self._document is not None and self._document != doc and self._is_current(self._document):
+                self._start_auto()
+
+    def _confirm_plan(self) -> None:
+        plan, doc, token = self._plan_result, self._document, self.generation
+        if plan is None or doc is None or self._requirement_drafts or self._apply_callback is None:
+            return
+        if not self._is_current(doc):
+            self._failed(token, 'stale')
+            return
+        text = (self._suggest_status.text() + '\n\nПрименить оба реза одним действием? '
+                'Возможные оставшиеся пересечения, сварка, прочность и движение не удостоверены.')
+        answer = QMessageBox.question(self, 'Применить два реза?', text,
+                                      QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                                      QMessageBox.StandardButton.No)
+        if token == self.generation and self._document is doc and not self._is_current(doc):
+            self._failed(token, 'stale')
+            return
+        if (answer == QMessageBox.StandardButton.Yes and token == self.generation and not self._requirement_drafts and
+                self._plan_result is plan and self._document is doc and self._is_current(doc)):
+            self._apply_callback(doc, plan)
+            if self._document is not None and self._document != doc and self._is_current(self._document):
                 self._start_auto()
 
     def _start(self) -> None:
@@ -500,6 +539,15 @@ class FixedArmOverlap(QWidget):
             return
         self._run_check(all_parts=False, auto=True)
 
+    def _start_plan(self) -> None:
+        if self.has_uncommitted_requirement():
+            self._auto_summary.setText('Сначала задайте или отмените все черновики требований.')
+            return
+        if len(self._requirements) < 2:
+            self._auto_summary.setText('Для составного подбора нужны как минимум два явно заданных требования.')
+            return
+        self._run_check(all_parts=False, plan=True)
+
     def _cancel_check(self) -> None:
         if self._worker is None:
             return
@@ -514,7 +562,7 @@ class FixedArmOverlap(QWidget):
         self._table.hide()
         self._status.setText('Расчёт отменён; результаты скрыты.')
 
-    def _run_check(self, *, all_parts: bool, proximity: bool = False, auto: bool = False,
+    def _run_check(self, *, all_parts: bool, proximity: bool = False, auto: bool = False, plan: bool = False,
                    suggestion: tuple[str, str, float] | None = None) -> None:
         if self._closed or self._worker is not None or self._document is None:
             return
@@ -524,12 +572,14 @@ class FixedArmOverlap(QWidget):
         self._clear_auto_results()
         self._suggestion = None
         worker = _OverlapReader(self._document, self.generation, self, all_parts=all_parts,
-                                proximity=proximity, auto=auto, suggestion=suggestion, requirements=self._requirements)
+                                proximity=proximity, auto=auto, plan=plan, suggestion=suggestion,
+                                requirements=self._requirements)
         self._worker = worker
         self._button.setEnabled(False)
         self._all_button.setEnabled(False)
         self._distance_button.setEnabled(False)
         self._auto_button.setEnabled(False)
+        self._plan_button.setEnabled(False)
         self._cancel_button.setEnabled(True)
         self._discard_drafts.setEnabled(False)
         self._suggest_button.setEnabled(False)
@@ -542,7 +592,10 @@ class FixedArmOverlap(QWidget):
             self._proximity = None
             self._table.setRowCount(0)
             self._table.hide()
-        if auto:
+        if plan:
+            text = ('Проверка составного предложения выполняется в отдельном процессе; '
+                    'перебор ограничен, это может занять несколько минут. Геометрия не изменяется.')
+        elif auto:
             text = ('Проверка всех пар и последовательный подбор выполняются в отдельных процессах; '
                     'это может занять несколько минут. Геометрия не изменяется.')
         elif suggestion is not None:
@@ -564,6 +617,9 @@ class FixedArmOverlap(QWidget):
             return
         if not self._is_current(self._document):
             self._failed(token, 'stale')
+            return
+        if isinstance(result, PlanResult):
+            self._show_plan(result)
             return
         if isinstance(result, AutoSuggestionResult):
             self._show_auto(result)
@@ -612,6 +668,55 @@ class FixedArmOverlap(QWidget):
         first = next((i for i, item in enumerate(result.pairs) if item.outcome == 'candidate'), 0)
         self._table.selectRow(first)
         self._requirement_changed()
+
+    def _show_plan(self, result: PlanResult) -> None:
+        self._show_proximity(result.baseline)
+        if result.outcome != 'candidate':
+            messages = {'insufficient': 'Не найдено двух невыполненных требований с разными поддержанными резами.',
+                        'no_candidate': 'В ограниченном наборе сочетаний подходящий вариант не найден.',
+                        'unverified': 'Некоторые пары или варианты не проверены либо неоднозначны; '
+                                      'подтверждённое сочетание не найдено.'}
+            self._auto_summary.setText(messages.get(result.outcome, 'Составной подбор не выполнен.') +
+                                       ' Это не доказывает отсутствие других решений.')
+            return
+        if result.after is None or len(result.actions) != 2 or self._document is None:
+            self._failed(self.generation, 'output')
+            return
+        from ..core.fixed_arm_plans import acceptable_plan, plan_options
+
+        actions = tuple((a.pair, a.kind, a.target, a.radial_clearance_mm) for a in result.actions)
+        plan = (actions[0], actions[1])
+        if (plan not in plan_options(self._document, self._requirements, result.baseline) or
+                not acceptable_plan(result.baseline, result.after, self._requirements, plan)):
+            self._failed(self.generation, 'output')
+            return
+        self._plan_result = result
+        self._present_plan(result)
+
+    def _present_plan(self, result: PlanResult) -> None:
+        if self._document is None or not self._is_current(self._document):
+            self._failed(self.generation, 'stale')
+            return
+        assert result.after is not None
+        pairs = {'tube_front|tube_rear': 'две трубы', 'tube_front|housing_front': 'передняя труба и свой корпус',
+                 'tube_rear|housing_rear': 'задняя труба и свой корпус'}
+        texts = []
+        for action in result.actions:
+            target = 'переднюю' if action.target == 'front' else 'заднюю'
+            kind = 'по другой трубе' if action.kind == 'joint' else 'по своему корпусу'
+            texts.append(f'{pairs.get(action.pair, action.pair)}: {target} трубу {kind}, '
+                         f'радиальный размер {action.radial_clearance_mm:g} мм')
+        conflicts = sum(p.status == 'intersection' for p in result.after.pairs)
+        unconfirmed = sum(_requirement_status(p, self._requirements[f'{p.left}|{p.right}']) not in
+                          ('Выполнено на снимке', '0: касание допускается') for p in result.after.pairs
+                          if f'{p.left}|{p.right}' in self._requirements)
+        self._suggest_status.setText('Составное предложение (два реза): ' + '; '.join(texts) +
+                                     f'. Пересечений после резов: {conflicts}; требований не подтверждено: {unconfirmed}. '
+                                     'Прочность, сварка и движение не удостоверены.')
+        self._status.setText('Сочетание не применено. Оба реза проверены вместе на текущих CAD-телах.')
+        self._show_comparison(result)
+        self._apply_button.setEnabled(self._worker is None and not self._requirement_drafts and
+                                      self._apply_callback is not None)
 
     def _show_suggestion(self, result: SuggestionResult) -> None:
         self._clear_comparison()
@@ -672,7 +777,7 @@ class FixedArmOverlap(QWidget):
         self._apply_button.setEnabled(self._worker is None and not self._requirement_drafts and
                                       self._apply_callback is not None)
 
-    def _show_comparison(self, result: SuggestionResult) -> None:
+    def _show_comparison(self, result: SuggestionResult | PlanResult) -> None:
         assert result.after is not None
         names = {'tube_front': 'Передняя труба', 'tube_rear': 'Задняя труба',
                  'housing_front': 'Передний корпус', 'housing_rear': 'Задний корпус'}
@@ -784,6 +889,7 @@ class FixedArmOverlap(QWidget):
         self._all_button.setEnabled(enabled)
         self._distance_button.setEnabled(enabled)
         self._auto_button.setEnabled(enabled)
+        self._plan_button.setEnabled(enabled)
         self._cancel_button.setEnabled(False)
         self._discard_drafts.setEnabled(not self._closed and bool(self._requirement_drafts))
         self._table.setEnabled(enabled)
@@ -796,9 +902,10 @@ class FixedArmOverlap(QWidget):
         self._remove_minimum.setEnabled(enabled and pair is not None and saved is not None)
         self._suggest_button.setEnabled(enabled and pair is not None and saved is not None and value == saved and
                                         not self._requirement_drafts)
-        self._apply_button.setEnabled(enabled and not self._requirement_drafts and self._suggestion is not None and
+        available = self._suggestion is not None or self._plan_result is not None
+        self._apply_button.setEnabled(enabled and not self._requirement_drafts and available and
                                       self._apply_callback is not None)
-        self._comparison_button.setEnabled(enabled and not self._requirement_drafts and self._suggestion is not None and
+        self._comparison_button.setEnabled(enabled and not self._requirement_drafts and available and
                                            self._comparison.rowCount() > 0)
 
     def shutdown(self) -> bool:
@@ -810,6 +917,7 @@ class FixedArmOverlap(QWidget):
         self._all_button.setEnabled(False)
         self._distance_button.setEnabled(False)
         self._auto_button.setEnabled(False)
+        self._plan_button.setEnabled(False)
         self._cancel_button.setEnabled(False)
         self._discard_drafts.setEnabled(False)
         self._suggest_button.setEnabled(False)

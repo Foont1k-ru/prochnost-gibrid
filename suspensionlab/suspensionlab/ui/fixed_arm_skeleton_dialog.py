@@ -28,7 +28,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..core.cad_fixed_arm_overlap_job import SuggestionResult
+from ..core.cad_fixed_arm_overlap_job import PlanResult, SuggestionResult
+from ..core.fixed_arm_plans import acceptable_plan, plan_document, plan_options
 from ..core.fixed_arm_suggestions import candidate_document
 from ..model.bent_tube import make_bend_path
 from ..model.fixed_arm_housings import (
@@ -442,28 +443,55 @@ class FixedArmSkeletonDialog(QDialog):
             return
         self._cad._view.set_markers(points)
 
-    def _apply_cut_suggestion(self, document: dict[str, Any], result: SuggestionResult) -> None:
-        if (not self._cad_is_current(document) or result.outcome != 'candidate' or result.kind not in ('joint', 'housing') or
-                result.target not in ('front', 'rear') or result.radial_clearance_mm is None):
+    def _apply_cut_suggestion(self, document: dict[str, Any], result: SuggestionResult | PlanResult) -> None:
+        if not self._cad_is_current(document) or result.outcome != 'candidate':
             return
         try:
-            proposed = candidate_document(document, result.kind, result.target, result.radial_clearance_mm)
+            if isinstance(result, PlanResult):
+                if result.after is None or len(result.actions) != 2:
+                    return
+                actions = tuple((a.pair, a.kind, a.target, a.radial_clearance_mm) for a in result.actions)
+                plan = (actions[0], actions[1])
+                requirements = self._overlap.requirements()
+                if (plan not in plan_options(document, requirements, result.baseline) or
+                        not acceptable_plan(result.baseline, result.after, requirements, plan)):
+                    return
+                proposed = plan_document(document, plan)
+                cuts = [(a.kind, a.target, a.radial_clearance_mm) for a in result.actions]
+            else:
+                if result.kind not in ('joint', 'housing') or result.target not in ('front', 'rear') or result.radial_clearance_mm is None:
+                    return
+                proposed = candidate_document(document, result.kind, result.target, result.radial_clearance_mm)
+                cuts = [(result.kind, result.target, result.radial_clearance_mm)]
         except (ValueError, TypeError, KeyError):
             return
-        if result.kind == 'joint':
-            with QSignalBlocker(self._tube_joint), QSignalBlocker(self._joint_clearance):
-                self._tube_joint.setCurrentIndex(self._tube_joint.findData(result.target))
-                self._joint_clearance.setText(repr(result.radial_clearance_mm))
-        else:
-            check, field = self._notch_checks[result.target], self._notch_clearances[result.target]
-            with QSignalBlocker(check), QSignalBlocker(field):
-                check.setChecked(True)
-                field.setText(repr(result.radial_clearance_mm))
-        self._record_trim_state()
+        previous = self._trim_state()
+        controls = [self._tube_joint, self._joint_clearance, *self._notch_checks.values(), *self._notch_clearances.values()]
+        blockers = [QSignalBlocker(widget) for widget in controls]
+        for kind, target, clearance in cuts:
+            if kind == 'joint':
+                self._tube_joint.setCurrentIndex(self._tube_joint.findData(target))
+                self._joint_clearance.setText(repr(clearance))
+            else:
+                self._notch_checks[target].setChecked(True)
+                self._notch_clearances[target].setText(repr(clearance))
+        del blockers
         self._refresh()
         if self._cad_candidate != proposed:
-            self._notch_status.setText('Применённые параметры не совпадают с проверенным кандидатом; '
-                                       'повторите проверку перед использованием.')
+            front, front_value, rear, rear_value, target, joint_value = previous
+            blockers = [QSignalBlocker(widget) for widget in controls]
+            self._notch_checks['front'].setChecked(front)
+            self._notch_clearances['front'].setText(front_value)
+            self._notch_checks['rear'].setChecked(rear)
+            self._notch_clearances['rear'].setText(rear_value)
+            self._tube_joint.setCurrentIndex(self._tube_joint.findData(target))
+            self._joint_clearance.setText(joint_value)
+            del blockers
+            self._refresh()
+            self._notch_status.setText('Параметры не совпали с проверенным кандидатом: изменения отменены. '
+                                       'Повторите проверку перед использованием.')
+            return
+        self._record_trim_state()
 
     def _cad_is_current(self, candidate: dict[str, Any]) -> bool:
         if (self.snapshot is None or self.preview is None or self.snapshot != self._cad_snapshot or

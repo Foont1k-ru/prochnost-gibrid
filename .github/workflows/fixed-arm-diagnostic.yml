@@ -11,6 +11,7 @@ on:
       - 'suspensionlab/suspensionlab/ui/fixed_arm_overlap.py'
       - 'suspensionlab/suspensionlab/core/cad_fixed_arm_overlap*.py'
       - 'suspensionlab/suspensionlab/core/fixed_arm_suggestions.py'
+      - 'suspensionlab/suspensionlab/core/fixed_arm_plans.py'
       - 'suspensionlab/suspensionlab/ui/fixed_arm_skeleton_dialog.py'
       - 'suspensionlab/suspensionlab/ui/canvas/fixed_arm_*.py'
       - 'suspensionlab/tests/test_fixed_arm*.py'
@@ -55,6 +56,7 @@ jobs:
           tests/test_fixed_arm_proximity_job.py tests/test_fixed_arm_proximity_cad.py tests/test_fixed_arm_proximity_ui.py
           tests/test_fixed_arm_suggestions.py tests/test_fixed_arm_suggestions_ui.py
           tests/test_fixed_arm_auto.py tests/test_fixed_arm_auto_ui.py
+          tests/test_fixed_arm_plans.py tests/test_fixed_arm_plans_ui.py
           tests/test_fixed_arm_clearance_io.py tests/test_fixed_arm_clearance_ui.py
           tests/test_fixed_arm_tube_joint.py tests/test_fixed_arm_tube_joint_io.py
           tests/test_fixed_arm_tube_joint_cad.py tests/test_fixed_arm_tube_joint_ui.py

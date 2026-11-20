@@ -445,6 +445,16 @@ def run_cad_check() -> None:
         _require(overlap._worker is None and len(overlap._auto_results) == 6 and
                  overlap._table.columnCount() == 8 and fixed_dialog._cad_candidate == before_candidate,
                  "Автоподбор пар недоступен или изменил исходные параметры: " + overlap._status.text())
+        overlap.set_requirements({'tube_front|tube_rear': .5, 'housing_front|housing_rear': 0}, housings=True)
+        overlap._start_plan()
+        deadline = monotonic() + 240
+        while overlap._worker is not None and monotonic() < deadline:
+            app.processEvents()
+            sleep(0.02)
+        _require(overlap._worker is None and overlap._table.rowCount() == 6 and
+                 'Не найдено двух' in overlap._auto_summary.text() and fixed_dialog._cad_candidate == before_candidate,
+                 "Проверка составного плана недоступна или изменила геометрию: " + overlap._auto_summary.text())
+        overlap.set_requirements({'tube_front|tube_rear': .5}, housings=True)
         with TemporaryDirectory(prefix="suspensionlab-fixed-arm-reopen-") as directory:
             source = Path(directory) / "скелет.slarm"
             with patch.object(QFileDialog, "getSaveFileName", return_value=(str(source), "")):

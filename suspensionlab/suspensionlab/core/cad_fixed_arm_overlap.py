@@ -135,7 +135,7 @@ def measure_proximity(document: dict[str, Any]) -> list[dict[str, Any]]:
 
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
-    if len(args) not in (2, 3) or (len(args) == 3 and args[2] not in ('all', 'proximity', 'suggest')):
+    if len(args) not in (2, 3) or (len(args) == 3 and args[2] not in ('all', 'proximity', 'suggest', 'plan')):
         return 2
     source, target = map(Path, args[:2])
     try:
@@ -147,9 +147,12 @@ def main(argv: list[str] | None = None) -> int:
             payload = {'pairs': measure_all_pairs(data)}
         elif args[2] == 'proximity':
             payload = {'pairs': measure_proximity(data)}
-        else:
+        elif args[2] == 'suggest':
             from .fixed_arm_suggestions import suggest
             payload = suggest(data)
+        else:
+            from .fixed_arm_plans import suggest_plan
+            payload = suggest_plan(data)
         target.write_text(json.dumps({'status': 'ok', **payload}, allow_nan=False), encoding='utf-8')
         return 0
     except Exception:
