@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 from dataclasses import replace
 
-from PySide6.QtCore import QEvent, Qt, QTimer
+from PySide6.QtCore import QEvent, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QMenu,
     QMessageBox,
@@ -38,18 +39,64 @@ from ..core.scene3d import Segment3D
 from ..core.sweep_plot import PlotPoint
 from ..core.vehicle_schematic_scene import SelectableLink
 from ..i18n import tr
+from ..model.cad_handoff import CadHandoff, ClearanceSettings, HandoffError, prepare_cad_handoff
 from ..model.kinematic_elements import ElementSetup, KinematicElements
 from ..model.param_specs import point_specs
 from ..model.suspension_types import types_for_role
+from .cad_handoff_dialog import CadHandoffDialog
 from .canvas.scene3d_preview import Scene3DPreview
 from .canvas.sweep_plot import SweepPlot
-from .clearance_dialog import ClearanceDialog
+from .clearance_dialog import ClearanceDialog, _label
 from .controller import AppController, Selection
 from .rocker_setup_dialog import RockerSetupDialog
 from .widgets.camera_views import CameraViews
 from .widgets.slider_field import SliderField
 
 LOG = logging.getLogger(__name__)
+
+
+def _cad_handoff_text(handoff: CadHandoff) -> str:
+    axle = handoff.snapshot.project_copy().front
+    samples = handoff.sweep.samples
+    pairs = [pair for sample in samples for pair in sample.pairs]
+    measured = [pair for pair in pairs if pair.measurement is not None]
+    conflict = sum(pair.status in ('overlap', 'touch', 'low_clearance', 'limit') for pair in pairs)
+    unknown = sum(pair.status in ('unknown_no_pose', 'unknown_geometry') for pair in pairs)
+    excluded = sum(pair.status == 'excluded_shared_point' for pair in pairs)
+    omitted = ', '.join(_label(axle, code) for code in handoff.sweep.omitted) or 'нет'
+    selected = ', '.join(f'{_label(axle, code)}: {radius:g} мм' for code, radius in handoff.settings.radii)
+    wheel = (f'; ширина цилиндра {handoff.settings.wheel_width_mm:g} мм'
+             if handoff.settings.wheel_width_mm is not None else '')
+    minimum = min(pair.measurement.clearance_mm for pair in measured if pair.measurement is not None)
+    names = {'overlap': 'наложение', 'touch': 'касание', 'low_clearance': 'меньше запаса',
+             'limit': 'у границы', 'unknown_no_pose': 'нет решения', 'unknown_geometry': 'нет геометрии'}
+    examples_text = ''
+    for heading, statuses in (('Требуют внимания', {'overlap', 'touch', 'low_clearance', 'limit'}),
+                              ('Не проверено', {'unknown_no_pose', 'unknown_geometry'})):
+        examples = [(sample.travel_mm, pair) for sample in samples for pair in sample.pairs if pair.status in statuses]
+        if examples:
+            examples_text += f'{heading} (первые до трёх):\n'
+            examples_text += ''.join(f'  {travel:+.3f} мм: {_label(axle, pair.first)} / {_label(axle, pair.second)} — '
+                                     f'{names[pair.status]}\n' for travel, pair in examples[:3])
+            if len(examples) > 3:
+                examples_text += f'  И ещё {len(examples) - 3} событий.\n'
+    extra = (f'Уточнение: дополнительных поз {handoff.refinement.added}, подозрительных интервалов '
+             f'{len(handoff.refinement.unresolved)}, исходных интервалов без средней точки '
+             f'{len(handoff.refinement.unprobed_initial)}; непрерывное движение не проверено.\n'
+             if handoff.refinement is not None else 'Уточнение выключено; промежутки не проверены.\n')
+    return (f'Передний нижний левый рычаг: две прямые трубы, радиус {handoff.radius_mm:g} мм, '
+            f'стенка {handoff.wall_mm:g} мм.\n'
+            f'Выбранные радиусы: {selected}{wheel}; запас {handoff.settings.margin_mm:g} мм.\n'
+            f'Расчёт повторён на снимке проекта с округлением координат до 0,0001 мм. '
+            f'Поз {len(samples)}, без решения {sum(not sample.pose_available for sample in samples)}, '
+            f'измерений пар {len(measured)}, требующих внимания {conflict}, '
+            f'неизвестных {unknown}, исключённых {excluded}. Минимальный условный зазор {minimum:.3f} мм.\n'
+            f'Невыбранные формы не проверены: {omitted}. Кулак, кузов, привод и реальные детали не проверены.\n'
+            f'{examples_text}{extra}'
+            'Даже при выявленных проблемах можно открыть черновик для изучения; это не подтверждение безопасности. '
+            'Сгибы, корпуса и реальные CAD-детали в этой проверке не участвовали. '
+            'Результат проверки в файл скелета не переносится; после изменения формы необходима новая проверка.\n\n'
+            'Открыть предварительную заготовку?')
 
 
 def _element_text(measurement: ElementMeasurement | None) -> str:
@@ -93,6 +140,8 @@ def _summary_text(result: WorkspaceResult) -> str:
 class KinematicsWorkspace(QWidget):
     """Редактируется статическая схема; расчёт не меняет проект."""
 
+    cadHandoffRequested = Signal(object)
+
     def __init__(self, controller: AppController, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.controller = controller
@@ -101,6 +150,7 @@ class KinematicsWorkspace(QWidget):
         self._menu: QMenu | None = None
         self._revision = 0
         self._clearance_dialog: ClearanceDialog | None = None
+        self._clearance_settings: ClearanceSettings | None = None
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.setInterval(300)
@@ -255,6 +305,14 @@ class KinematicsWorkspace(QWidget):
         self.clearance_button.setEnabled(False)
         self.clearance_button.clicked.connect(self._open_clearance)
         result_layout.addWidget(self.clearance_button)
+        self.cad_handoff_button = QPushButton('Передний нижний рычаг → CAD-заготовка…', results)
+        self.cad_handoff_button.setToolTip('Передача возможна после проверки нижнего рычага с другой выбранной формой')
+        self.cad_handoff_button.setEnabled(False)
+        self.cad_handoff_button.clicked.connect(self._prepare_cad_handoff)
+        result_layout.addWidget(self.cad_handoff_button)
+        self.cad_handoff_hint = QLabel('Для перехода в CAD сначала проверьте нижний рычаг с другой формой.', results)
+        self.cad_handoff_hint.setWordWrap(True)
+        result_layout.addWidget(self.cad_handoff_hint)
         self.summary_toggle = QToolButton(results)
         self.summary_toggle.setText(tr('workspace_flow.summary'))
         self.summary_toggle.setCheckable(True)
@@ -766,6 +824,9 @@ class KinematicsWorkspace(QWidget):
         if self._clearance_dialog is not None:
             self._clearance_dialog.invalidate()
         self.clearance_button.setEnabled(False)
+        self._clearance_settings = None
+        self.cad_handoff_button.setEnabled(False)
+        self.cad_handoff_hint.setText('Для перехода в CAD сначала проверьте нижний рычаг с другой формой.')
         self.result = None
         self.plot.set_points(())
         self._timer.stop()
@@ -847,14 +908,62 @@ class KinematicsWorkspace(QWidget):
         if self.result is None or self._clearance_dialog is not None:
             return
         axle, revision = self._axle(), self._revision
+        self._clearance_settings = None
+        self.cad_handoff_button.setEnabled(False)
         dialog = ClearanceDialog(axle, self.start.value(), self.end.value(), self.spacing.value(),
                                  lambda: self._revision == revision and self._axle() is axle, self)
         self._clearance_dialog = dialog
         try:
             dialog.exec()
+            if self._revision == revision and self._axle() is axle and self.result is not None:
+                self._clearance_settings = dialog.last_setup
+                selected = dict(dialog.last_setup.radii) if dialog.last_setup is not None else {}
+                ready = axle.role == 'front' and axle.type_code == 'double_wishbone' and 'lower_arm' in selected and len(selected) >= 2
+                self.cad_handoff_button.setEnabled(ready)
+                self.cad_handoff_hint.setText(
+                    'Настройки проверки запомнены до изменения проекта; при передаче проверка будет повторена.' if ready else
+                    'Для перехода в CAD сначала проверьте передний нижний рычаг с другой формой.')
         finally:
             self._clearance_dialog = None
             dialog.deleteLater()
+
+    def _prepare_cad_handoff(self) -> None:
+        settings, project, revision = self._clearance_settings, self.controller.project, self._revision
+        if settings is None or self.result is None or self.role.currentData() != 'front':
+            return
+        radius = dict(settings.radii).get('lower_arm')
+        if radius is None or radius < .02 or radius > 10000 or round(radius, 2) != radius:
+            QMessageBox.warning(self, 'Передача в CAD', 'Радиус нижнего рычага в проверке должен быть от 0,02 до '
+                                '10000 мм и иметь не более двух знаков после запятой. Повторите проверку с этим радиусом.')
+            return
+        wall, accepted = QInputDialog.getDouble(self, 'Толщина стенки',
+            'Толщина стенки двух прямых труб, мм. Это черновая геометрия, не проверка прочности:',
+            min(2., round(radius - .01, 2)), .01, round(radius - .01, 2), 2)
+        if not accepted:
+            return
+        if (self._revision != revision or self.controller.project is not project or self._clearance_settings is not settings):
+            QMessageBox.warning(self, 'Передача в CAD', 'Проект или параметры изменились; повторите проверку.')
+            return
+        try:
+            handoff = prepare_cad_handoff(project, self.start.value(), self.end.value(), self.spacing.value(), settings, wall)
+        except HandoffError as error:
+            QMessageBox.warning(self, 'Передача в CAD', str(error))
+            return
+        if self._revision != revision or self.controller.project is not project or not handoff.matches(project):
+            QMessageBox.warning(self, 'Передача в CAD', 'Проект изменился во время расчёта; повторите проверку.')
+            return
+        confirmation = CadHandoffDialog(_cad_handoff_text(handoff), self)
+        try:
+            accepted = confirmation.exec() == QDialog.DialogCode.Accepted
+        finally:
+            confirmation.deleteLater()
+        if not accepted:
+            return
+        if (self._revision != revision or self.controller.project is not project or
+                self._clearance_settings is not settings or not handoff.matches(project)):
+            QMessageBox.warning(self, 'Передача в CAD', 'Проект изменился во время подтверждения; передача отменена.')
+            return
+        self.cadHandoffRequested.emit(handoff)
 
     def _show_sample(self, *_args) -> None:
         kind, code = self.part.currentData() or ('all', '')

@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 from .. import APP_NAME, __version__
 from ..config import diagnostic_log_path, log_file_path, settings_path
 from ..i18n import tr
+from ..model.cad_handoff import CadHandoff, HandoffError
 from ..model.project_io import ProjectIOError
 from ..model.session_arm_assembly import SessionArmAssembly
 from ..model.suspension_types import types_for_role
@@ -134,6 +135,7 @@ class MainWindow(QMainWindow):
         self._vehicle_view = VehicleSchematicView(self.controller, self._tabs)
         self._tabs.addTab(self._vehicle_view, tr("vehicle_schematic.tab"))
         self._kinematics = KinematicsWorkspace(self.controller, self._tabs)
+        self._kinematics.cadHandoffRequested.connect(self._open_fixed_arm_handoff)
         self._tabs.addTab(self._kinematics, "Кинематика 3D")
         self._tabs.currentChanged.connect(lambda _index: self._update_status())
 
@@ -354,6 +356,31 @@ class MainWindow(QMainWindow):
         self._fixed_arm_skeleton_dialog.show()
         self._fixed_arm_skeleton_dialog.raise_()
         self._fixed_arm_skeleton_dialog.activateWindow()
+
+    def _open_fixed_arm_handoff(self, handoff: CadHandoff) -> None:
+        if self._fixed_arm_skeleton_dialog is not None:
+            QMessageBox.information(self, 'Передача в CAD',
+                                    'Редактор скелета уже открыт. Его данные не заменены; закройте его и повторите передачу.')
+            self._fixed_arm_skeleton_dialog.raise_()
+            self._fixed_arm_skeleton_dialog.activateWindow()
+            return
+        dialog = FixedArmSkeletonDialog(self.controller, self)
+        try:
+            dialog.accept_handoff(handoff)
+        except HandoffError as error:
+            if dialog.shutdown():
+                dialog.deleteLater()
+            else:
+                self._fixed_arm_skeleton_dialog = dialog
+                dialog.finished.connect(self._close_fixed_arm_skeleton)
+                dialog.show()
+            QMessageBox.warning(self, 'Передача в CAD', str(error))
+            return
+        self._fixed_arm_skeleton_dialog = dialog
+        dialog.finished.connect(self._close_fixed_arm_skeleton)
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
 
     def _close_fixed_arm_skeleton(self, _result: int) -> None:
         dialog = self._fixed_arm_skeleton_dialog

@@ -49,11 +49,33 @@ def test_random_against_constrained_3d_optimization():
         def squared(q, a=a, b=b):
             v = a + q[0] * (b - a) - q[1:4]
             return float(v @ v)
-        fit = minimize(squared, (0.5, 0., 0., 0.), method='SLSQP',
-                       bounds=((0, 1), (-radius, radius), (-radius, radius), (-half, half)),
-                       constraints=({'type': 'ineq', 'fun': lambda q, r=radius: r*r-q[1]**2-q[2]**2},),
-                       options={'ftol': 1e-11, 'maxiter': 500})
-        assert fit.success
+        def gradient(q, a=a, b=b):
+            v = a + q[0] * (b - a) - q[1:4]
+            return np.array((2 * v @ (b - a), -2 * v[0], -2 * v[1], -2 * v[2]))
+        constraint = {'type': 'ineq', 'fun': lambda q, r=radius: r*r-q[1]**2-q[2]**2,
+                      'jac': lambda q: np.array((0., -2*q[1], -2*q[2], 0.))}
+        # Analytic derivatives and independent restarts avoid platform-specific
+        # SLSQP line-search failures; a failed or infeasible oracle is never used.
+        fits = []
+        for t in (.5, 0., 1.):
+            fit = minimize(squared, (t, 0., 0., 0.), jac=gradient, method='SLSQP',
+                           bounds=((0, 1), (-radius, radius), (-radius, radius), (-half, half)),
+                           constraints=(constraint,), options={'ftol': 1e-10, 'maxiter': 500})
+            grad = gradient(fit.x)
+            radial_gradient = float(np.hypot(grad[1], grad[2]))
+            support = np.array((0. if grad[0] >= 0 else 1.,
+                                -radius * grad[1] / radial_gradient if radial_gradient else 0.,
+                                -radius * grad[2] / radial_gradient if radial_gradient else 0.,
+                                -half if grad[3] >= 0 else half))
+            # Convex first-order gap bounds how far a feasible result can be
+            # from the true optimum, even if SLSQP incorrectly reports success.
+            gap = float(grad @ (fit.x - support))
+            if (fit.success and constraint['fun'](fit.x) >= -1e-7 and
+                    (fit.fun <= 1e-9 or -1e-7 <= gap <= 1e-6 * max(1., fit.fun))):
+                fits.append(fit)
+                break
+        assert fits, 'constrained reference optimizer did not converge to a feasible point'
+        fit = fits[0]
         result = capsule_cylinder_clearance(tuple(map(float, a)), tuple(map(float, b)), .1, (0., 0., 0.), (0., 0., 1.),
                                              float(radius), float(2*half), 0.)
         assert (result.clearance_mm + .1) ** 2 == pytest.approx(fit.fun, rel=1e-5, abs=1e-7)

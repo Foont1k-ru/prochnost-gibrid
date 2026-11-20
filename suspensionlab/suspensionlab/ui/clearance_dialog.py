@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 from ..core.clearance_refinement import MAX_EXTRA, MAX_ROUNDS, RefinementReport, refine_link_clearance
 from ..core.suspension_clearance import calculate_link_clearance, eligible_objects
 from ..i18n import tr
+from ..model.cad_handoff import ClearanceSettings
 from ..model.entities import Axle
 
 LOG = logging.getLogger(__name__)
@@ -46,6 +47,7 @@ class ClearanceDialog(QDialog):
         super().__init__(parent)
         self.axle, self.start, self.end, self.spacing = axle, start, end, spacing
         self.is_current = is_current
+        self.last_setup: ClearanceSettings | None = None
         self.setWindowTitle('Проверка условных форм')
         self.resize(700, 650)
         layout = QVBoxLayout(self)
@@ -143,12 +145,14 @@ class ClearanceDialog(QDialog):
         self._clear_result()
 
     def _clear_result(self, *_args: object) -> None:
+        self.last_setup = None
         if not self.is_current():
             self.invalidate()
             return
         self.output.setPlainText('Не рассчитано. Выберите не менее двух форм, задайте радиусы и ширину колеса при выборе.')
 
     def invalidate(self) -> None:
+        self.last_setup = None
         self.run_button.setEnabled(False)
         self.output.setPlainText('Проект или параметры хода изменились. Результат устарел; закройте окно и откройте заново.')
 
@@ -156,6 +160,7 @@ class ClearanceDialog(QDialog):
         if not self.is_current():
             self.invalidate()
             return
+        self.last_setup = None
         radii = {code: radius.value() for code, (check, radius) in self.links.items() if check.isChecked()}
         report: RefinementReport | None = None
         try:
@@ -177,6 +182,9 @@ class ClearanceDialog(QDialog):
         if not self.is_current():
             self.invalidate()
             return
+        self.last_setup = ClearanceSettings(tuple(radii.items()), self.margin.value(),
+                                            self.wheel_width.value() if 'wheel_cylinder' in radii else None,
+                                            self.refine.isChecked(), self.alert_band.value(), self.min_spacing.value())
         labels = {code: _label(self.axle, code) for code in self.links}
         omitted = ', '.join(labels[code] for code in sweep.omitted) or 'нет'
         wheel_info = f'. Ширина цилиндра колеса: {self.wheel_width.value():g} мм.' if 'wheel_cylinder' in radii else ''
@@ -187,7 +195,9 @@ class ClearanceDialog(QDialog):
                  'Кулак, кузов, привод и реальные детали не проверены; цилиндр — не настоящая шина.',
                  'Известные соединённые пары исключены целиком; даже вдали от шарнира они не проверены.',
                  'Отрицательный зазор с цилиндром не означает глубину проникновения.',
-                 'Между точками сетки движение и столкновения не проверены. Не является разрешением на изготовление.', '']
+                 'Между точками сетки движение и столкновения не проверены. Не является разрешением на изготовление.',
+                 'При закрытии параметры последней проверки временно доступны для подготовки CAD; '
+                 'сама проверка будет повторена на снимке.', '']
         if report is None:
             lines.append('Дополнительное уточнение отключено: только исходная сетка.')
         else:

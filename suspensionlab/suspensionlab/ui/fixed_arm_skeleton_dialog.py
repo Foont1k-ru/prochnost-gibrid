@@ -32,6 +32,7 @@ from ..core.cad_fixed_arm_overlap_job import PlanResult, SuggestionResult
 from ..core.fixed_arm_plans import acceptable_plan, plan_document, plan_options
 from ..core.fixed_arm_suggestions import candidate_document
 from ..model.bent_tube import make_bend_path
+from ..model.cad_handoff import CadHandoff, HandoffError
 from ..model.fixed_arm_housings import (
     HousingError,
     make_housing_preview,
@@ -95,7 +96,8 @@ class FixedArmSkeletonDialog(QDialog):
         split.setStretchFactor(1, 2)
         split.setSizes([420, 640])
         warning = QLabel('Передний нижний левый рычаг. Проверяется только сходимость в дискретных точках хода. '
-                         'Зазоры, прочность, поворот и безопасность не проверяются. '
+                         'Проверка условных форм не проверяет этот CAD и не сохраняется в .slarm. '
+                         'Зазоры, прочность, поворот и безопасность не подтверждены. '
                          'Сохранение — только отдельный экспериментальный файл .slarm.', self)
         warning.setWordWrap(True)
         layout.addWidget(warning)
@@ -321,6 +323,37 @@ class FixedArmSkeletonDialog(QDialog):
         controller.modelChanged.connect(self._refresh)
         controller.projectReplaced.connect(self._project_replaced)
         self._saved_state = self._state()
+
+    def accept_handoff(self, handoff: CadHandoff) -> None:
+        """Принять только свежий снимок в новый пустой редактор; файл не создаётся."""
+        if (self.snapshot is not None or self.preview is not None or self._draft is not None or
+                self._state() != self._saved_state):
+            raise HandoffError('Редактор уже содержит данные; сначала закройте его')
+        if not isinstance(handoff, CadHandoff) or not handoff.matches(self.controller.project):
+            raise HandoffError('Проект изменился после подготовки заготовки')
+        try:
+            preview_fixed_arm(handoff.snapshot, self.controller.project, handoff.radius_mm, handoff.wall_mm)
+        except SkeletonError as error:
+            raise HandoffError(f'Заготовка недоступна: {error}') from error
+        if not handoff.matches(self.controller.project):
+            raise HandoffError('Проект изменился во время подготовки заготовки')
+        spins = (self._from, self._to, self._spacing, self._radius, self._wall)
+        blockers = [QSignalBlocker(spin) for spin in spins]
+        self._from.setValue(handoff.snapshot.travels_mm[0])
+        self._to.setValue(handoff.snapshot.travels_mm[-1])
+        self._spacing.setValue(handoff.snapshot.spacing_mm)
+        self._radius.setValue(handoff.radius_mm)
+        self._wall.setValue(handoff.wall_mm)
+        del blockers
+        self.snapshot = handoff.snapshot
+        self._bend_editor.set_editable(True)
+        self._refresh()
+        if self.snapshot is None or self.preview is None:
+            raise HandoffError('Снимок устарел или заготовка недоступна')
+        self._tabs.setCurrentIndex(self._tabs.count() - 1)
+        self._cad_note.setText(self._cad_note.text() + ' Для построения включите CAD-предпросмотр ниже.')
+        self._file_status.setText('Переданы снимок и размеры двух прямых труб. Проверка условных форм '
+                                  'не переносится в .slarm и не подтверждает CAD, изгибы или безопасность.')
 
     def _view_tab_changed(self, index: int) -> None:
         skeleton_view = index != self._tabs.count() - 1
