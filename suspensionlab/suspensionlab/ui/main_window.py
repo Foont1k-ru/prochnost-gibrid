@@ -47,6 +47,7 @@ from .equilibrium_dialog import EquilibriumDialog
 from .fixed_arm_skeleton_dialog import FixedArmSkeletonDialog
 from .front_tubes_dialog import FrontTubesDialog
 from .joint_concept_dialog import JointConceptDialog
+from .kinematics_workspace import KinematicsWorkspace
 from .niva_arms_dialog import NivaArmsDialog
 from .point_table_dialog import PointTableDialog
 from .rear_tube_dialog import RearTubeDialog
@@ -132,6 +133,8 @@ class MainWindow(QMainWindow):
             self._tabs.addTab(canvas, tr(f"view.tab.{key}"))
         self._vehicle_view = VehicleSchematicView(self.controller, self._tabs)
         self._tabs.addTab(self._vehicle_view, tr("vehicle_schematic.tab"))
+        self._kinematics = KinematicsWorkspace(self.controller, self._tabs)
+        self._tabs.addTab(self._kinematics, "Кинематика 3D")
         self._tabs.currentChanged.connect(lambda _index: self._update_status())
 
         self._stack.addWidget(self._empty)
@@ -892,11 +895,11 @@ class MainWindow(QMainWindow):
             project = dialog.selected_project()
             if project is not None:
                 self.controller.new_project(project=project)
-                self._tabs.setCurrentWidget(self._vehicle_view)
+                self._tabs.setCurrentWidget(self._kinematics)
                 self._show_workspace()
             elif dialog.selected_key():
                 self.controller.new_project(dialog.selected_key())
-                self._tabs.setCurrentWidget(self._vehicle_view)
+                self._tabs.setCurrentWidget(self._kinematics)
                 self._show_workspace()
 
     def _open_project(self) -> None:
@@ -1039,18 +1042,24 @@ class MainWindow(QMainWindow):
     def _fit_active_view(self) -> None:
         if self._tabs.currentWidget() is self._vehicle_view:
             self._vehicle_view.preview.reset_camera()
+        elif self._tabs.currentWidget() is self._kinematics:
+            self._kinematics.preview.reset_camera()
         else:
             self._current_canvas().fit_to_view()
 
     def _zoom_active_view(self, factor: float) -> None:
         if self._tabs.currentWidget() is self._vehicle_view:
             self._vehicle_view.zoom_by(factor)
+        elif self._tabs.currentWidget() is self._kinematics:
+            view = self._kinematics.preview
+            view.zoom = max(0.2, min(8.0, view.zoom * factor))
+            view.update()
         else:
             self._current_canvas().zoom_by(factor)
 
     def _set_view_mode(self, mode: str) -> None:
         """Переключает проекцию на всех вкладках и в меню."""
-        if self._tabs.currentWidget() is self._vehicle_view:
+        if self._tabs.currentWidget() in (self._vehicle_view, self._kinematics):
             self._tabs.setCurrentWidget(self._canvases["both"])
         self._syncing_view = True
         try:

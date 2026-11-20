@@ -223,7 +223,7 @@ def test_cad_preview_load_rotate_and_cancel_without_project_changes(window, qtbo
 
 
 def test_window_and_theme(window, qtbot):
-    assert window._tabs.count() == 4
+    assert window._tabs.count() == 5
     assert "Подвеска" in window.windowTitle()
     window._apply_theme("light")
     assert window.controller.project.view.theme == "light"
@@ -4608,7 +4608,8 @@ def test_template_opens_live_schematic_with_editable_2d(window, qtbot, monkeypat
     window._new_from_template()
     view = window._vehicle_view
     assert window._stack.currentWidget() is window._tabs
-    assert window._tabs.currentWidget() is view
+    assert window._tabs.currentWidget() is window._kinematics
+    window._tabs.setCurrentWidget(view)
     assert view.preview.frame is not None and view.preview.bounds is not None
     before = window.controller.project.to_dict()
     view.preview.set_standard_view('top')
@@ -4660,7 +4661,7 @@ def test_configured_template_and_cancel_keep_expected_active_view(window, monkey
     monkeypatch.setattr(main_window, 'TemplateDialog', TemplateChoice)
     window._new_from_template()
     assert window.controller.project is configured
-    assert window._tabs.currentWidget() is window._vehicle_view
+    assert window._tabs.currentWidget() is window._kinematics
     window._tabs.setCurrentWidget(window._canvases['front'])
     TemplateChoice.accepted = False
     window._new_from_template()
