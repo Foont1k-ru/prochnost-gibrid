@@ -458,3 +458,22 @@ def test_sidebar_is_not_horizontally_clipped_on_compact_window(qtbot, tmp_path):
     assert view.front_button.geometry().right() < view.rear_button.geometry().left()
     window.controller.dirty = False
     window.close()
+
+
+def test_sidebar_expands_for_larger_platform_controls(workspace, qtbot):
+    _, view = workspace
+    view.resize(1200, 800)
+    qtbot.waitUntil(lambda: view.editor_scroll.horizontalScrollBar().maximum() == 0)
+    initial_width = view.editor_scroll.minimumWidth()
+    # Simulate platform/theme controls wider than the offscreen Linux defaults.
+    view.editor.setStyleSheet('QToolButton { min-width: 78px; }')
+    qtbot.waitUntil(lambda: view.editor_scroll.minimumWidth() > initial_width, timeout=5000)
+    qtbot.waitUntil(lambda: view.editor_scroll.horizontalScrollBar().maximum() == 0, timeout=5000)
+    assert view._rows[('lca_f_in', 'x')]._edit.isVisible()
+    view.part.setCurrentIndex(view._part_index(('group', 'spring')))
+    qtbot.waitUntil(lambda: view.editor_scroll.horizontalScrollBar().maximum() == 0, timeout=5000)
+    qtbot.waitUntil(lambda: view._element_controls['lower'].isVisible(), timeout=5000)
+    view.part.setCurrentIndex(view._part_index(('link', 'lower_arm')))
+    view.editor.setStyleSheet('')
+    qtbot.waitUntil(lambda: view.editor_scroll.minimumWidth() == initial_width, timeout=5000)
+    assert view.editor_scroll.horizontalScrollBar().maximum() == 0

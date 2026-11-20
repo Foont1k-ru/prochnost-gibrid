@@ -53,6 +53,12 @@ jobs:
         run: python -m ruff check .
       - name: Проверить типы
         run: python -m mypy suspensionlab
+      - name: Проверить боковую панель Qt на Windows
+        run: python -m pytest -q tests/test_kinematics_workspace_ui.py -k sidebar
+      - name: Проверить боковую панель Qt при масштабе 150%
+        env:
+          QT_SCALE_FACTOR: '1.5'
+        run: python -m pytest -q tests/test_kinematics_workspace_ui.py -k sidebar
       - name: Запустить тесты, включая Qt
         run: python -m pytest -q --junitxml=test-results.xml
       - name: Показать ошибки тестов в аннотациях

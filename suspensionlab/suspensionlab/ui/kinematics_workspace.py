@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 from dataclasses import replace
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QEvent, Qt, QTimer
 from PySide6.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
@@ -101,6 +101,9 @@ class KinematicsWorkspace(QWidget):
         self._timer.setSingleShot(True)
         self._timer.setInterval(300)
         self._timer.timeout.connect(self._calculate)
+        self._sidebar_width_timer = QTimer(self)
+        self._sidebar_width_timer.setSingleShot(True)
+        self._sidebar_width_timer.timeout.connect(self._update_sidebar_minimum_width)
         outer = QVBoxLayout(self)
         outer.setContentsMargins(8, 8, 8, 8)
         title_row = QHBoxLayout()
@@ -117,8 +120,10 @@ class KinematicsWorkspace(QWidget):
         splitter.setChildrenCollapsible(False)
         self.editor_scroll = QScrollArea(splitter)
         self.editor_scroll.setWidgetResizable(True)
-        self.editor_scroll.setMinimumWidth(300)
+        self.editor_scroll.setMinimumWidth(380)
         sidebar = QWidget(self.editor_scroll)
+        self._sidebar = sidebar
+        sidebar.installEventFilter(self)
         sidebar.setObjectName('WorkspaceSidebar')
         sidebar_layout = QVBoxLayout(sidebar)
         sidebar_layout.setContentsMargins(12, 12, 12, 12)
@@ -291,6 +296,26 @@ class KinematicsWorkspace(QWidget):
         controller.unitsChanged.connect(self._rebuild_editor)
         controller.selectionChanged.connect(self._external_selection)
         self._role_changed()
+
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802
+        if (watched is getattr(self, '_sidebar', None) and event.type() in
+                (QEvent.Type.LayoutRequest, QEvent.Type.FontChange, QEvent.Type.StyleChange, QEvent.Type.Show)):
+            # Wait for Qt to finish the current layout/style pass before measuring.
+            self._sidebar_width_timer.start(0)
+        return super().eventFilter(watched, event)
+
+    def _update_sidebar_minimum_width(self) -> None:
+        layout = self._sidebar.layout()
+        if layout is not None:
+            layout.activate()
+        # The vertical scrollbar consumes viewport width even though it belongs
+        # to the scroll area, not the sidebar's minimum size hint.
+        bar = self.editor_scroll.verticalScrollBar()
+        needed = (max(self._sidebar.minimumSizeHint().width(), self._sidebar.minimumWidth()) +
+                  bar.sizeHint().width() + 2 * self.editor_scroll.frameWidth() + 4)
+        minimum = max(380, needed)
+        if self.editor_scroll.minimumWidth() != minimum:
+            self.editor_scroll.setMinimumWidth(minimum)
 
     def _choose_role(self, index: int) -> None:
         self.role.setCurrentIndex(index)
