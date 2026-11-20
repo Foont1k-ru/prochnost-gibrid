@@ -43,6 +43,7 @@ from ..model.param_specs import point_specs
 from ..model.suspension_types import types_for_role
 from .canvas.scene3d_preview import Scene3DPreview
 from .canvas.sweep_plot import SweepPlot
+from .clearance_dialog import ClearanceDialog
 from .controller import AppController, Selection
 from .rocker_setup_dialog import RockerSetupDialog
 from .widgets.camera_views import CameraViews
@@ -99,6 +100,7 @@ class KinematicsWorkspace(QWidget):
         self._rows: dict[tuple[str, str], SliderField] = {}
         self._menu: QMenu | None = None
         self._revision = 0
+        self._clearance_dialog: ClearanceDialog | None = None
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.setInterval(300)
@@ -248,6 +250,11 @@ class KinematicsWorkspace(QWidget):
         self.elements_sample = QLabel(results)
         self.elements_sample.setWordWrap(True)
         result_layout.addWidget(self.elements_sample)
+        self.clearance_button = QPushButton('Проверить условные капсулы…', results)
+        self.clearance_button.setToolTip('Только выбранные связи с явно заданными радиусами на дискретных позах')
+        self.clearance_button.setEnabled(False)
+        self.clearance_button.clicked.connect(self._open_clearance)
+        result_layout.addWidget(self.clearance_button)
         self.summary_toggle = QToolButton(results)
         self.summary_toggle.setText(tr('workspace_flow.summary'))
         self.summary_toggle.setCheckable(True)
@@ -756,6 +763,9 @@ class KinematicsWorkspace(QWidget):
 
     def _invalidate(self, *_args) -> None:
         self._revision += 1
+        if self._clearance_dialog is not None:
+            self._clearance_dialog.invalidate()
+        self.clearance_button.setEnabled(False)
         self.result = None
         self.plot.set_points(())
         self._timer.stop()
@@ -802,6 +812,7 @@ class KinematicsWorkspace(QWidget):
             self.status.setText(errors[axle.role])
             return
         self.result = result
+        self.clearance_button.setEnabled(True)
         points = []
         for sample in result.samples:
             metrics = sample.metrics if sample.scene is not None else None
@@ -831,6 +842,19 @@ class KinematicsWorkspace(QWidget):
         self.travel.blockSignals(False)
         self.travel.setEnabled(True)
         self._show_sample()
+
+    def _open_clearance(self) -> None:
+        if self.result is None or self._clearance_dialog is not None:
+            return
+        axle, revision = self._axle(), self._revision
+        dialog = ClearanceDialog(axle, self.start.value(), self.end.value(), self.spacing.value(),
+                                 lambda: self._revision == revision and self._axle() is axle, self)
+        self._clearance_dialog = dialog
+        try:
+            dialog.exec()
+        finally:
+            self._clearance_dialog = None
+            dialog.deleteLater()
 
     def _show_sample(self, *_args) -> None:
         kind, code = self.part.currentData() or ('all', '')
