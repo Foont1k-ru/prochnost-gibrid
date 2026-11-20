@@ -1,28 +1,40 @@
-"""Необязательная изолированная проверка объёма пересечения двух труб."""
+"""Изолированная проверка объёмных пересечений деталей снимка."""
 from __future__ import annotations
 
 from collections.abc import Callable
 from typing import Any
 
 from PySide6.QtCore import QThread, Signal
-from PySide6.QtWidgets import QLabel, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QPushButton,
+    QTableWidget,
+    QTableWidgetItem,
+    QVBoxLayout,
+    QWidget,
+)
 
-from ..core.cad_fixed_arm_overlap_job import FixedArmOverlapJob, OverlapJobError, OverlapResult
+from ..core.cad_fixed_arm_overlap_job import FixedArmOverlapJob, OverlapJobError, OverlapResult, PairwiseResult
 
 
 class _OverlapReader(QThread):
     completed = Signal(int, object)
     failed = Signal(int, str)
 
-    def __init__(self, document: dict[str, Any], token: int, parent: QWidget) -> None:
+    def __init__(self, document: dict[str, Any], token: int, parent: QWidget, *, all_parts: bool = False) -> None:
         super().__init__(parent)
         self.document = document
         self.token = token
+        self.all_parts = all_parts
         self.job = FixedArmOverlapJob()
 
     def run(self) -> None:
         try:
-            self.completed.emit(self.token, self.job.run(self.document))
+            result = self.job.run_all(self.document) if self.all_parts else self.job.run(self.document)
+            self.completed.emit(self.token, result)
         except OverlapJobError as error:
             self.failed.emit(self.token, str(error))
         except Exception:
@@ -39,33 +51,66 @@ class FixedArmOverlap(QWidget):
         self.generation = 0
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
+        actions = QHBoxLayout()
         self._button = QPushButton('Проверить пересечение двух труб', self)
         self._button.setEnabled(False)
         self._button.clicked.connect(self._start)
-        layout.addWidget(self._button)
+        actions.addWidget(self._button)
+        self._all_button = QPushButton('Проверить все пары деталей', self)
+        self._all_button.setEnabled(False)
+        self._all_button.clicked.connect(self._start_all)
+        actions.addWidget(self._all_button)
+        layout.addLayout(actions)
         self._status = QLabel('Проверка не запускалась. Касание, зазоры и прочность не определяются.', self)
         self._status.setWordWrap(True)
         layout.addWidget(self._status)
+        self._table = QTableWidget(0, 4, self)
+        self._table.setHorizontalHeaderLabels(['Пара', 'Объём, мм³', 'Порог, мм³', 'Результат'])
+        self._table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        for index in (1, 2, 3):
+            self._table.horizontalHeader().setSectionResizeMode(index, QHeaderView.ResizeMode.ResizeToContents)
+        self._table.verticalHeader().hide()
+        self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._table.setMinimumHeight(180)
+        self._table.setMaximumHeight(260)
+        self._table.hide()
+        layout.addWidget(self._table)
 
     def set_document(self, document: dict[str, Any] | None) -> None:
         self.generation += 1
         self._document = document
         if self._worker is not None:
             self._worker.job.cancel()
-        self._button.setEnabled(not self._closed and document is not None and self._worker is None)
+        enabled = not self._closed and document is not None and self._worker is None
+        self._button.setEnabled(enabled)
+        self._all_button.setEnabled(enabled)
+        self._table.setRowCount(0)
+        self._table.hide()
         self._status.setText('Проверка не запускалась для текущих параметров. '
                              'Касание, зазоры и прочность не определяются.')
 
     def _start(self) -> None:
+        self._run_check(all_parts=False)
+
+    def _start_all(self) -> None:
+        self._run_check(all_parts=True)
+
+    def _run_check(self, *, all_parts: bool) -> None:
         if self._closed or self._worker is not None or self._document is None:
             return
         if not self._is_current(self._document):
+            self._table.setRowCount(0)
+            self._table.hide()
             self._status.setText('Снимок устарел; повторите фиксацию и проверку.')
             return
-        worker = _OverlapReader(self._document, self.generation, self)
+        worker = _OverlapReader(self._document, self.generation, self, all_parts=all_parts)
         self._worker = worker
         self._button.setEnabled(False)
-        self._status.setText('Проверка двух труб выполняется в отдельном процессе…')
+        self._all_button.setEnabled(False)
+        self._table.setRowCount(0)
+        self._table.hide()
+        self._status.setText('Проверка всех пар деталей выполняется в отдельном процессе…' if all_parts else
+                             'Проверка двух труб выполняется в отдельном процессе…')
         worker.completed.connect(self._completed)
         worker.failed.connect(self._failed)
         worker.finished.connect(self._finished)
@@ -75,7 +120,12 @@ class FixedArmOverlap(QWidget):
         if token != self.generation or self._closed or self._document is None:
             return
         if not self._is_current(self._document):
+            self._table.setRowCount(0)
+            self._table.hide()
             self._status.setText('Снимок устарел; результат скрыт.')
+            return
+        if isinstance(result, PairwiseResult):
+            self._show_pairs(result)
             return
         if not isinstance(result, OverlapResult):
             self._failed(token, 'output')
@@ -88,9 +138,30 @@ class FixedArmOverlap(QWidget):
         self._status.setText(finding + ' Это не проверка касания, минимального зазора, сварки или прочности; '
                              'корпуса и другие детали не проверяются.')
 
+    def _show_pairs(self, result: PairwiseResult) -> None:
+        names = {'tube_front': 'Передняя труба', 'tube_rear': 'Задняя труба',
+                 'housing_front': 'Передний корпус', 'housing_rear': 'Задний корпус'}
+        if not result.pairs or any(pair.left not in names or pair.right not in names for pair in result.pairs):
+            self._failed(self.generation, 'output')
+            return
+        count = sum(pair.overlap_mm3 > pair.threshold_mm3 for pair in result.pairs)
+        self._status.setText(f'Проверено пар: {len(result.pairs)}; объём выше численного порога: {count}. '
+                             'Ниже порога не означает наличие зазора: касание, расстояния, сварка и прочность '
+                             'не проверяются. Таблицу можно прокручивать.')
+        self._table.setRowCount(len(result.pairs))
+        for row, pair in enumerate(result.pairs):
+            status = 'Есть объём' if pair.overlap_mm3 > pair.threshold_mm3 else 'Ниже порога'
+            cells = (f'{names[pair.left]} — {names[pair.right]}', f'{pair.overlap_mm3:.6g}',
+                     f'{pair.threshold_mm3:.3g}', status)
+            for column, text in enumerate(cells):
+                self._table.setItem(row, column, QTableWidgetItem(text))
+        self._table.show()
+
     def _failed(self, token: int, code: str) -> None:
         if token != self.generation or self._closed:
             return
+        self._table.setRowCount(0)
+        self._table.hide()
         if self._document is None or not self._is_current(self._document):
             self._status.setText('Снимок устарел; результат скрыт.')
             return
@@ -101,13 +172,18 @@ class FixedArmOverlap(QWidget):
         worker, self._worker = self._worker, None
         if worker is not None:
             worker.deleteLater()
-        self._button.setEnabled(not self._closed and self._document is not None)
+        enabled = not self._closed and self._document is not None
+        self._button.setEnabled(enabled)
+        self._all_button.setEnabled(enabled)
 
     def shutdown(self) -> bool:
         self._closed = True
         self.generation += 1
         self._document = None
         self._button.setEnabled(False)
+        self._all_button.setEnabled(False)
+        self._table.setRowCount(0)
+        self._table.hide()
         if self._worker is None:
             return True
         self._worker.job.cancel()

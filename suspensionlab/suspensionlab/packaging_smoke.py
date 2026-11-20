@@ -406,6 +406,14 @@ def run_cad_check() -> None:
             sleep(0.02)
         _require(overlap._worker is None and 'не проверка касания' in overlap._status.text(),
                  "Изолированная проверка пересечения труб недоступна: " + overlap._status.text())
+        overlap._start_all()
+        deadline = monotonic() + 90
+        while overlap._worker is not None and monotonic() < deadline:
+            app.processEvents()
+            sleep(0.02)
+        _require(overlap._worker is None and overlap._table.rowCount() == 6 and
+                 'не означает наличие зазора' in overlap._status.text(),
+                 "Попарная проверка деталей недоступна: " + overlap._status.text())
         with TemporaryDirectory(prefix="suspensionlab-fixed-arm-reopen-") as directory:
             source = Path(directory) / "скелет.slarm"
             with patch.object(QFileDialog, "getSaveFileName", return_value=(str(source), "")):
