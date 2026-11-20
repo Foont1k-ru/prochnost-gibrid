@@ -27,7 +27,7 @@ def test_clearance_dialog_requires_explicit_radii_and_invalidates(qtbot, monkeyp
             radius.setValue(5)
         dialog.run_check()
         text = dialog.output.toPlainText()
-        assert 'зазор' in text and 'Невыбранные связи не проверены' in text
+        assert 'зазор' in text and 'Невыбранные формы не проверены' in text
         assert 'Между точками сетки' in text and 'реальные детали не проверены' in text
         dialog.margin.setValue(2)
         assert 'Не рассчитано' in dialog.output.toPlainText()
@@ -56,13 +56,24 @@ def test_rear_dialog_available_for_five_links(workspace_for_clearance, qtbot, mo
     qtbot.waitUntil(lambda: view.result is not None, timeout=10000)
     def interact(dialog):
         assert dialog is view._clearance_dialog
-        assert dialog is not None and len(dialog.links) == 5
+        assert dialog is not None and len(dialog.links) == 10
         for code in ('upper_front', 'toe_link'):
             check, radius = dialog.links[code]
             check.setChecked(True)
             radius.setValue(4)
         dialog.run_check()
         assert 'зазор' in dialog.output.toPlainText()
+        wheel_check, wheel_radius = dialog.links['wheel_cylinder']
+        wheel_check.setChecked(True)
+        wheel_radius.setValue(300)
+        dialog.run_check()
+        assert 'ширину цилиндра' in dialog.output.toPlainText()
+        dialog.wheel_width.setValue(200)
+        dialog.run_check()
+        assert 'Ширина цилиндра колеса: 200' in dialog.output.toPlainText()
+        assert 'Отрицательный зазор с цилиндром' in dialog.output.toPlainText()
+        dialog.wheel_width.setValue(210)
+        assert 'Не рассчитано' in dialog.output.toPlainText()
         view.role.setCurrentIndex(0)
         assert 'устарел' in dialog.output.toPlainText()
         assert not dialog.run_button.isEnabled()

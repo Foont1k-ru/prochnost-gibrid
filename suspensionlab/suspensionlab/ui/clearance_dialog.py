@@ -12,16 +12,29 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QScrollArea,
     QTextEdit,
     QVBoxLayout,
     QWidget,
 )
 
-from ..core.suspension_clearance import calculate_link_clearance, eligible_links
+from ..core.suspension_clearance import calculate_link_clearance, eligible_objects
 from ..i18n import tr
 from ..model.entities import Axle
 
 LOG = logging.getLogger(__name__)
+_EXTRA_LABELS = {'spring_capsule': 'Пружина (капсула)', 'damper_capsule': 'Амортизатор (капсула)',
+                 'rod_capsule': 'Тяга коромысла (капсула)', 'rocker_capsule': 'Коромысло (две капсулы)',
+                 'wheel_cylinder': 'Колесо (сплошной цилиндр)'}
+
+
+def _label(axle: Axle, code: str) -> str:
+    if code in _EXTRA_LABELS:
+        return _EXTRA_LABELS[code]
+    spec = axle.spec.link(code)
+    if spec is None:
+        raise ValueError('Неизвестная связь')
+    return tr(spec.name_key)
 
 
 class ClearanceDialog(QDialog):
@@ -35,32 +48,48 @@ class ClearanceDialog(QDialog):
         self.setWindowTitle('Проверка условных капсул')
         self.resize(700, 650)
         layout = QVBoxLayout(self)
-        intro = QLabel('Левая сторона, только выбранные связи и дискретные рассчитанные положения. '
-                       'Задайте радиусы условных капсул; размеры реальных деталей автоматически не определяются. '
-                       'Двухопорный рычаг — две капсулы, не пластина. Капсулы имеют сферические концы.', self)
+        intro = QLabel('Левая сторона, только выбранные формы и дискретные рассчитанные положения. '
+                       'Задайте радиусы; размеры не берутся из модели автоматически. Рычаг и коромысло — '
+                       'две капсулы, не пластина. Колесо — сплошной цилиндр, не шина.', self)
         intro.setWordWrap(True)
         layout.addWidget(intro)
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setMaximumHeight(240)
+        entries = QWidget(scroll)
+        entries_layout = QVBoxLayout(entries)
         self.links: dict[str, tuple[QCheckBox, QDoubleSpinBox]] = {}
-        for code in eligible_links(axle):
-            spec = axle.spec.link(code)
-            assert spec is not None
+        for code in eligible_objects(axle):
+            label = _label(axle, code)
             row = QHBoxLayout()
-            check = QCheckBox(tr(spec.name_key), self)
-            radius = QDoubleSpinBox(self)
+            check = QCheckBox(label, entries)
+            radius = QDoubleSpinBox(entries)
             radius.setDecimals(3)
             radius.setRange(0, 1000000)
             radius.setSpecialValueText('не задан')
             radius.setSuffix(' мм')
-            radius.setAccessibleName(f'Радиус: {tr(spec.name_key)}')
+            radius.setAccessibleName(f'Радиус: {label}')
             row.addWidget(check, 1)
-            row.addWidget(QLabel('Радиус', self))
+            row.addWidget(QLabel('Радиус', entries))
             row.addWidget(radius)
-            layout.addLayout(row)
+            entries_layout.addLayout(row)
             self.links[code] = (check, radius)
             check.toggled.connect(self._clear_result)
             radius.valueChanged.connect(self._clear_result)
         row = QHBoxLayout()
-        row.addWidget(QLabel('Требуемый запас между капсулами', self))
+        row.addWidget(QLabel('Ширина цилиндра колеса', entries))
+        self.wheel_width = QDoubleSpinBox(entries)
+        self.wheel_width.setDecimals(3)
+        self.wheel_width.setRange(0, 1000000)
+        self.wheel_width.setSpecialValueText('не задана')
+        self.wheel_width.setSuffix(' мм')
+        row.addWidget(self.wheel_width)
+        entries_layout.addLayout(row)
+        self.wheel_width.valueChanged.connect(self._clear_result)
+        scroll.setWidget(entries)
+        layout.addWidget(scroll)
+        row = QHBoxLayout()
+        row.addWidget(QLabel('Требуемый запас между формами', self))
         self.margin = QDoubleSpinBox(self)
         self.margin.setRange(0, 1000000)
         self.margin.setDecimals(3)
@@ -86,7 +115,7 @@ class ClearanceDialog(QDialog):
         if not self.is_current():
             self.invalidate()
             return
-        self.output.setPlainText('Не рассчитано. Выберите не менее двух связей и задайте каждой положительный радиус.')
+        self.output.setPlainText('Не рассчитано. Выберите не менее двух форм, задайте радиусы и ширину колеса при выборе.')
 
     def invalidate(self) -> None:
         self.run_button.setEnabled(False)
@@ -98,7 +127,8 @@ class ClearanceDialog(QDialog):
             return
         radii = {code: radius.value() for code, (check, radius) in self.links.items() if check.isChecked()}
         try:
-            sweep = calculate_link_clearance(self.axle, self.start, self.end, self.spacing, radii, self.margin.value())
+            sweep = calculate_link_clearance(self.axle, self.start, self.end, self.spacing, radii, self.margin.value(),
+                                             wheel_width_mm=self.wheel_width.value())
         except (ValueError, KeyError, ArithmeticError) as error:
             self.output.setPlainText(f'Не рассчитано: {error}. Ничего не проверено.')
             return
@@ -109,18 +139,21 @@ class ClearanceDialog(QDialog):
         if not self.is_current():
             self.invalidate()
             return
-        labels = {code: tr(self.axle.spec.link(code).name_key) for code in self.links}  # type: ignore[union-attr]
+        labels = {code: _label(self.axle, code) for code in self.links}
         omitted = ', '.join(labels[code] for code in sweep.omitted) or 'нет'
+        wheel_info = f'. Ширина цилиндра колеса: {self.wheel_width.value():g} мм.' if 'wheel_cylinder' in radii else ''
         lines = [f'Левая сторона, сетка {self.start:g}…{self.end:g} мм, максимальный шаг {self.spacing:g} мм.',
-                 'Радиусы: ' + ', '.join(f'{labels[code]} — {radii[code]:g} мм' for code in sweep.selected),
-                 f'Заданный запас: {self.margin.value():g} мм. Невыбранные связи не проверены: {omitted}.',
-                 'Сравниваются только пары выбранных связей; внутри одной связи проверок нет.',
-                 'Колесо, кулак, кузов, пружина, амортизатор, тяга и коромысло, привод и реальные детали не проверены.',
+                 'Радиусы: ' + ', '.join(f'{labels[code]} — {radii[code]:g} мм' for code in sweep.selected) + wheel_info,
+                 f'Заданный запас: {self.margin.value():g} мм. Невыбранные формы не проверены: {omitted}.',
+                 'Сравниваются только пары выбранных форм; внутри одной формы проверок нет.',
+                 'Кулак, кузов, привод и реальные детали не проверены; цилиндр — не настоящая шина.',
+                 'Известные соединённые пары исключены целиком; даже вдали от шарнира они не проверены.',
+                 'Отрицательный зазор с цилиндром не означает глубину проникновения.',
                  'Между точками сетки движение и столкновения не проверены. Не является разрешением на изготовление.', '']
         status = {'overlap': 'наложение', 'touch': 'касание', 'low_clearance': 'меньше запаса',
                   'limit': 'у границы запаса', 'clear': 'больше запаса', 'unknown_no_pose': 'нет решения позы',
                   'unknown_geometry': 'нет корректной геометрии',
-                  'excluded_shared_point': 'не проверено: общий шарнир (вся пара исключена)'}
+                  'excluded_shared_point': 'не проверено: известное соединение (вся пара исключена)'}
         all_pairs = [pair for sample in sweep.samples for pair in sample.pairs]
         measured = [pair for pair in all_pairs if pair.measurement is not None]
         lines.append(f'Проверено пар на позах: {len(measured)} из {len(all_pairs)}; '
@@ -142,5 +175,7 @@ class ClearanceDialog(QDialog):
                 if pair.measurement is not None:
                     text += (f'; зазор {pair.measurement.clearance_mm:.3f} мм '
                              f'(ветви {pair.first_pivot}, {pair.second_pivot})')
+                elif pair.detail:
+                    text += f'; {pair.detail}'
                 lines.append(text)
         self.output.setPlainText('\n'.join(lines))
