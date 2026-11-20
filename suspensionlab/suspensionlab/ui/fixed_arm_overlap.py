@@ -101,6 +101,7 @@ class FixedArmOverlap(QWidget):
         self._worker: _OverlapReader | None = None
         self._proximity: ProximityResult | None = None
         self._requirements: dict[str, float] = {}
+        self._requirement_drafts: dict[str, str] = {}
         self._requirement_pair: tuple[str, str] | None = None
         self._suggestion: SuggestionResult | None = None
         self._auto_results: dict[str, AutoPairResult] = {}
@@ -166,7 +167,7 @@ class FixedArmOverlap(QWidget):
         self._minimum = QLineEdit(self)
         self._minimum.setPlaceholderText('Минимальный зазор выбранной пары, мм')
         self._minimum.setMaxLength(32)
-        self._minimum.textChanged.connect(self._requirement_changed)
+        self._minimum.textChanged.connect(self._minimum_edited)
         row.addWidget(self._minimum)
         self._set_minimum = QPushButton('Задать', self)
         self._set_minimum.setEnabled(False)
@@ -177,6 +178,10 @@ class FixedArmOverlap(QWidget):
         self._remove_minimum.clicked.connect(self._remove_requirement)
         row.addWidget(self._remove_minimum)
         layout.addLayout(row)
+        self._discard_drafts = QPushButton('Отменить все черновики требований…', self)
+        self._discard_drafts.setEnabled(False)
+        self._discard_drafts.clicked.connect(self._discard_requirement_drafts)
+        layout.addWidget(self._discard_drafts)
         self._suggest_button = QPushButton('Подобрать подрезку', self)
         self._suggest_button.setEnabled(False)
         self._suggest_button.clicked.connect(self._start_suggestion)
@@ -201,6 +206,7 @@ class FixedArmOverlap(QWidget):
             self.generation += 1
             self._worker.job.cancel()
         self._requirements = validated
+        self._requirement_drafts.clear()
         self._clear_auto_results()
         self._suggestion = None
         self._apply_button.setEnabled(False)
@@ -208,21 +214,22 @@ class FixedArmOverlap(QWidget):
         self._requirement_changed()
         self._update_requirement_cells()
 
+    def requirement_drafts(self) -> tuple[tuple[str, str], ...]:
+        return tuple(sorted(self._requirement_drafts.items()))
+
     def has_uncommitted_requirement(self) -> bool:
-        if self._requirement_pair is None:
-            return False
-        saved = self._requirements.get('|'.join(self._requirement_pair))
-        text = self._minimum.text().strip()
-        if not text:
-            return saved is not None
-        value = self._minimum_value()
-        return value is None or value != saved
+        return bool(self._requirement_drafts)
 
     def clear_housing_requirements(self) -> bool:
         retained = {key: value for key, value in self._requirements.items() if key == TUBE_PAIR}
-        changed = retained != self._requirements
+        drafts = {key: value for key, value in self._requirement_drafts.items() if key == TUBE_PAIR}
+        changed = retained != self._requirements or drafts != self._requirement_drafts
         if changed:
             self.set_requirements(retained, housings=False)
+            self._requirement_drafts = drafts
+            self._requirement_pair = None
+            self._requirement_changed()
+            self._update_requirement_cells()
         return changed
 
     def set_document(self, document: dict[str, Any] | None) -> None:
@@ -238,8 +245,12 @@ class FixedArmOverlap(QWidget):
         self._set_minimum.setEnabled(False)
         self._remove_minimum.setEnabled(False)
         self._apply_button.setEnabled(False)
-        self._suggest_status.setText('Требования сохранены в параметрах, но на текущей геометрии не проверены.'
-                                     if self._requirements else 'Требуемый зазор не задан; проверка не выполнена.')
+        if self._requirement_drafts:
+            self._suggest_status.setText('Черновики требований сохранены только в окне. Рассчитайте пары, '
+                                         'чтобы их задать, или отмените все черновики.')
+        else:
+            self._suggest_status.setText('Требования сохранены в параметрах, но на текущей геометрии не проверены.'
+                                         if self._requirements else 'Требуемый зазор не задан; проверка не выполнена.')
         if self._worker is not None:
             self._worker.job.cancel()
         enabled = not self._closed and document is not None and self._worker is None
@@ -248,10 +259,25 @@ class FixedArmOverlap(QWidget):
         self._distance_button.setEnabled(enabled)
         self._auto_button.setEnabled(enabled)
         self._cancel_button.setEnabled(self._worker is not None)
+        self._discard_drafts.setEnabled(not self._closed and self._worker is None and bool(self._requirement_drafts))
         self._table.setRowCount(0)
         self._table.hide()
         self._status.setText('Проверка не запускалась для текущих параметров. '
                              'Касание, зазоры и прочность не определяются.')
+
+    def _minimum_edited(self, *_args: object) -> None:
+        if self._requirement_pair is not None:
+            key = '|'.join(self._requirement_pair)
+            text = self._minimum.text()
+            saved = self._requirements.get(key)
+            value = self._minimum_value()
+            dirty = (saved is not None) if not text.strip() else value is None or value != saved
+            if dirty:
+                self._requirement_drafts[key] = text
+            else:
+                self._requirement_drafts.pop(key, None)
+        self._requirement_changed()
+        self._update_requirement_cells()
 
     def _requirement_changed(self, *_args: object) -> None:
         self._suggestion = None
@@ -264,14 +290,15 @@ class FixedArmOverlap(QWidget):
         if key != self._requirement_pair:
             self._requirement_pair = key
             with QSignalBlocker(self._minimum):
-                self._minimum.setText(repr(saved) if saved is not None else '')
+                self._minimum.setText(self._requirement_drafts.get(key_text or '', repr(saved) if saved is not None else ''))
         value = self._minimum_value()
         points = pair.points if pair is not None and pair.status == 'gap' and pair.points is not None else ()
         self.markersRequested.emit(points)
         enabled = not self._closed and self._worker is None and pair is not None
         self._set_minimum.setEnabled(enabled and value is not None and value != saved)
         self._remove_minimum.setEnabled(enabled and saved is not None)
-        self._suggest_button.setEnabled(enabled and saved is not None and value == saved)
+        self._discard_drafts.setEnabled(not self._closed and self._worker is None and bool(self._requirement_drafts))
+        self._suggest_button.setEnabled(enabled and saved is not None and value == saved and not self._requirement_drafts)
         if pair is None:
             self._suggest_status.setText('Выберите пару после расчёта; требования до этого не проверены.')
         elif saved is None:
@@ -282,8 +309,41 @@ class FixedArmOverlap(QWidget):
             self._suggest_status.setText(f'Выбранная пара: минимум {saved:g} мм — '
                                          f'{_requirement_status(pair, saved)}.{note}')
         auto = self._auto_results.get(key_text or '')
-        if auto is not None and auto.suggestion is not None and value == saved:
+        if auto is not None and auto.suggestion is not None and value == saved and not self._requirement_drafts:
             self._show_suggestion(auto.suggestion)
+        elif auto is not None:
+            descriptions = {
+                'requirement_missing': 'Есть пересечение; задайте минимум для этой пары и повторите автоподбор.',
+                'no_requirement': 'Минимум не задан; нарушение зазора не оценивалось.',
+                'unsupported': 'Для этой пары нет поддержанного типа автоматического реза.',
+                'unverified': 'Расчёт неоднозначен или не выполнен; предложение не подтверждено.',
+                'failed': 'Подбор для пары не завершился; попробуйте повторить проверку.',
+                'satisfied': 'Заданный минимум подтверждён на текущем снимке.',
+            }
+            if auto.outcome in descriptions:
+                self._suggest_status.setText(self._suggest_status.text() + ' ' + descriptions[auto.outcome])
+        if self._requirement_drafts:
+            self._suggest_status.setText(self._suggest_status.text() +
+                                         f' Непринятых черновиков: {len(self._requirement_drafts)}; '
+                                         'до подбора задайте или отмените их.')
+
+    def _discard_requirement_drafts(self) -> None:
+        if self._closed or self._worker is not None or not self._requirement_drafts:
+            return
+        drafts, token, document = self.requirement_drafts(), self.generation, self._document
+        requirements = self.requirements()
+        answer = QMessageBox.question(self, 'Отменить черновики?',
+                                      'Отменить все незаданные значения? Сохранённые требования не изменятся.',
+                                      QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                                      QMessageBox.StandardButton.No)
+        if (answer != QMessageBox.StandardButton.Yes or token != self.generation or
+                document is not self._document or drafts != self.requirement_drafts() or
+                requirements != self._requirements):
+            return
+        self._requirement_drafts.clear()
+        self._requirement_pair = None
+        self._requirement_changed()
+        self._update_requirement_cells()
 
     def _clear_auto_results(self) -> None:
         self._auto_results.clear()
@@ -299,6 +359,7 @@ class FixedArmOverlap(QWidget):
             self.set_document(None)
             return
         self._requirements['|'.join(key)] = value
+        self._requirement_drafts.pop('|'.join(key), None)
         self._clear_auto_results()
         self._requirement_changed()
         self._update_requirement_cells()
@@ -311,6 +372,7 @@ class FixedArmOverlap(QWidget):
             self.set_document(None)
             return
         self._requirements.pop('|'.join(key), None)
+        self._requirement_drafts.pop('|'.join(key), None)
         self._clear_auto_results()
         with QSignalBlocker(self._minimum):
             self._minimum.clear()
@@ -318,12 +380,16 @@ class FixedArmOverlap(QWidget):
         self._update_requirement_cells()
 
     def _update_requirement_cells(self) -> None:
-        if self._proximity is None or self._table.columnCount() != 7:
+        if self._proximity is None or self._table.columnCount() not in (7, 8):
             return
         with QSignalBlocker(self._table):
             for row, pair in enumerate(self._proximity.pairs):
-                minimum = self._requirements.get(f'{pair.left}|{pair.right}')
-                self._table.setItem(row, 5, QTableWidgetItem('Не задано' if minimum is None else f'{minimum:g}'))
+                key = f'{pair.left}|{pair.right}'
+                minimum = self._requirements.get(key)
+                label = 'Не задано' if minimum is None else f'{minimum:g}'
+                if key in self._requirement_drafts:
+                    label += ' (черновик)'
+                self._table.setItem(row, 5, QTableWidgetItem(label))
                 self._table.setItem(row, 6, QTableWidgetItem(_requirement_status(pair, minimum)))
 
     def _minimum_value(self) -> float | None:
@@ -335,7 +401,8 @@ class FixedArmOverlap(QWidget):
 
     def _start_suggestion(self) -> None:
         value, row = self._minimum_value(), self._table.currentRow()
-        if self._proximity is None or value is None or not 0 <= row < len(self._proximity.pairs):
+        if (self._proximity is None or self._requirement_drafts or value is None or
+                not 0 <= row < len(self._proximity.pairs)):
             return
         pair = self._proximity.pairs[row]
         if self._requirements.get(f'{pair.left}|{pair.right}') != value:
@@ -344,7 +411,8 @@ class FixedArmOverlap(QWidget):
 
     def _confirm_suggestion(self) -> None:
         candidate, doc, token = self._suggestion, self._document, self.generation
-        if candidate is None or doc is None or self._apply_callback is None or not self._is_current(doc):
+        if (candidate is None or doc is None or self._requirement_drafts or self._apply_callback is None or
+                not self._is_current(doc)):
             return
         if candidate.radial_clearance_mm is None:
             return
@@ -361,7 +429,7 @@ class FixedArmOverlap(QWidget):
         answer = QMessageBox.question(self, 'Применить подрезку?', text,
                                       QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                                       QMessageBox.StandardButton.No)
-        if (answer == QMessageBox.StandardButton.Yes and token == self.generation and
+        if (answer == QMessageBox.StandardButton.Yes and token == self.generation and not self._requirement_drafts and
                 self._suggestion is candidate and self._document is doc and self._is_current(doc)):
             auto = any(item.suggestion is candidate for item in self._auto_results.values())
             self._apply_callback(doc, candidate)
@@ -379,7 +447,7 @@ class FixedArmOverlap(QWidget):
 
     def _start_auto(self) -> None:
         if self.has_uncommitted_requirement():
-            self._auto_summary.setText('Сначала нажмите «Задать» или верните сохранённый минимум.')
+            self._auto_summary.setText('Сначала нажмите «Задать» для всех черновиков или отмените их.')
             return
         self._run_check(all_parts=False, auto=True)
 
@@ -416,6 +484,7 @@ class FixedArmOverlap(QWidget):
         self._distance_button.setEnabled(False)
         self._auto_button.setEnabled(False)
         self._cancel_button.setEnabled(True)
+        self._discard_drafts.setEnabled(False)
         self._suggest_button.setEnabled(False)
         self._set_minimum.setEnabled(False)
         self._remove_minimum.setEnabled(False)
@@ -532,7 +601,8 @@ class FixedArmOverlap(QWidget):
                                      f'пересечений после реза: {conflicts}; заданных требований не подтверждено: {unconfirmed}. '
                                      'Прочность, сварка и движение не удостоверены.')
         self._status.setText('Предложение не применено. Проверены только рассчитанные CAD-тела и ограниченный набор резов.')
-        self._apply_button.setEnabled(self._worker is None and self._apply_callback is not None)
+        self._apply_button.setEnabled(self._worker is None and not self._requirement_drafts and
+                                      self._apply_callback is not None)
 
     def _show_pairs(self, result: PairwiseResult) -> None:
         names = {'tube_front': 'Передняя труба', 'tube_rear': 'Задняя труба',
@@ -623,6 +693,7 @@ class FixedArmOverlap(QWidget):
         self._distance_button.setEnabled(enabled)
         self._auto_button.setEnabled(enabled)
         self._cancel_button.setEnabled(False)
+        self._discard_drafts.setEnabled(not self._closed and bool(self._requirement_drafts))
         self._table.setEnabled(enabled)
         self._minimum.setEnabled(enabled)
         row = self._table.currentRow()
@@ -631,8 +702,10 @@ class FixedArmOverlap(QWidget):
         value = self._minimum_value()
         self._set_minimum.setEnabled(enabled and pair is not None and value is not None and value != saved)
         self._remove_minimum.setEnabled(enabled and pair is not None and saved is not None)
-        self._suggest_button.setEnabled(enabled and pair is not None and saved is not None and value == saved)
-        self._apply_button.setEnabled(enabled and self._suggestion is not None and self._apply_callback is not None)
+        self._suggest_button.setEnabled(enabled and pair is not None and saved is not None and value == saved and
+                                        not self._requirement_drafts)
+        self._apply_button.setEnabled(enabled and not self._requirement_drafts and self._suggestion is not None and
+                                      self._apply_callback is not None)
 
     def shutdown(self) -> bool:
         self._closed = True
@@ -643,6 +716,7 @@ class FixedArmOverlap(QWidget):
         self._distance_button.setEnabled(False)
         self._auto_button.setEnabled(False)
         self._cancel_button.setEnabled(False)
+        self._discard_drafts.setEnabled(False)
         self._suggest_button.setEnabled(False)
         self._set_minimum.setEnabled(False)
         self._remove_minimum.setEnabled(False)

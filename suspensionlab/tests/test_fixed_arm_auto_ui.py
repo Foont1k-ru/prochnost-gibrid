@@ -50,7 +50,9 @@ def test_auto_review_confirmation_and_recheck(qtbot, monkeypatch):
     assert view._table.item(2, 7).text() == 'Нет поддержанного реза'
     assert view._apply_button.isEnabled() and dialog._tube_joint_values() is None
     view._table.selectRow(1)
-    assert not view._apply_button.isEnabled()
+    assert not view._apply_button.isEnabled() and 'Есть пересечение' in view._suggest_status.text()
+    view._table.selectRow(2)
+    assert not view._apply_button.isEnabled() and 'нет поддержанного типа' in view._suggest_status.text()
     view._table.selectRow(0)
     assert view._apply_button.isEnabled() and 'зазор выбранной пары' in view._suggest_status.text()
     monkeypatch.setattr(QMessageBox, 'question', lambda *a: QMessageBox.StandardButton.No)

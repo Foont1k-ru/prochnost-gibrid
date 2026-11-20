@@ -136,6 +136,7 @@ def test_stale_confirmation_cannot_apply_candidate(qtbot, monkeypatch):
     after = ProximityResult((PairProximity('tube_front', 'tube_rear', 0, 1e-6, 1),))
     view._completed(view.generation, base)
     view._minimum.setText('0.5')
+    view._commit_requirement()
     view._show_suggestion(SuggestionResult('candidate', base, 'joint', 'rear', .5, after))
     def changed(*args):
         dialog._radius.setValue(dialog._radius.value() + 1)

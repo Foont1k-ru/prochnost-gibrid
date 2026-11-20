@@ -394,7 +394,7 @@ class FixedArmSkeletonDialog(QDialog):
         return (self.snapshot, self._from.value(), self._to.value(), self._spacing.value(),
                 self._radius.value(), self._wall.value(), self._bend_editor.state(), self._draft, housing_state,
                 notch_state, joint_state, tuple(sorted(self._overlap.requirements().items())),
-                self._overlap.has_uncommitted_requirement())
+                self._overlap.requirement_drafts())
 
     def _reset_notches(self, *, clear_joint: bool = True) -> None:
         for leg in ('front', 'rear'):
@@ -572,8 +572,8 @@ class FixedArmSkeletonDialog(QDialog):
         self._reset_notches(clear_joint=False)
         self._refresh()
         if had_housing_cuts or cleared_requirements:
-            self._housing_status.setText('Корпуса изменены; подрезки и требования к парам с корпусами сброшены. '
-                                         'Подрезка и требование между трубами сохранены.')
+            self._housing_status.setText('Корпуса изменены; подрезки, требования и черновики пар с корпусами сброшены. '
+                                         'Подрезка, требование и черновик между трубами сохранены.')
 
     def _remove_housings(self) -> None:
         if self._housings is not None and self._draft is None:
@@ -583,8 +583,8 @@ class FixedArmSkeletonDialog(QDialog):
             self._reset_notches(clear_joint=False)
             self._refresh()
             if had_housing_cuts or cleared_requirements:
-                self._housing_status.setText('Корпуса удалены; подрезки и требования к парам с корпусами сброшены. '
-                                             'Подрезка и требование между трубами сохранены.')
+                self._housing_status.setText('Корпуса удалены; подрезки, требования и черновики пар с корпусами сброшены. '
+                                             'Подрезка, требование и черновик между трубами сохранены.')
 
     def _length_summary(self, bends: dict[str, dict[str, Any]]) -> str:
         if self.preview is None:
@@ -889,7 +889,8 @@ class FixedArmSkeletonDialog(QDialog):
             self._refresh()
             return
         if self._overlap.has_uncommitted_requirement():
-            QMessageBox.warning(self, 'Сохранение скелета', 'Сначала нажмите «Задать» или отмените ввод требования к зазору.')
+            QMessageBox.warning(self, 'Сохранение скелета',
+                                'Сначала задайте все черновики требований к зазору или отмените их.')
             return
         state = self._state()
         selected, _ = QFileDialog.getSaveFileName(self, 'Сохранить новый скелет', '', 'Скелет рычага (*.slarm)')
