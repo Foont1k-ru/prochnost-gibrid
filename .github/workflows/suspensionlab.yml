@@ -70,7 +70,7 @@ jobs:
     name: Python 3.11 / Qt — ${{ matrix.os }}
     if: github.event_name != 'workflow_dispatch' || inputs.diagnostic_run_id == ''
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 25
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
@@ -122,16 +122,27 @@ jobs:
             python -c "from pathlib import Path; t=Path('python311-integration-console.txt').read_text(encoding='utf-8', errors='replace')[-12000:]; print('::error title=Python integration output::'+t.replace('%','%25').replace(chr(13),'%0D').replace(chr(10),'%0A'))"
           fi
           exit "$result"
-      - name: Полный набор тестов и отдельные процессы Qt (Windows)
+      # As on Linux, isolate the real CAD+Qt integration in a new process.
+      # This retains coverage but is not proof that the native crash is fixed.
+      - name: Основной набор тестов Qt (Windows)
         if: runner.os == 'Windows'
-        run: python scripts/run_pytest_with_diagnostics.py -v --junitxml=python311-results.xml
+        run: python scripts/run_pytest_with_diagnostics.py -v --ignore=tests/test_weldment_3d_integration.py --junitxml=python311-results.xml
+      - name: CAD+Qt интеграция в отдельном процессе (Windows)
+        if: runner.os == 'Windows'
+        env:
+          PYTEST_DIAGNOSTIC_LOG: python311-integration-console.txt
+        run: python scripts/run_pytest_with_diagnostics.py -v tests/test_weldment_3d_integration.py --junitxml=python311-integration-results.xml
       - name: Показать ошибки Python 3.11 в аннотациях
         if: failure()
         run: python scripts/annotate_pytest.py python311-results.xml
-      - name: Показать ошибки отдельной CAD+Qt интеграции
+      - name: Показать ошибки отдельной CAD+Qt интеграции (Linux)
         if: failure() && runner.os == 'Linux'
         shell: bash
         run: if [ -f python311-integration-results.xml ]; then python scripts/annotate_pytest.py python311-integration-results.xml; fi
+      - name: Показать ошибки отдельной CAD+Qt интеграции (Windows)
+        if: failure() && runner.os == 'Windows'
+        shell: pwsh
+        run: if (Test-Path python311-integration-results.xml) { python scripts/annotate_pytest.py python311-integration-results.xml }
       - name: Проверить исходный запуск и таблицу в smoke-тесте
         run: python packaging_entry.py --packaging-check python311-smoke.txt
       - name: Сохранить отчёт тестов
@@ -247,10 +258,19 @@ jobs:
             if (-not (Test-Path $console)) { throw 'Report and console missing' }
             $text = Get-Content -Raw -Encoding utf8 $console
             if (-not $text) { throw 'Report missing and console empty' }
-            # GitHub truncates annotations at 4096 characters; preserve the end.
-            $tail = $text.Substring([Math]::Max(0, $text.Length - 2500))
+            # Identify the last test and, when present, the start of a native
+            # traceback; GitHub truncates annotations at 4096 characters.
+            $tests = [regex]::Matches($text, '(?m)^tests/[^\r\n]*')
+            if ($tests.Count -gt 0) {
+              $last = $tests[$tests.Count - 1].Value.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+              Write-Output "::warning title=Последний тест без JUnit::$last"
+            }
+            $position = $text.LastIndexOf('Windows fatal exception:')
+            if ($position -lt 0) { $position = $text.LastIndexOf('Fatal Python error:') }
+            if ($position -lt 0) { $position = [Math]::Max(0, $text.Length - 2500) }
+            $tail = $text.Substring($position, [Math]::Min(2500, $text.Length - $position))
             $tail = $tail.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
-            Write-Output "::warning title=JUnit отсутствует; хвост консоли::$tail"
+            Write-Output "::warning title=JUnit отсутствует; фрагмент консоли::$tail"
             exit 0
           }
           python scripts/annotate_pytest.py $report
