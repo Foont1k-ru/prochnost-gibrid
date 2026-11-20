@@ -19,6 +19,7 @@ dependencies = [
     "pillow==13.0.0",
     "scipy==1.16.3",
     "pyqtgraph==0.13.7",
+    "PyOpenGL==3.1.10",
     "ezdxf==1.4.5",
     "reportlab==5.1.0",
     "openpyxl==3.1.5",

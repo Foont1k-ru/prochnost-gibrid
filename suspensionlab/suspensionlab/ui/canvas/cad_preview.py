@@ -1,12 +1,13 @@
-"""Ортографический просмотр CAD без OpenGL; быстрый вид при движении камеры."""
+"""Ортографический CAD-просмотр: CPU и экспериментальный OpenGL по запросу."""
 from __future__ import annotations
 
 from math import pi, remainder
+from typing import TYPE_CHECKING
 
 import numpy as np
 from PySide6.QtCore import QPointF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QImage, QPainter, QPen
-from PySide6.QtWidgets import QApplication, QWidget
+from PySide6.QtWidgets import QApplication, QPushButton, QWidget
 
 from ...core.cad_interaction import interaction_geometry
 from ...core.cad_measurement import point_on_projected_triangle
@@ -14,6 +15,9 @@ from ...core.cad_mesh import CadMesh
 from ...core.cad_raster import pick_triangle, rasterize, screen_projection, triangle_shades
 from ...core.camera_views import camera_view_angles
 from ...i18n import tr
+
+if TYPE_CHECKING:
+    from .cad_gl_renderer import CadGlRenderer
 
 
 class CadPreview(QWidget):
@@ -46,6 +50,15 @@ class CadPreview(QWidget):
         self._moving = False
         self._frame_key: tuple | None = None
         self._frame: QImage | None = None
+        self._gpu: CadGlRenderer | None = None
+        self._mesh_revision = 0
+        self._gpu_revision = -1
+        self._renderer_button = QPushButton(tr("cad_preview.renderer_cpu"), self)
+        self._renderer_button.setCheckable(True)
+        self._renderer_button.setToolTip(tr("cad_preview.renderer_cpu_tip"))
+        self._renderer_button.setAccessibleName(tr("cad_preview.renderer_cpu_tip"))
+        self._renderer_button.toggled.connect(self._renderer_toggled)
+        self._renderer_button.adjustSize()
         self._settle = QTimer(self)
         self._settle.setSingleShot(True)
         self._settle.setInterval(200)
@@ -58,6 +71,7 @@ class CadPreview(QWidget):
                 raise ValueError("Некорректная маска подсветки")
             highlight = np.array(highlight, dtype=bool, copy=True)
             highlight.flags.writeable = False
+        self._mesh_revision += 1
         self._highlight = highlight
         self._through = bool(through and highlight is not None)
         self.mesh = mesh
@@ -71,6 +85,9 @@ class CadPreview(QWidget):
         self._frame_key = None
         self._frame = None
         if mesh is None:
+            self._close_gpu()
+            if self._renderer_button.isChecked():
+                self._renderer_button.setToolTip(tr("cad_preview.renderer_gl_wait"))
             self._triangles = np.empty((0, 3, 3))
             self._fast_triangles = self._triangles
             self._shades = np.empty(0, dtype=np.uint8)
@@ -84,6 +101,58 @@ class CadPreview(QWidget):
             self._fast_shades = (self._shades if self._fast_triangles is self._triangles
                                  else triangle_shades(self._fast_triangles))
         self.update()
+
+    def _renderer_toggled(self, enabled: bool) -> None:
+        self._frame_key = None
+        self._frame = None
+        if enabled:
+            self._renderer_button.setText(tr("cad_preview.renderer_gl"))
+            self._renderer_button.setToolTip(tr("cad_preview.renderer_gl_wait"))
+        else:
+            self._close_gpu()
+            self._renderer_button.setText(tr("cad_preview.renderer_cpu"))
+            self._renderer_button.setToolTip(tr("cad_preview.renderer_cpu_tip"))
+        self._renderer_button.adjustSize()
+        self._position_renderer_button()
+        self.update()
+
+    def _position_renderer_button(self) -> None:
+        self._renderer_button.move(max(0, self.width() - self._renderer_button.width() - 8), 8)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._position_renderer_button()
+
+    def _close_gpu(self) -> None:
+        gpu, self._gpu = self._gpu, None
+        self._gpu_revision = -1
+        if gpu is not None:
+            gpu.close()
+
+    def hideEvent(self, event) -> None:  # noqa: N802
+        self._close_gpu()
+        self._frame_key = None
+        super().hideEvent(event)
+
+    def _gpu_failed(self, error: Exception) -> None:
+        self._renderer_button.setChecked(False)
+        reason = str(error).replace("\n", " ")[:300] or type(error).__name__
+        self._renderer_button.setToolTip(tr("cad_preview.renderer_failed", reason=reason))
+        self._frame_key = None
+        self._frame = None
+
+    def _get_gpu(self) -> CadGlRenderer:
+        if self._gpu is None:
+            from .cad_gl_renderer import CadGlRenderer
+
+            self._gpu = CadGlRenderer()
+            self._renderer_button.setToolTip(tr("cad_preview.renderer_gl_tip", vendor=self._gpu.vendor,
+                                                renderer=self._gpu.renderer, version=self._gpu.version))
+        if self._gpu_revision != self._mesh_revision:
+            assert self.mesh is not None
+            self._gpu.set_mesh(self.mesh, self._center, self._radius, self._shades, self._highlight)
+            self._gpu_revision = self._mesh_revision
+        return self._gpu
 
     def set_measure_mode(self, enabled: bool) -> None:
         self._measure_mode = enabled
@@ -142,18 +211,29 @@ class CadPreview(QWidget):
         width, height = max(1, round(self.width() * ratio)), max(1, round(self.height() * ratio))
         background = self.palette().base().color()
         rgb = (background.red(), background.green(), background.blue())
-        fast = self._moving and self._fast_triangles is not self._triangles
+        fast = self._moving and self._fast_triangles is not self._triangles and not self._renderer_button.isChecked()
         offset = self._pixel_offset(width, height)
-        key = (width, height, ratio, rgb, self.yaw, self.elevation, self.zoom, fast, offset)
+        key = (width, height, ratio, rgb, self.yaw, self.elevation, self.zoom, fast, offset,
+               self._renderer_button.isChecked())
         if key != self._frame_key:
-            triangles = self._fast_triangles if fast else self._triangles
-            shades = self._fast_shades if fast else self._shades
-            highlight = self._fast_highlight if fast else self._highlight
-            image = rasterize(triangles, shades, self._center, self._radius, self.yaw, self.elevation,
-                              self.zoom, width, height, rgb, margin=24 * ratio,
-                              highlight=highlight, through=self._through, offset=offset)
-            data = image.tobytes()
-            self._frame = QImage(data, width, height, width * 3, QImage.Format.Format_RGB888).copy()
+            if self._renderer_button.isChecked():
+                try:
+                    gpu = self._get_gpu()
+                    self._frame = gpu.render(self._center, self.yaw, self.elevation, self.zoom, width, height,
+                                             24 * ratio, offset, self._highlight, self._through, rgb)
+                except Exception as error:
+                    self._gpu_failed(error)
+            if not self._renderer_button.isChecked():
+                fast = self._moving and self._fast_triangles is not self._triangles
+                triangles = self._fast_triangles if fast else self._triangles
+                shades = self._fast_shades if fast else self._shades
+                highlight = self._fast_highlight if fast else self._highlight
+                image = rasterize(triangles, shades, self._center, self._radius, self.yaw, self.elevation,
+                                  self.zoom, width, height, rgb, margin=24 * ratio,
+                                  highlight=highlight, through=self._through, offset=offset)
+                data = image.tobytes()
+                self._frame = QImage(data, width, height, width * 3, QImage.Format.Format_RGB888).copy()
+                key = (width, height, ratio, rgb, self.yaw, self.elevation, self.zoom, fast, offset, False)
             self._frame_key = key
         if self._frame is not None:
             painter.drawImage(self.rect(), self._frame)
@@ -247,10 +327,25 @@ class CadPreview(QWidget):
                 width, height = max(1, round(self.width() * ratio)), max(1, round(self.height() * ratio))
                 x = int(position.x() * width / max(1, self.width()))
                 y = int(position.y() * height / max(1, self.height()))
-                index = pick_triangle(self._triangles, self._center, self._radius, self.yaw, self.elevation,
-                                      self.zoom, width, height, x, y, margin=24 * ratio,
-                                      highlight=self._highlight, through=self._through,
-                                      offset=self._pixel_offset(width, height))
+                if self._renderer_button.isChecked():
+                    background = self.palette().base().color()
+                    rgb = (background.red(), background.green(), background.blue())
+                    offset = self._pixel_offset(width, height)
+                    current_key = (width, height, ratio, rgb, self.yaw, self.elevation, self.zoom, False, offset, True)
+                    index = None
+                    # Never use a different or stale frame to infer the visible surface.
+                    if self._gpu is not None and self._frame_key == current_key:
+                        try:
+                            index = self._gpu.pick(self._center, self.yaw, self.elevation, self.zoom, width, height,
+                                                   24 * ratio, offset, self._highlight, self._through, x, y)
+                        except Exception as error:
+                            self._gpu_failed(error)
+                            self.update()
+                else:
+                    index = pick_triangle(self._triangles, self._center, self._radius, self.yaw, self.elevation,
+                                          self.zoom, width, height, x, y, margin=24 * ratio,
+                                          highlight=self._highlight, through=self._through,
+                                          offset=self._pixel_offset(width, height))
                 if self._measure_mode:
                     point = None
                     if index is not None:
