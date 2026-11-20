@@ -604,6 +604,8 @@ def run_packaging_check() -> None:
 
     import ezdxf
     import numpy as np
+    from OpenGL import GL
+    from OpenGL.GL import shaders
     from PySide6.QtCore import QEvent, QPointF, Qt
     from PySide6.QtGui import QMouseEvent
     from PySide6.QtWidgets import QComboBox, QDialog, QFileDialog, QInputDialog, QLineEdit, QMessageBox
@@ -614,9 +616,15 @@ def run_packaging_check() -> None:
     from .core.camera_views import camera_view_angles
     from .ui.cad_preview_dialog import CadPreviewDialog
     from .ui.cad_preview_settings import CadPreviewSettingsDialog
+    from .ui.canvas.cad_gl_renderer import CadGlRenderer
     from .ui.canvas.cad_preview import CadPreview
     from .ui.sketch_draft_dialog import FilletChoiceDialog, SketchDraftDialog, SketchExtrusionPreview
     from .ui.widgets.camera_views import CameraViews
+
+    # Only verify that the frozen program contains the lazy imports. Creating an
+    # OpenGL context or claiming hardware acceleration requires a real display.
+    _require(callable(CadGlRenderer) and callable(shaders.compileProgram) and bool(GL.GL_TRIANGLES),
+             "В сборке недоступны компоненты OpenGL")
 
     with TemporaryDirectory(prefix="suspensionlab-sketch-check-") as sketch_dir:
         sketch = SketchDraftDialog()
