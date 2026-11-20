@@ -81,6 +81,20 @@ class SuggestionResult:
     after: ProximityResult | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class AutoPairResult:
+    left: str
+    right: str
+    outcome: str
+    suggestion: SuggestionResult | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AutoSuggestionResult:
+    baseline: ProximityResult
+    pairs: tuple[AutoPairResult, ...]
+
+
 def _read_numbers(item: dict[str, Any]) -> tuple[float, float]:
     numbers = [item['overlap_mm3'], item['threshold_mm3']]
     try:
@@ -240,6 +254,45 @@ class FixedArmOverlapJob:
         if not isinstance(result, SuggestionResult):
             raise OverlapJobError('output')
         return result
+
+    def run_auto(self, document: dict[str, Any], requirements: dict[str, float]) -> AutoSuggestionResult:
+        """Проверяет все пары; кандидаты независимы и не изменяют исходный снимок."""
+        from ..model.fixed_arm_clearances import validate_requirements
+        from .fixed_arm_suggestions import satisfies
+
+        housings = document.get('format') == PREVIEW_FORMAT and document.get('housings') is not None
+        requirements = validate_requirements(requirements, housings=housings)
+        baseline = self.run_proximity(document)
+        blocked = any(p.status in ('error', 'uncertain_overlap') for p in baseline.pairs)
+        supported = {('tube_front', 'tube_rear'), ('tube_front', 'housing_front'),
+                     ('tube_rear', 'housing_rear')}
+        results = []
+        for pair in baseline.pairs:
+            if self._cancelled.is_set():
+                raise OverlapJobError('cancelled')
+            minimum = requirements.get(f'{pair.left}|{pair.right}')
+            proposal = None
+            if pair.status in ('error', 'uncertain_overlap'):
+                outcome = 'unverified'
+            elif minimum is None:
+                outcome = 'requirement_missing' if pair.status == 'intersection' else 'no_requirement'
+            elif satisfies(pair, minimum):
+                outcome = 'satisfied'
+            elif blocked:
+                outcome = 'unverified'
+            elif (pair.left, pair.right) not in supported:
+                outcome = 'unsupported'
+            else:
+                try:
+                    proposal = self.run_suggestion(document, pair.left, pair.right, minimum,
+                                                   requirements=requirements)
+                    outcome = proposal.outcome
+                except OverlapJobError:
+                    if self._cancelled.is_set():
+                        raise OverlapJobError('cancelled') from None
+                    outcome = 'failed'
+            results.append(AutoPairResult(pair.left, pair.right, outcome, proposal))
+        return AutoSuggestionResult(baseline, tuple(results))
 
     def _run(self, document: dict[str, Any], *, timeout: float, mode: str,
              request: dict[str, Any] | None = None) -> OverlapResult | PairwiseResult | ProximityResult | SuggestionResult:
