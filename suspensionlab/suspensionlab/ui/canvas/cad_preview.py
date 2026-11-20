@@ -71,6 +71,10 @@ class CadPreview(QWidget):
                 raise ValueError("Некорректная маска подсветки")
             highlight = np.array(highlight, dtype=bool, copy=True)
             highlight.flags.writeable = False
+        # CadMesh owns immutable arrays: its bounds and full-mesh shading can be
+        # reused when only selection/highlight changes. The interaction mesh and
+        # GPU revision still change because they depend on the new mask.
+        same_mesh = mesh is not None and mesh is self.mesh
         self._mesh_revision += 1
         self._highlight = highlight
         self._through = bool(through and highlight is not None)
@@ -95,8 +99,9 @@ class CadPreview(QWidget):
             self._fast_highlight = None
         else:
             self._triangles = mesh.triangles
-            self._center, self._radius = mesh.bounds()
-            self._shades = triangle_shades(self._triangles)
+            if not same_mesh:
+                self._center, self._radius = mesh.bounds()
+                self._shades = triangle_shades(self._triangles)
             self._fast_triangles, self._fast_highlight = interaction_geometry(mesh, highlight)
             self._fast_shades = (self._shades if self._fast_triangles is self._triangles
                                  else triangle_shades(self._fast_triangles))

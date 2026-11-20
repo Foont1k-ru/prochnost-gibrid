@@ -175,3 +175,47 @@ def test_failed_gpu_pick_does_not_pick_cpu_surface(qtbot, monkeypatch):
     qtbot.mouseClick(view, Qt.MouseButton.LeftButton, pos=QPoint(view.width() // 2, view.height() // 2))
     assert not picked and not view._renderer_button.isChecked()
     assert "lost context" in view._renderer_button.toolTip()
+
+
+def test_highlight_changes_reuse_only_immutable_geometry_calculations(qtbot, monkeypatch):
+    from suspensionlab.ui.canvas import cad_preview
+
+    counts = {'bounds': 0, 'shades': 0, 'interaction': 0}
+    original_bounds = CadMesh.bounds
+    original_shades = cad_preview.triangle_shades
+    original_interaction = cad_preview.interaction_geometry
+
+    def bounds(current):
+        counts['bounds'] += 1
+        return original_bounds(current)
+
+    def shades(triangles):
+        counts['shades'] += 1
+        return original_shades(triangles)
+
+    def interaction(current, highlight):
+        counts['interaction'] += 1
+        return original_interaction(current, highlight)
+
+    monkeypatch.setattr(CadMesh, 'bounds', bounds)
+    monkeypatch.setattr(cad_preview, 'triangle_shades', shades)
+    monkeypatch.setattr(cad_preview, 'interaction_geometry', interaction)
+    view = CadPreview()
+    qtbot.addWidget(view)
+    first, second = mesh(), mesh()
+    view.set_mesh(first)
+    old_shades = view._shades
+    revision = view._mesh_revision
+    view.set_mesh(first, np.array([True, False]), through=True)
+    assert view._shades is old_shades
+    assert counts == {'bounds': 1, 'shades': 1, 'interaction': 2}
+    assert view._mesh_revision == revision + 1
+    assert view._fast_highlight.tolist() == [True, False] and view._through
+    view.set_mesh(first, np.array([False, True]))
+    assert counts == {'bounds': 1, 'shades': 1, 'interaction': 3}
+    assert view._fast_highlight.tolist() == [False, True] and not view._through
+    view.set_mesh(second)
+    assert counts == {'bounds': 2, 'shades': 2, 'interaction': 4}
+    view.set_mesh(None)
+    view.set_mesh(first)
+    assert counts == {'bounds': 3, 'shades': 3, 'interaction': 5}
