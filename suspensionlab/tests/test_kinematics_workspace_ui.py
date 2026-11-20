@@ -5,6 +5,29 @@ from suspensionlab.ui.controller import AppController, Selection
 from suspensionlab.ui.kinematics_workspace import KinematicsWorkspace
 
 
+def test_main_window_compact_layout_does_not_overlap(qtbot, tmp_path):
+    from PySide6.QtCore import QSettings
+
+    from suspensionlab.ui.main_window import MainWindow
+
+    settings = QSettings(str(tmp_path / 'settings.ini'), QSettings.Format.IniFormat)
+    window = MainWindow(settings=settings)
+    qtbot.addWidget(window)
+    window.controller.new_project('ring')
+    window._tabs.setCurrentWidget(window._kinematics)
+    window._kinematics.role.setCurrentIndex(1)
+    window._show_workspace()
+    window.resize(1100, 700)
+    window.show()
+    view = window._kinematics
+    qtbot.waitUntil(lambda: view.result is not None, timeout=10000)
+    qtbot.waitUntil(lambda: view.preview.mapToGlobal(view.preview.rect().bottomLeft()).y() <
+                    view.start.mapToGlobal(view.start.rect().topLeft()).y(), timeout=5000)
+    assert {field._title.text() for field in view._rows.values()} == {'X', 'Y', 'Z'}
+    window.controller.dirty = False
+    window.close()
+
+
 def test_scheme_choice_describes_solver_support(qtbot):
     from suspensionlab.ui.dialogs import TemplateDialog
 
@@ -13,9 +36,11 @@ def test_scheme_choice_describes_solver_support(qtbot):
     assert 'не реализован' in dialog._kinematics_hint.text()
     dialog._front.setCurrentIndex(dialog._front.findData('double_wishbone'))
     assert 'доступен экспериментальный расчёт' in dialog._kinematics_hint.text()
-    assert 'Задняя ось' in dialog._kinematics_hint.text()
+    assert 'задней пятирычажной' in dialog._kinematics_hint.text()
+    dialog._rear.setCurrentIndex(dialog._rear.findData('torsion_beam_rear'))
+    assert 'задней схемы расчёт хода пока не реализован' in dialog._kinematics_hint.text()
     dialog._list.setCurrentRow(2)
-    assert 'только для передней двухрычажной' in dialog._description.text()
+    assert 'задней пятирычажной' in dialog._description.text()
     dialog.close()
 
 
@@ -67,6 +92,58 @@ def test_length_respects_point_and_coordinate_locks(workspace, qtbot):
     controller.undo_last()
     assert point.as_tuple() == pytest.approx(original)
     qtbot.waitUntil(lambda: view.result is not None, timeout=10000)
+
+
+def test_rear_five_link_edit_changes_solution_and_failed_pose_is_hidden(workspace, qtbot, monkeypatch):
+    from suspensionlab.core.double_wishbone import KinematicsError
+    from suspensionlab.core.rear_five_link import RearFiveLink
+
+    controller, view = workspace
+    view.role.setCurrentIndex(1)
+    qtbot.waitUntil(lambda: view.result is not None, timeout=10000)
+    assert 'пять тяг' in view.status.text() and view.travel.isEnabled()
+    assert view.part.currentData() == ('link', 'upper_front')
+    assert {key[0] for key in view._rows} == {'uf_in', 'uf_out'}
+    assert len(view.preview.link_targets) == 5
+    assert view.preview.frame.point('uf_out') is not None
+    view.travel.setValue(view.travel.maximum())
+    initial = view.preview.frame.point('uf_out')
+    point = controller.project.rear.hardpoints['uf_out']
+    original_z = point.z
+    view._rows[('uf_out', 'z')].set_value(original_z + 5, emit=True)
+    assert view.result is None and not view.travel.isEnabled()
+    qtbot.waitUntil(lambda: view.result is not None, timeout=10000)
+    view.travel.setValue(view.travel.maximum())
+    assert view.preview.frame.point('uf_out') != pytest.approx(initial)
+    controller.undo_last()
+    assert point.z == original_z
+    qtbot.waitUntil(lambda: view.result is not None, timeout=10000)
+    original = RearFiveLink._step
+    def fail(self, pose, travel):
+        if travel > 11:
+            raise KinematicsError(travel, 'тестовый отказ')
+        return original(self, pose, travel)
+    monkeypatch.setattr(RearFiveLink, '_step', fail)
+    view.end.setValue(40)
+    qtbot.waitUntil(lambda: view.result is not None, timeout=10000)
+    view.travel.setValue(view.travel.maximum())
+    assert view.preview.frame is None and 'нет решения' in view.sample.text()
+    assert 'Пример отказа' in view.status.text()
+
+
+def test_invalid_rear_geometry_clears_previous_result(workspace, qtbot):
+    controller, view = workspace
+    view.role.setCurrentIndex(1)
+    qtbot.waitUntil(lambda: view.result is not None, timeout=10000)
+    axle = controller.project.rear
+    controller.move_points({('rear', 'toe_out'): axle.hardpoints['toe_in'].as_tuple()})
+    assert view.result is None and not view.travel.isEnabled()
+    qtbot.waitUntil(lambda: 'Расчёт не выполнен' in view.status.text(), timeout=10000)
+    assert view.result is None and not view.travel.isEnabled()
+    assert 'совпадают' in view.status.text()
+    controller.undo_last()
+    qtbot.waitUntil(lambda: view.result is not None, timeout=10000)
+    assert 'пять тяг' in view.status.text()
 
 
 def test_explicit_right_side_negative_coordinate_fits_slider(workspace, qtbot):
@@ -141,9 +218,11 @@ def test_unexpected_solver_error_has_no_previous_results(workspace, monkeypatch)
 
 def test_unsupported_and_invalid_geometry_do_not_claim_success(workspace, qtbot):
     controller, view = workspace
+    controller.new_project('live_axle')
     view.role.setCurrentIndex(1)
     qtbot.waitUntil(lambda: 'не реализован' in view.status.text(), timeout=10000)
     assert view.result is None and not view.travel.isEnabled() and view.preview.frame is not None
+    controller.new_project('ring')
     view.role.setCurrentIndex(0)
     axle = controller.project.front
     a, b = axle.hardpoints['lca_f_in'], axle.hardpoints['lca_r_in']

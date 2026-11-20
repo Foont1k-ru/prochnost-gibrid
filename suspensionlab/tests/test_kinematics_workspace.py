@@ -37,10 +37,11 @@ def test_failed_poses_are_not_filled_with_old_results(monkeypatch):
 
 def test_unsupported_is_only_static_and_invalid_grid_rejected():
     project = load_template('ring')
-    frame, links = static_scene(project.rear)
+    other = load_template('live_axle').rear
+    frame, links = static_scene(other)
     assert frame.segments and links
     with pytest.raises(ValueError, match='не реализован'):
-        calculate(project.rear, -30, 30, 10)
+        calculate(other, -30, 30, 10)
     for args in [(-200, 30, 10), (-30, 30, 1), (20, 30, 10)]:
         with pytest.raises(ValueError):
             calculate(project.front, *args)

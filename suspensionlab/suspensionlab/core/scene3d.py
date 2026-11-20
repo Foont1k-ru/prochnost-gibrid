@@ -8,7 +8,7 @@ from typing import Literal
 import numpy as np
 
 from ..model.entities import Axle
-from .double_wishbone import DoubleWishbone, Pose
+from .double_wishbone import DoubleWishbone, Pose, RigidFiveLinkSolver
 from .metrics import _wheel_directions
 from .pose_view import Point, PoseView
 
@@ -38,15 +38,35 @@ def _point(values: np.ndarray) -> Point:
     return float(values[0]), float(values[1]), float(values[2])
 
 
+def wheel_segments(model: RigidFiveLinkSolver, pose: Pose, axle: Axle, center: Point) -> list[Segment3D]:
+    """Условный габарит колеса; ориентация совпадает с расчётом углов."""
+    radius, width = axle.wheel.r_dynamic_mm, axle.wheel.width_mm
+    if not all(isfinite(v) and 0 < v < 100000 for v in (radius, width)):
+        raise ValueError("Радиус и ширина колеса должны быть положительными и конечными")
+    normal, forward = _wheel_directions(model, pose, axle.setup.camber_deg, axle.setup.toe_deg_total / 2)
+    up = np.cross(forward, normal) * model.sign
+    position0 = np.array(center, dtype=float)
+    rings: list[list[Point]] = []
+    segments: list[Segment3D] = []
+    n = 32
+    for side in (-1, 1):
+        ring = []
+        for i in range(n):
+            theta = 2 * pi * i / n
+            position = position0 + side * width / 2 * normal + radius * (cos(theta) * forward + sin(theta) * up)
+            ring.append(_point(position))
+        rings.append(ring)
+        segments.extend(Segment3D(ring[i], ring[(i + 1) % n], "wheel") for i in range(n))
+    segments.extend(Segment3D(rings[0][i], rings[1][i], "wheel") for i in range(0, n, 4))
+    return segments
+
+
 def pose_scene(model: DoubleWishbone, pose: Pose, axle: Axle, frame: PoseView) -> Scene3D:
     """Линии опор и условный цилиндр колеса по той же ориентации, что в метриках.
 
     Кинематика не проверяет коллизии, контакт с дорогой, качение или материал.
     Цилиндр — габарит колеса, а не настоящая форма шины. Пружина — линия опор.
     """
-    radius, width = axle.wheel.r_dynamic_mm, axle.wheel.width_mm
-    if not all(isfinite(v) and 0 < v < 100000 for v in (radius, width)):
-        raise ValueError("Радиус и ширина колеса должны быть положительными и конечными")
     if frame.travel_mm != pose.travel_mm:
         raise ValueError("Кадр и положение относятся к разным ходам")
     steering_in = _point(model.points["tierod_in"])
@@ -65,20 +85,7 @@ def pose_scene(model: DoubleWishbone, pose: Pose, axle: Axle, frame: PoseView) -
         segments.append(Segment3D(*frame.spring, "spring"))
     if frame.damper is not None:
         segments.append(Segment3D(*frame.damper, "damper"))
-    normal, forward = _wheel_directions(model, pose, axle.setup.camber_deg, axle.setup.toe_deg_total / 2)
-    up = np.cross(forward, normal) * model.sign
-    center = np.array(frame.center, dtype=float)
-    rings: list[list[Point]] = []
-    n = 32
-    for side in (-1, 1):
-        ring = []
-        for i in range(n):
-            theta = 2 * pi * i / n
-            position = center + side * width / 2 * normal + radius * (cos(theta) * forward + sin(theta) * up)
-            ring.append(_point(position))
-        rings.append(ring)
-        segments.extend(Segment3D(ring[i], ring[(i + 1) % n], "wheel") for i in range(n))
-    segments.extend(Segment3D(rings[0][i], rings[1][i], "wheel") for i in range(0, n, 4))
+    segments.extend(wheel_segments(model, pose, axle, frame.center))
     points: list[tuple[str, Point]] = [
         ("wheel_center", frame.center), ("uca_f_in", frame.upper_front), ("uca_r_in", frame.upper_rear),
         ("ubj", frame.upper_ball), ("lca_f_in", frame.lower_front), ("lca_r_in", frame.lower_rear),

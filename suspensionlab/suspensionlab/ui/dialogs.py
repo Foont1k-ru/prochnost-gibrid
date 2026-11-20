@@ -71,6 +71,7 @@ class TemplateDialog(QDialog):
         self._kinematics_hint.setWordWrap(True)
         form.addRow(self._kinematics_hint)
         self._front.currentIndexChanged.connect(self._update_kinematics_hint)
+        self._rear.currentIndexChanged.connect(self._update_kinematics_hint)
         self._description = QLabel(self)
         self._description.setObjectName("Hint")
         self._description.setWordWrap(True)
@@ -114,8 +115,8 @@ class TemplateDialog(QDialog):
             self._description.setText(tr("template.config.limits"))
         elif 2 <= row < len(self._templates) + 2:
             self._description.setText(tr(self._templates[row - 2].description_key) +
-                                      ' Расчёт хода доступен только для передней двухрычажной оси; '
-                                      'задняя ось пока показывается статически.')
+                                      ' Экспериментальный расчёт хода доступен для передней двухрычажной '
+                                      'и задней пятирычажной схем; остальные показаны статически.')
         else:
             self._description.setText("")
 
@@ -124,7 +125,10 @@ class TemplateDialog(QDialog):
         front_text = ('Для передней двухрычажной доступен экспериментальный расчёт хода.'
                       if front == 'double_wishbone' else
                       'Для выбранной передней схемы расчёт хода пока не реализован.')
-        self._kinematics_hint.setText(front_text + ' Задняя ось пока показывается только статически.')
+        rear_text = (' Для задней пятирычажной доступен экспериментальный расчёт хода.'
+                     if self._rear.currentData() == 'multilink_rear' else
+                     ' Для выбранной задней схемы расчёт хода пока не реализован.')
+        self._kinematics_hint.setText(front_text + rear_text)
 
     def _rear_changed(self) -> None:
         allowed = self._rear.currentData() != "torsion_beam_rear"

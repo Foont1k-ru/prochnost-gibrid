@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..core.kinematics_workspace import WorkspaceResult, calculate, moved_link_end, static_scene
+from ..core.kinematics_workspace import WorkspaceResult, calculate, moved_link_end, static_scene, supported
 from ..core.scene3d import Segment3D
 from ..core.vehicle_schematic_scene import SelectableLink
 from ..i18n import tr
@@ -65,7 +65,10 @@ class KinematicsWorkspace(QWidget):
         outer.addLayout(top)
         splitter = QSplitter(self)
         splitter.setChildrenCollapsible(False)
-        left = QWidget(splitter)
+        self.view_scroll = QScrollArea(splitter)
+        self.view_scroll.setWidgetResizable(True)
+        left = QWidget(self.view_scroll)
+        self.view_scroll.setWidget(left)
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(0, 0, 0, 0)
         controls = QHBoxLayout()
@@ -78,12 +81,16 @@ class KinematicsWorkspace(QWidget):
         self.preview = Scene3DPreview(self, schematic=True, title_override='3D-схема (не CAD)',
                                       legend_override='Мышь: вращение • колесо: масштаб')
         self.preview.volumetric = False
+        # The surrounding window has several docks; the default 250px minimum
+        # can force controls to overlap on a 700px-high screen.
+        self.preview.setMinimumSize(240, 110)
         left_layout.addWidget(self.preview, 1)
         grid = QHBoxLayout()
         self.start = self._spin(-150, 0, -30, ' мм')
         self.end = self._spin(0, 150, 30, ' мм')
         self.spacing = self._spin(5, 30, 10, ' мм')
-        for text, widget in (('От', self.start), ('До', self.end), ('Шаг не более', self.spacing)):
+        for text, widget in (('От', self.start), ('До', self.end), ('Шаг ≤', self.spacing)):
+            widget.setMaximumWidth(90)
             grid.addWidget(QLabel(text, self))
             grid.addWidget(widget)
         grid.addStretch(1)
@@ -103,7 +110,7 @@ class KinematicsWorkspace(QWidget):
                          'прочность и безопасность не проверены.', self)
         warning.setWordWrap(True)
         left_layout.addWidget(warning)
-        splitter.addWidget(left)
+        splitter.addWidget(self.view_scroll)
         self.editor_scroll = QScrollArea(splitter)
         self.editor_scroll.setWidgetResizable(True)
         self.editor_scroll.setMinimumWidth(310)
@@ -165,6 +172,8 @@ class KinematicsWorkspace(QWidget):
         index = self._part_index(old) if old is not None else -1
         if index < 0:
             index = self._part_index(('link', 'lower_arm'))
+        if index < 0 and axle.spec.links:
+            index = self._part_index(('link', axle.spec.links[0].code))
         self.part.setCurrentIndex(max(0, index))
         self.part.blockSignals(False)
         self._rebuild_editor()
@@ -241,6 +250,8 @@ class KinematicsWorkspace(QWidget):
                 field = SliderField(spec, self.controller.units, value, group,
                                     auto_extend=self.controller.auto_extend_slider,
                                     locked=point.locked or self.controller.is_locked(key))
+                field._title.setText(spec.attr.upper())
+                field._title.setMinimumWidth(24)
                 field._lock_button.setEnabled(not point.locked)
                 field.valueChanged.connect(lambda value, p=point_code, a=spec.attr: self._change_point(p, a, value))
                 field.lockChanged.connect(lambda locked, k=key: self.controller.set_lock(k, locked))
@@ -318,7 +329,7 @@ class KinematicsWorkspace(QWidget):
 
     def _calculate(self) -> None:
         axle = self._axle()
-        if axle.role != 'front' or axle.type_code != 'double_wishbone':
+        if not supported(axle):
             self.status.setText('Расчёт хода для этой схемы пока не реализован. Показана только статическая компоновка.')
             return
         try:
@@ -333,7 +344,9 @@ class KinematicsWorkspace(QWidget):
         self.result = result
         success = sum(sample.scene is not None for sample in result.samples)
         failures = [sample for sample in result.samples if sample.error]
-        text = (f'Левая сторона, неподвижная рейка. Решено положений: {success} из {len(result.samples)}; '
+        model_description = ('Левая сторона, неподвижная рейка' if axle.role == 'front' else
+                             'Левая сторона, пять тяг, неподвижный кузов')
+        text = (f'{model_description}. Решено положений: {success} из {len(result.samples)}; '
                 f'последние достигнутые ходы {result.reached_droop_mm:.1f}…{result.reached_bump_mm:.1f} мм.')
         if failures:
             text += f' Пример отказа: {failures[0].error}'

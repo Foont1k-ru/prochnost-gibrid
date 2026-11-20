@@ -5,19 +5,26 @@ from dataclasses import dataclass
 from math import cos, isfinite, pi, sin
 
 from ..model.entities import Axle
-from .double_wishbone import DoubleWishbone
-from .metrics import CornerMetrics, corner_metrics
+from .double_wishbone import DoubleWishbone, Pose
+from .metrics import wheel_angles
 from .pose_view import Point, pose_view
-from .scene3d import Scene3D, Segment3D, pose_scene
+from .rear_five_link import LINKS, RearFiveLink
+from .scene3d import Scene3D, Segment3D, pose_scene, wheel_segments
 from .sweep import limited_sweep, travel_grid
 from .vehicle_schematic_scene import SelectableLink
+
+
+@dataclass(frozen=True)
+class WorkspaceAngles:
+    camber_deg: float
+    toe_deg: float
 
 
 @dataclass(frozen=True)
 class WorkspaceSample:
     travel_mm: float
     scene: Scene3D | None
-    metrics: CornerMetrics | None
+    metrics: WorkspaceAngles | None
     error: str | None
 
 
@@ -63,14 +70,38 @@ def static_scene(axle: Axle) -> tuple[Scene3D, tuple[SelectableLink, ...]]:
     return Scene3D(0., tuple(segments), tuple(points)), tuple(targets)
 
 
+def supported(axle: Axle) -> bool:
+    """Две проверяемые экспериментальные модели, остальные только статические."""
+    return (axle.role, axle.type_code) in (('front', 'double_wishbone'), ('rear', 'multilink_rear'))
+
+
+def rear_scene(model: RearFiveLink, pose: Pose, axle: Axle) -> Scene3D:
+    """Пять тяг и условный жёсткий кулак, не геометрия деталей."""
+    def point(code: str, *, moving: bool) -> Point:
+        xyz = pose.point(model.points[code], model.center0) if moving else model.points[code]
+        return float(xyz[0]), float(xyz[1]), float(xyz[2])
+
+    points = [('wheel_center', (float(pose.center[0]), float(pose.center[1]), float(pose.center[2])))]
+    segments = []
+    for code, inner, outer in LINKS:
+        a, b = point(inner, moving=False), point(outer, moving=True)
+        points.extend(((inner, a), (outer, b)))
+        segments.append(Segment3D(a, b, 'steering' if code == 'toe_link' else 'arm'))
+    # Контур только схематически показывает, что наружные шарниры принадлежат кулаку.
+    outline = [point(code, moving=True) for code in ('uf_out', 'ur_out', 'lr_out', 'lf_out')]
+    segments.extend(Segment3D(outline[i], outline[(i + 1) % 4], 'knuckle') for i in range(4))
+    segments.extend(wheel_segments(model, pose, axle, points[0][1]))
+    return Scene3D(pose.travel_mm, tuple(segments), tuple(points))
+
+
 def calculate(axle: Axle, start: float, end: float, spacing: float) -> WorkspaceResult:
-    """Левая передняя двухрычажная сторона, неподвижная рейка, дискретная сетка."""
-    if axle.role != 'front' or axle.type_code != 'double_wishbone':
+    """Левая сторона поддержанной схемы, дискретная сетка с неподвижным кузовом."""
+    if not supported(axle):
         raise ValueError('Расчёт хода для этого типа пока не реализован')
     if not (-150 <= start <= 0 <= end <= 150) or not (5 <= spacing <= 30):
         raise ValueError('Диапазон должен включать ноль и быть в пределах −150…+150 мм; шаг 5…30 мм')
     travels = travel_grid(start, end, max_spacing_mm=spacing)
-    model = DoubleWishbone(axle, 'left')
+    model = DoubleWishbone(axle, 'left') if axle.role == 'front' else RearFiveLink(axle, 'left')
     sweep = limited_sweep(model, travels, max_step_mm=2)
     samples = []
     for item in sweep.points:
@@ -78,11 +109,15 @@ def calculate(axle: Axle, start: float, end: float, spacing: float) -> Workspace
             samples.append(WorkspaceSample(item.travel_mm, None, None, str(item.error)))
             continue
         pose = item.pose
-        frame = pose_view(model, pose, axle, spring=False, damper=False)
-        scene = pose_scene(model, pose, axle, frame)
+        if isinstance(model, DoubleWishbone):
+            frame = pose_view(model, pose, axle, spring=False, damper=False)
+            scene = pose_scene(model, pose, axle, frame)
+        else:
+            scene = rear_scene(model, pose, axle)
         try:
-            metrics = corner_metrics(model, pose, static_camber_deg=axle.setup.camber_deg,
-                                     static_toe_deg=axle.setup.toe_deg_total / 2)
+            camber, toe = wheel_angles(model, pose, static_camber_deg=axle.setup.camber_deg,
+                                       static_toe_deg=axle.setup.toe_deg_total / 2)
+            metrics = WorkspaceAngles(camber, toe)
         except ValueError:
             metrics = None
         samples.append(WorkspaceSample(item.travel_mm, scene, metrics, None))

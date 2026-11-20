@@ -727,6 +727,16 @@ def run_packaging_check() -> None:
         window.show()
         window.controller.new_project("ring")
         window._show_workspace()
+        window._tabs.setCurrentWidget(window._kinematics)
+        workspace = window._kinematics
+        workspace.role.setCurrentIndex(1)
+        workspace._timer.stop()
+        workspace._calculate()
+        _require(workspace.result is not None and workspace.preview.frame is not None and
+                 len(workspace.preview.link_targets) == 5 and 'пять тяг' in workspace.status.text(),
+                 'Расчёт задней пятирычажной схемы недоступен')
+        workspace._timer.stop()
+        window._tabs.setCurrentWidget(window._canvases['front'])
         app.processEvents()
         point_table = PointTableDialog(window.controller, window)
         _require(bool(window.action_point_table.text()) and bool(point_table._rows), "Таблица исходных точек недоступна")
