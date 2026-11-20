@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from math import pi, remainder
+from time import perf_counter
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -14,6 +15,7 @@ from ...core.cad_measurement import point_on_projected_triangle
 from ...core.cad_mesh import CadMesh
 from ...core.cad_raster import pick_triangle, rasterize, screen_projection, triangle_shades
 from ...core.camera_views import camera_view_angles
+from ...diagnostic_events import event as diagnostic_event
 from ...i18n import tr
 
 if TYPE_CHECKING:
@@ -53,6 +55,12 @@ class CadPreview(QWidget):
         self._gpu: CadGlRenderer | None = None
         self._mesh_revision = 0
         self._gpu_revision = -1
+        self._perf_enabled = False
+        self._perf_count = 0
+        self._perf_tick_at = 0.0
+        self._perf_timer = QTimer(self)
+        self._perf_timer.setInterval(250)
+        self._perf_timer.timeout.connect(self._perf_tick)
         self._renderer_button = QPushButton(tr("cad_preview.renderer_cpu"), self)
         self._renderer_button.setCheckable(True)
         self._renderer_button.setToolTip(tr("cad_preview.renderer_cpu_tip"))
@@ -65,7 +73,48 @@ class CadPreview(QWidget):
         self._settle.timeout.connect(self._finish_moving)
         self.reset_camera()
 
+    def set_performance_diagnostics(self, enabled: bool) -> None:
+        """Opt-in, bounded local timings; never records geometry or file names."""
+        if enabled == self._perf_enabled:
+            return
+        if enabled:
+            self._perf_enabled = True
+            self._perf_count = 0
+            self._perf_record("enabled", 0, force=True)
+            if self.isVisible():
+                self._perf_tick_at = perf_counter()
+                self._perf_timer.start()
+        else:
+            self._perf_record("disabled", 0, force=True)
+            self._perf_timer.stop()
+            self._perf_enabled = False
+
+    def _perf_record(self, stage: str, duration_ms: int, *, force: bool = False,
+                     renderer: str | None = None) -> None:
+        if (not self._perf_enabled or self._perf_count >= 200 or (duration_ms < 50 and not force) or
+                stage not in {"enabled", "disabled", "event_loop", "mesh_setup", "mesh_interaction",
+                              "select", "pick_ui", "gpu_setup", "frame_gl", "frame_cpu", "pick"}):
+            return
+        self._perf_count += 1
+        diagnostic_event("cad.performance", stage=stage,
+                         renderer=renderer or ("gl" if self._renderer_button.isChecked() else "cpu"),
+                         duration_ms=max(0, min(duration_ms, 86_400_000)),
+                         triangles=len(self.mesh.triangles) if self.mesh is not None else 0)
+
+    def _perf_elapsed(self, stage: str, started: float, *, renderer: str | None = None) -> None:
+        if self._perf_enabled:
+            self._perf_record(stage, round((perf_counter() - started) * 1000), renderer=renderer)
+
+    def _perf_tick(self) -> None:
+        now = perf_counter()
+        delay_ms = round((now - self._perf_tick_at) * 1000 - self._perf_timer.interval())
+        self._perf_tick_at = now
+        # Only substantial UI-loop stalls: timer precision alone is not a hang.
+        if delay_ms >= 250:
+            self._perf_record("event_loop", delay_ms)
+
     def set_mesh(self, mesh: CadMesh | None, highlight: np.ndarray | None = None, through: bool = False) -> None:
+        started = perf_counter() if self._perf_enabled else 0.0
         if highlight is not None:
             if mesh is None or highlight.shape != (len(mesh.triangles),) or highlight.dtype.kind != "b":
                 raise ValueError("Некорректная маска подсветки")
@@ -102,9 +151,12 @@ class CadPreview(QWidget):
             if not same_mesh:
                 self._center, self._radius = mesh.bounds()
                 self._shades = triangle_shades(self._triangles)
+            interaction_started = perf_counter() if self._perf_enabled else 0.0
             self._fast_triangles, self._fast_highlight = interaction_geometry(mesh, highlight)
             self._fast_shades = (self._shades if self._fast_triangles is self._triangles
                                  else triangle_shades(self._fast_triangles))
+            self._perf_elapsed("mesh_interaction", interaction_started)
+        self._perf_elapsed("mesh_setup", started)
         self.update()
 
     def _renderer_toggled(self, enabled: bool) -> None:
@@ -134,7 +186,14 @@ class CadPreview(QWidget):
         if gpu is not None:
             gpu.close()
 
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        if self._perf_enabled:
+            self._perf_tick_at = perf_counter()
+            self._perf_timer.start()
+
     def hideEvent(self, event) -> None:  # noqa: N802
+        self._perf_timer.stop()
         self._close_gpu()
         self._frame_key = None
         super().hideEvent(event)
@@ -147,17 +206,21 @@ class CadPreview(QWidget):
         self._frame = None
 
     def _get_gpu(self) -> CadGlRenderer:
-        if self._gpu is None:
-            from .cad_gl_renderer import CadGlRenderer
+        started = perf_counter() if self._perf_enabled else 0.0
+        try:
+            if self._gpu is None:
+                from .cad_gl_renderer import CadGlRenderer
 
-            self._gpu = CadGlRenderer()
-            self._renderer_button.setToolTip(tr("cad_preview.renderer_gl_tip", vendor=self._gpu.vendor,
-                                                renderer=self._gpu.renderer, version=self._gpu.version))
-        if self._gpu_revision != self._mesh_revision:
-            assert self.mesh is not None
-            self._gpu.set_mesh(self.mesh, self._center, self._radius, self._shades, self._highlight)
-            self._gpu_revision = self._mesh_revision
-        return self._gpu
+                self._gpu = CadGlRenderer()
+                self._renderer_button.setToolTip(tr("cad_preview.renderer_gl_tip", vendor=self._gpu.vendor,
+                                                    renderer=self._gpu.renderer, version=self._gpu.version))
+            if self._gpu_revision != self._mesh_revision:
+                assert self.mesh is not None
+                self._gpu.set_mesh(self.mesh, self._center, self._radius, self._shades, self._highlight)
+                self._gpu_revision = self._mesh_revision
+            return self._gpu
+        finally:
+            self._perf_elapsed("gpu_setup", started)
 
     def set_measure_mode(self, enabled: bool) -> None:
         self._measure_mode = enabled
@@ -224,8 +287,12 @@ class CadPreview(QWidget):
             if self._renderer_button.isChecked():
                 try:
                     gpu = self._get_gpu()
-                    self._frame = gpu.render(self._center, self.yaw, self.elevation, self.zoom, width, height,
-                                             24 * ratio, offset, self._highlight, self._through, rgb)
+                    render_started = perf_counter() if self._perf_enabled else 0.0
+                    try:
+                        self._frame = gpu.render(self._center, self.yaw, self.elevation, self.zoom, width, height,
+                                                 24 * ratio, offset, self._highlight, self._through, rgb)
+                    finally:
+                        self._perf_elapsed("frame_gl", render_started)
                 except Exception as error:
                     self._gpu_failed(error)
             if not self._renderer_button.isChecked():
@@ -233,11 +300,13 @@ class CadPreview(QWidget):
                 triangles = self._fast_triangles if fast else self._triangles
                 shades = self._fast_shades if fast else self._shades
                 highlight = self._fast_highlight if fast else self._highlight
+                render_started = perf_counter() if self._perf_enabled else 0.0
                 image = rasterize(triangles, shades, self._center, self._radius, self.yaw, self.elevation,
                                   self.zoom, width, height, rgb, margin=24 * ratio,
                                   highlight=highlight, through=self._through, offset=offset)
                 data = image.tobytes()
                 self._frame = QImage(data, width, height, width * 3, QImage.Format.Format_RGB888).copy()
+                self._perf_elapsed("frame_cpu", render_started)
                 key = (width, height, ratio, rgb, self.yaw, self.elevation, self.zoom, fast, offset, False)
             self._frame_key = key
         if self._frame is not None:
@@ -332,6 +401,8 @@ class CadPreview(QWidget):
                 width, height = max(1, round(self.width() * ratio)), max(1, round(self.height() * ratio))
                 x = int(position.x() * width / max(1, self.width()))
                 y = int(position.y() * height / max(1, self.height()))
+                pick_started = perf_counter() if self._perf_enabled else 0.0
+                pick_renderer = "gl" if self._renderer_button.isChecked() else "cpu"
                 if self._renderer_button.isChecked():
                     background = self.palette().base().color()
                     rgb = (background.red(), background.green(), background.blue())
@@ -351,6 +422,7 @@ class CadPreview(QWidget):
                                           self.zoom, width, height, x, y, margin=24 * ratio,
                                           highlight=self._highlight, through=self._through,
                                           offset=self._pixel_offset(width, height))
+                self._perf_elapsed("pick", pick_started, renderer=pick_renderer)
                 if self._measure_mode:
                     point = None
                     if index is not None:
