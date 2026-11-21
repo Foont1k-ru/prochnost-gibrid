@@ -59,6 +59,7 @@ jobs:
           cp ../../driver/suspensionlab/diagnostics/test_qt_cad_lifecycle.py diagnostics/
           cp ../../driver/suspensionlab/diagnostics/run_qt_cad_repetitions.py diagnostics/
           cp ../../driver/suspensionlab/diagnostics/qt_dialog_gc_probe.py diagnostics/
+          cp ../../driver/suspensionlab/diagnostics/trace_joint_buddies_plugin.py diagnostics/
       - name: Три отдельных процесса pytest с настоящим CAD
         shell: bash
         run: |

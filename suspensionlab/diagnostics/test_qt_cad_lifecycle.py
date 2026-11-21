@@ -197,3 +197,47 @@ def test_joint_dialogs_are_disposed_on_gui_thread_with_explicit_ownership():
         assert len(lines) == 1, result.stdout
         observed = json.loads(lines[0].removeprefix('GC_PROBE '))
         assert observed == {'mode': mode, 'before_events': before_events, 'outside_main': 0}
+
+
+def test_joint_buddy_trace_plugin_observes_safe_explicit_deletion(tmp_path):
+    """Проверяем диагностический плагин отдельно, не меняя основной pytest-процесс."""
+    import os
+    import re
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    test_file = tmp_path / 'test_trace_control.py'
+    test_file.write_text('''\
+import gc
+import threading
+from PySide6.QtCore import QCoreApplication, QEvent
+from PySide6.QtWidgets import QApplication
+from suspensionlab.ui.controller import AppController
+from suspensionlab.ui.joint_concept_dialog import JointConceptDialog
+
+def test_safe():
+    app = QApplication.instance() or QApplication([])
+    controller = AppController()
+    dialogs = [JointConceptDialog(controller) for _ in range(2)]
+    for dialog in dialogs:
+        assert dialog.close()
+        dialog.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    dialogs.clear()
+    del dialog
+    worker = threading.Thread(target=gc.collect)
+    worker.start()
+    worker.join()
+    app.processEvents()
+''', encoding='utf-8')
+    plugin_dir = str(Path(__file__).parent)
+    env = {**os.environ, 'PYTHONPATH': os.pathsep.join(filter(None, (plugin_dir, os.environ.get('PYTHONPATH', ''))))}
+    result = subprocess.run([sys.executable, '-m', 'pytest', '-q', '-s', '-p', 'trace_joint_buddies_plugin',
+                             str(test_file)], env=env, capture_output=True, encoding='utf-8', errors='replace',
+                            timeout=60, check=False)
+    assert result.returncode == 0, result.stdout + '\n' + result.stderr
+    observed = re.search(r'TRACE joint-dialogs=(\d+) label-buddy-pairs=(\d+) foreign-widget-destructions=(\d+)',
+                         result.stdout)
+    assert observed is not None, result.stdout
+    assert int(observed[1]) == 2 and int(observed[2]) > 0 and int(observed[3]) == 0
