@@ -292,3 +292,9 @@ Linux/offscreen стенде, часть выполнялась одноврем
 
 Пример наблюдения из `suspensionlab`:
 `PYTHONPATH=diagnostics python -m pytest -s -p trace_joint_buddies_plugin tests/test_joint_concept_ui.py tests/test_weldment_3d_integration.py diagnostics/test_qt_cad_lifecycle.py`.
+
+Отдельный полный Linux/offscreen запуск `578d6b7` без этих плагинов и без GDB
+также завершился: **2885 passed, 1 skipped, 24 подслучая passed** за 1703 секунды.
+Пропущен тест с требованием явно включённого реального OpenGL-контекста. Часть
+запуска совпадала по времени с короткими диагностическими сериями. Успешный
+полный повтор не отменяет предыдущие SIGSEGV и не подтверждает их исправление.
