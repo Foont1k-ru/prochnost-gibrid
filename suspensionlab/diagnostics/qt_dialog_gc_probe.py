@@ -18,6 +18,13 @@ from pathlib import Path
 
 
 def child(mode: str) -> int:
+    if mode == 'unsafe' and os.name == 'posix':
+        # Искусственная авария не должна создавать большой дамп памяти пользователя.
+        import resource
+
+        _, hard = resource.getrlimit(resource.RLIMIT_CORE)
+        resource.setrlimit(resource.RLIMIT_CORE, (0, hard))
+
     from PySide6.QtCore import QCoreApplication, QEvent, QSettings, Qt
     from PySide6.QtWidgets import QApplication
 
