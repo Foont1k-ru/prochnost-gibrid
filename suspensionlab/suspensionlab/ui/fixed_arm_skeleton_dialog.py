@@ -608,7 +608,7 @@ class FixedArmSkeletonDialog(QDialog):
             self._refresh()
             return
         state, project = self._state(), self.controller.project
-        editor = FixedArmHousingsDialog(self._housings, self)
+        editor = FixedArmHousingsDialog(self._housings, self, anchors=self.preview.anchors)
         accepted = editor.exec() == QDialog.DialogCode.Accepted
         if (self._state() != state or self.controller.project is not project or self.snapshot is None or
                 not self.snapshot.matches(self.controller.project)):
@@ -1083,7 +1083,7 @@ class FixedArmSkeletonDialog(QDialog):
         self._cad_snapshot = self.snapshot if cad_document is not None else None
         self._cad.set_document(cad_document)
         self._overlap.set_document(cad_document)
-        self._housing_status.setText('Оба корпуса заданы и центры опор подтверждены.' if self._housings is not None
+        self._housing_status.setText('Оба корпуса заданы; центры совпадают с опорами снимка.' if self._housings is not None
                                      else 'Корпуса не заданы.')
         self._cad_note.setText('Предварительный CAD: одна ветвь подрезается по исходной другой трубе; '
                                'остальные пересечения, сварка, зазоры и прочность не проверяются.'

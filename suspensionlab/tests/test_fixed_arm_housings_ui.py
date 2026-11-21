@@ -28,6 +28,68 @@ def test_fields_are_blank_and_must_be_confirmed(qtbot):
     assert dialog.result() == QDialog.DialogCode.Accepted and dialog.result_values == housings()
 
 
+def test_snapshot_anchors_prefill_direction_and_accept_dimensions(qtbot):
+    anchors = ((10., -20., 30.), (13., -16., 30.), (0., 0., 0.))
+    dialog = FixedArmHousingsDialog(anchors=anchors)
+    qtbot.addWidget(dialog)
+    for leg in ('front', 'rear'):
+        fields = dialog.fields[leg]
+        assert [float(fields[key].text()) for key in ('axis_x', 'axis_y', 'axis_z')] == [0.6, 0.8, 0.0]
+        assert dialog.confirm_center[leg].isChecked()
+        for key, value in (('outer_diameter_mm', 40), ('bore_diameter_mm', 20), ('length_mm', 30)):
+            fields[key].setText(str(value))
+    # The suggested direction can be corrected independently for each housing.
+    for key, value in zip(('axis_x', 'axis_y', 'axis_z'), ('0', '0', '1'), strict=True):
+        dialog.fields['rear'][key].setText(value)
+    dialog.accept()
+    assert dialog.result() == QDialog.DialogCode.Accepted
+    assert dialog.result_values['front']['axis'] == [0.6, 0.8, 0.0]
+    assert dialog.result_values['rear']['axis'] == [0., 0., 1.]
+    assert all(item['center_on_pivot'] for item in dialog.result_values.values())
+    # Opening existing parameters must never silently replace the user's axes.
+    reopened = FixedArmHousingsDialog(dialog.result_values, anchors=anchors)
+    qtbot.addWidget(reopened)
+    assert reopened.fields['rear']['axis_z'].text() == '1.0'
+
+
+def test_coincident_anchors_do_not_invent_a_direction(qtbot):
+    dialog = FixedArmHousingsDialog(anchors=((1., 2., 3.), (1., 2., 3.)))
+    qtbot.addWidget(dialog)
+    assert all(not dialog.fields[leg][key].text() for leg in ('front', 'rear')
+               for key in ('axis_x', 'axis_y', 'axis_z'))
+    dialog.accept()
+    assert dialog.result_values is None
+
+
+def test_editor_passes_snapshot_anchors_for_default_housings(qtbot, monkeypatch):
+    controller = AppController()
+    controller.project = load_template('ring')
+    dialog = FixedArmSkeletonDialog(controller)
+    qtbot.addWidget(dialog)
+    dialog._capture_snapshot()
+    a, b = dialog.preview.anchors[:2]
+    direction = [b[i] - a[i] for i in range(3)]
+    from math import hypot
+
+    magnitude = hypot(*direction)
+    def accept(editor):
+        for leg in ('front', 'rear'):
+            fields = editor.fields[leg]
+            assert [float(fields[key].text()) for key in ('axis_x', 'axis_y', 'axis_z')] == [
+                component / magnitude for component in direction]
+            for key, value in (('outer_diameter_mm', 40), ('bore_diameter_mm', 20), ('length_mm', 30)):
+                fields[key].setText(str(value))
+        editor.accept()
+        return editor.result()
+    monkeypatch.setattr(FixedArmHousingsDialog, 'exec', accept)
+    dialog._edit_housings()
+    assert dialog._housings is not None
+    assert dialog._housings['front']['axis'] == dialog._housings['rear']['axis']
+    assert dialog.preview.anchors[:2] == (a, b)
+    monkeypatch.setattr(QMessageBox, 'question', lambda *args: QMessageBox.StandardButton.Yes)
+    dialog.close()
+
+
 def test_editor_save_open_and_reset(qtbot, monkeypatch, tmp_path):
     controller = AppController()
     controller.project = load_template('ring')

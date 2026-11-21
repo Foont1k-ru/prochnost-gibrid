@@ -1,6 +1,7 @@
 """Явный ввод двух корпусов без выбора размеров или осей за пользователя."""
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from PySide6.QtWidgets import (
@@ -11,6 +12,7 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QLabel,
     QLineEdit,
+    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
@@ -19,27 +21,52 @@ from ..model.fixed_arm_housings import HousingError, validate_housings
 
 
 class FixedArmHousingsDialog(QDialog):
-    def __init__(self, values: dict[str, Any] | None = None, parent: QWidget | None = None) -> None:
+    def __init__(self, values: dict[str, Any] | None = None, parent: QWidget | None = None, *,
+                 anchors: tuple[tuple[float, float, float], ...] | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle('Два корпуса втулок · явные параметры')
-        self.resize(500, 660)
+        self.resize(500, 480)
         self.result_values: dict[str, Any] | None = None
         self.fields: dict[str, dict[str, QLineEdit]] = {}
         self.confirm_center: dict[str, QCheckBox] = {}
-        layout = QVBoxLayout(self)
-        note = QLabel('Для каждого корпуса задайте размеры и направление оси в системе XYZ автомобиля. '
-                      'Центр корпуса будет совмещён с соответствующей опорой только после подтверждения. '
-                      'Если точка опоры не является центром корпуса, этот режим пока не подходит.', self)
+        outer = QVBoxLayout(self)
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        body = QWidget(scroll)
+        scroll.setWidget(body)
+        outer.addWidget(scroll)
+        layout = QVBoxLayout(body)
+        if anchors is not None and len(anchors) >= 2:
+            note_text = ('Центры корпусов совпадают с внутренними опорами снимка. '
+                         'Направление оси предлагается по линии между опорами — это предположение, '
+                         'не измерение реальной втулки. При необходимости измените компоненты направления. '
+                         'Если точка опоры не является центром корпуса, этот режим не подходит.')
+        else:
+            note_text = ('Задайте размеры и направление оси; подтвердите совпадение центра корпуса с опорой. '
+                         'Если точка опоры не является центром корпуса, этот режим не подходит.')
+        note = QLabel(note_text, self)
         note.setWordWrap(True)
         layout.addWidget(note)
-        for leg, title in (('front', 'Передний корпус'), ('rear', 'Задний корпус')):
+        default_axis: tuple[float, float, float] | None = None
+        if anchors is not None and len(anchors) >= 2:
+            direction = tuple(anchors[1][i] - anchors[0][i] for i in range(3))
+            length = math.hypot(*direction)
+            if math.isfinite(length) and length >= 1e-9:
+                default_axis = (direction[0] / length, direction[1] / length, direction[2] / length)
+        for index, (leg, title) in enumerate((('front', 'Передний корпус'), ('rear', 'Задний корпус'))):
             box = QGroupBox(title, self)
             group = QVBoxLayout(box)
+            if anchors is not None and len(anchors) >= 2:
+                point = anchors[index]
+                center = QLabel(f'Центр: опора снимка (XYZ, округлено: {point[0]:.3f}, {point[1]:.3f}, {point[2]:.3f}) мм', box)
+                center.setWordWrap(True)
+                group.addWidget(center)
             form = QFormLayout()
             self.fields[leg] = {}
             for key, label in (('outer_diameter_mm', 'Наружный диаметр, мм'),
                                ('bore_diameter_mm', 'Диаметр отверстия, мм'), ('length_mm', 'Длина, мм'),
-                               ('axis_x', 'Ось X'), ('axis_y', 'Ось Y'), ('axis_z', 'Ось Z')):
+                               ('axis_x', 'Направление оси X'), ('axis_y', 'Направление оси Y'),
+                               ('axis_z', 'Направление оси Z')):
                 field = QLineEdit(box)
                 field.setMaxLength(64)
                 field.setPlaceholderText('Введите значение')
@@ -49,7 +76,14 @@ class FixedArmHousingsDialog(QDialog):
             group.addLayout(form)
             check = QCheckBox('Подтверждаю: центр корпуса совпадает с точкой опоры', box)
             self.confirm_center[leg] = check
-            group.addWidget(check)
+            if anchors is not None and len(anchors) >= 2:
+                check.setChecked(True)
+                check.hide()
+            else:
+                group.addWidget(check)
+            if default_axis is not None:
+                for key, component in zip(('axis_x', 'axis_y', 'axis_z'), default_axis, strict=True):
+                    self.fields[leg][key].setText(repr(component))
             layout.addWidget(box)
         self._status = QLabel(self)
         self._status.setWordWrap(True)
@@ -58,7 +92,7 @@ class FixedArmHousingsDialog(QDialog):
         buttons.button(QDialogButtonBox.StandardButton.Ok).setText('Применить')
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
+        outer.addWidget(buttons)
         if values is not None:
             data = validate_housings(values)
             for leg in ('front', 'rear'):
