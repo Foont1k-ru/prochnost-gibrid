@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from itertools import count
 from pathlib import Path
-from time import monotonic
+from time import monotonic, perf_counter
 
 import numpy as np
 from PySide6.QtCore import QSettings, Qt, QThread, QTimer, Signal
@@ -175,6 +175,10 @@ class CadPreviewDialog(QDialog):
         measure_row.addWidget(self._clear_measure)
         layout.addLayout(measure_row)
         self._view = CadPreview(self)
+        self._performance_diagnostics = QCheckBox(tr("cad_preview.performance_diagnostics"), self)
+        self._performance_diagnostics.setToolTip(tr("cad_preview.performance_diagnostics_tip"))
+        self._performance_diagnostics.toggled.connect(self._view.set_performance_diagnostics)
+        layout.addWidget(self._performance_diagnostics)
         self._measure.toggled.connect(self._view.set_measure_mode)
         self._view.point_picked.connect(self._add_measurement_point)
         self._view.point_missed.connect(self._measurement_missed)
@@ -431,6 +435,13 @@ class CadPreviewDialog(QDialog):
         self._select_instance()
 
     def _pick_triangle(self, index: int) -> None:
+        started = perf_counter() if self._view._perf_enabled else 0.0
+        try:
+            self._apply_triangle_pick(index)
+        finally:
+            self._view._perf_elapsed("pick_ui", started)
+
+    def _apply_triangle_pick(self, index: int) -> None:
         mesh = self._mesh
         if mesh is None or self._view.mesh is not mesh or mesh.triangle_parts is None or not 0 <= index < len(mesh.triangles):
             return
@@ -455,6 +466,7 @@ class CadPreviewDialog(QDialog):
     def _select_instance(self) -> None:
         if self._mesh is None:
             return
+        started = perf_counter() if self._view._perf_enabled else 0.0
         group = self._parts.currentData()
         instance = self._instances.currentData()
         selected = isinstance(group, int) and group >= 0 and self._mesh.triangle_parts is not None
@@ -473,6 +485,7 @@ class CadPreviewDialog(QDialog):
             self._view.set_mesh(self._mesh.isolated_instance(instance))
         elif isinstance(group, int):
             self._view.set_mesh(self._mesh.isolated(group))
+        self._view._perf_elapsed("select", started)
 
     def _show_error(self, code: str) -> None:
         self._error_received = True

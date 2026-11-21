@@ -111,6 +111,9 @@ class CadJob:
                 if state.get("status") != "ok" or code != 0:
                     known = {"file_size", "deviation", "missing_cad", "units", "read", "no_shape", "mesh",
                              "limit", "memory", "missing_face", "coordinates", "no_faces", "unexpected"}
+                    known.update(f'{prefix}_{leg}_{reason}' for prefix in ('notch', 'tube_joint')
+                                 for leg in ('front', 'rear') for reason in ('no_overlap', 'empty_or_split', 'failed'))
+                    known.add('tube_joint_miter_failed')
                     error_code = state.get("code")
                     raise CadPreviewError(error_code if error_code in known else "crash")
                 if not output.is_file() or output.stat().st_size > MAX_ARCHIVE_BYTES:

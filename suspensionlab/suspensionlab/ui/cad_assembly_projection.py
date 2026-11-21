@@ -1,6 +1,7 @@
 """Фоновая CAD-проекция с изоляцией, отменой и защитой от старых ответов."""
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from copy import deepcopy
 from pathlib import Path
@@ -8,7 +9,18 @@ from typing import Any
 
 from PySide6.QtCore import QLineF, QRectF, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QColor, QPainter, QPen
-from PySide6.QtWidgets import QCheckBox, QFileDialog, QLabel, QMessageBox, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QApplication,
+    QCheckBox,
+    QFileDialog,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
 
 from ..core.cad_assembly_projection_job import CadAssemblyProjection, CadAssemblyProjectionJob
 from ..core.cad_transport import CadPreviewError
@@ -141,6 +153,27 @@ class CadAssemblyProjectionView(QWidget):
         self.snapshot_code.setToolTip('Код нормализованного снимка в редакторе; не хэш файла и не подпись. '
                                       'Имя и данные снимка проекта тоже входят в расчёт.')
         layout.addWidget(self.snapshot_code)
+        code_controls = QHBoxLayout()
+        self.copy_code = QPushButton('Скопировать код')
+        self.copy_code.setEnabled(False)
+        self.copy_code.setToolTip('Код будет помещён в системный буфер, доступный другим приложениям. '
+                                  'После изменения сборки ранее скопированный код устаревает.')
+        self.copy_code.clicked.connect(self._copy_snapshot_code)
+        code_controls.addWidget(self.copy_code)
+        self.comparison_input = QLineEdit()
+        self.comparison_input.setPlaceholderText('Вставьте 64 символа SHA-256 снимка v1 для сравнения')
+        self.comparison_input.setAccessibleName('Код снимка для сравнения')
+        self.comparison_input.textChanged.connect(self._clear_comparison)
+        code_controls.addWidget(self.comparison_input, 1)
+        self.compare_code = QPushButton('Сравнить')
+        self.compare_code.setEnabled(False)
+        self.compare_code.clicked.connect(self._compare_snapshot_code)
+        code_controls.addWidget(self.compare_code)
+        layout.addLayout(code_controls)
+        self.comparison_status = QLabel()
+        self.comparison_status.setWordWrap(True)
+        self.comparison_status.setTextFormat(Qt.TextFormat.PlainText)
+        layout.addWidget(self.comparison_status)
         self.bounds = QLabel()
         self.bounds.setWordWrap(True)
         self.bounds.setTextFormat(Qt.TextFormat.PlainText)
@@ -169,12 +202,46 @@ class CadAssemblyProjectionView(QWidget):
             return
         self._document = deepcopy(document)
         self._snapshot_fingerprint = fingerprint
+        self.copy_code.setEnabled(fingerprint is not None)
+        self.compare_code.setEnabled(fingerprint is not None)
+        self._clear_comparison()
         if fingerprint is None:
             self.snapshot_code.setText('Код снимка недоступен; SVG экспортировать нельзя.')
         else:
             self.snapshot_code.setText(f'SHA-256 снимка v1: {fingerprint}\n'
                                        'Не хэш файла и не подпись; сравните этот код с кодом в SVG.')
         self._schedule()
+
+    def _clear_comparison(self, *_args: object) -> None:
+        self.comparison_status.clear()
+
+    def _current_snapshot_code(self) -> str | None:
+        if (self._closed or self._document is None or self._snapshot_fingerprint is None or
+                not self._candidate_is_current(self._document)):
+            return None
+        return self._snapshot_fingerprint
+
+    def _copy_snapshot_code(self) -> None:
+        code = self._current_snapshot_code()
+        if code is None:
+            self.comparison_status.setText('Код недоступен или снимок изменился. Обновите окно сборки.')
+            return
+        QApplication.clipboard().setText(code)
+        self.comparison_status.setText('Код скопирован в системный буфер; после изменения сборки он устареет.')
+
+    def _compare_snapshot_code(self) -> None:
+        code = self._current_snapshot_code()
+        if code is None:
+            self.comparison_status.setText('Код недоступен или снимок изменился. Обновите окно сборки.')
+            return
+        entered = self.comparison_input.text().strip()
+        if re.fullmatch(r'[0-9a-fA-F]{64}', entered) is None:
+            self.comparison_status.setText('Введите только 64 шестнадцатеричных символа кода SHA-256 снимка v1.')
+            return
+        result = 'Коды совпадают' if entered.lower() == code else 'Коды различаются'
+        self.comparison_status.setText(
+            f'{result} на момент сравнения. Проверен только введённый текст, не содержимое SVG или файла; '
+            'это не проверка геометрии, происхождения или пригодности.')
 
     def _candidate_is_current(self, document: dict[str, Any]) -> bool:
         if self._is_current is None:

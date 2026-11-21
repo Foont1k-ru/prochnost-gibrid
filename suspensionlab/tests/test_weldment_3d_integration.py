@@ -766,10 +766,19 @@ def test_plate_assembly_actual_preview_updates_saves_and_reopens(qtbot, tmp_path
     qtbot.addWidget(d)
     d.three_d._enable.setChecked(True)
     qtbot.waitUntil(lambda: d.three_d._view.mesh is not None and d.save_copy.isEnabled(), timeout=45000)
+    root = d.three_d._parts_tree.topLevelItem(0)
+    assert root is not None and root.childCount() == 4
     monkeypatch.setattr(PlatePlacementDialog, 'exec', lambda form: QDialog.DialogCode.Accepted)
     d._edit_plate_placement()
     assert d.three_d._view.mesh is None and not d.save_copy.isEnabled()
+    assert d.three_d._parts_tree.topLevelItemCount() == 0
     qtbot.waitUntil(lambda: d.three_d._view.mesh is not None and d.save_copy.isEnabled(), timeout=45000)
+    root = d.three_d._parts_tree.topLevelItem(0)
+    assert root is not None and root.childCount() == 5 and 'ball_plate' in root.child(4).text(0)
+    d.three_d._parts_tree.setCurrentItem(root.child(4))
+    mesh = d.three_d._view.mesh
+    assert mesh is not None and mesh.triangle_parts is not None
+    assert (d.three_d._view._highlight == (mesh.triangle_parts == 4)).all()
     path = tmp_path / 'assembly.kima'
     monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(path), ''))
     d._save_copy()

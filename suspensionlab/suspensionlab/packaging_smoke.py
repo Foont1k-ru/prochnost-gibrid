@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import csv
 import json
+import math
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -82,6 +83,9 @@ def run_cad_check() -> None:
     from .core.cad_assembly_projection_job import CadAssemblyProjectionJob
     from .core.cad_recovery import recover_revolution_face
     from .core.cad_transport import CadJob
+    from .core.cad_tube_notch_job import TubeNotchPreviewJob
+    from .core.cad_tube_notch_sequence_job import SequencePreviewJob
+    from .core.cad_weldment_job import WeldmentCadJob
     from .export.cad_assembly_svg import write_new_projection_svg
     from .model.assembly_snapshot_fingerprint import assembly_snapshot_fingerprint
     from .model.entities import Project
@@ -92,10 +96,56 @@ def run_cad_check() -> None:
                                          'bore_radius_mm': 7., 'length_mm': 24.})
     assembly = set_assembly_plate(assembly, make_plate(40., 20., 3., 5.),
                                   {'normal': 'z', 'offset_mm': [0., 0., 0.]})
+    assembly_mesh = WeldmentCadJob().run(assembly)
+    _require(assembly_mesh.part_names == tuple(part['id'] for part in assembly['parts']) and
+             assembly_mesh.triangle_parts is not None and
+             all((assembly_mesh.triangle_parts == index).any() for index in range(len(assembly['parts']))),
+             "В собранном приложении недоступны отдельные детали 3D-сборки")
     projection = CadAssemblyProjectionJob().run(assembly)
     _require(len(projection.views) == 3 and all(len(lines) > 4 for lines in projection.views) and
              all(projection.bounds_mm[i] < projection.bounds_mm[i + 3] for i in range(3)),
              "В собранном приложении недоступны CAD-проекции предварительной сборки")
+
+    notch_project = Project.create_default()
+    for key, coords in {'lca_f_in': (0., 0., 0.), 'lca_r_in': (100., 0., 0.),
+                        'lbj': (0., 100., 0.)}.items():
+        point = notch_project.front.hardpoints[key]
+        point.x, point.y, point.z = coords
+    notch_assembly = make_scheme_arm_assembly(notch_project, 10., 2.,
+                                              {'axis': 'x', 'outer_radius_mm': 14.,
+                                               'bore_radius_mm': 7., 'length_mm': 24.})
+    notch = TubeNotchPreviewJob().run(notch_assembly, 'tube_front', 'housing_front')
+    _require(notch.before.bounds_mm == notch.after.bounds_mm and
+             any(a != b for a, b in zip(notch.before.views, notch.after.views, strict=True)),
+             "В собранном приложении недоступен предварительный просмотр подрезки")
+    spaced_notch = TubeNotchPreviewJob().run(notch_assembly, 'tube_front', 'housing_front', radial_clearance_mm=2.)
+    _require(spaced_notch.tube_before == notch.tube_before and
+             spaced_notch.tube_after.views != notch.tube_after.views,
+             "В собранном приложении недоступен предварительный радиальный зазор корпуса")
+    plate_assembly = set_assembly_plate(notch_assembly, make_plate(60., 60., 5., 9.5),
+                                        {'normal': 'z', 'offset_mm': [0., 0., 0.]})
+    plate_notch = TubeNotchPreviewJob().run(plate_assembly, 'tube_front', 'ball_plate')
+    _require(plate_notch.before.bounds_mm == plate_notch.after.bounds_mm and
+             plate_notch.tube_before.bounds_mm == plate_notch.tube_after.bounds_mm and
+             any(a != b for a, b in zip(plate_notch.before.views, plate_notch.after.views, strict=True)) and
+             any(a != b for a, b in zip(plate_notch.tube_before.views, plate_notch.tube_after.views, strict=True)),
+             "В собранном приложении недоступен предварительный просмотр подрезки по пластине")
+    tube_notch = TubeNotchPreviewJob().run(notch_assembly, 'tube_front', 'tube_rear')
+    _require(tube_notch.before.bounds_mm == tube_notch.after.bounds_mm and
+             any(a != b for a, b in zip(tube_notch.before.views, tube_notch.after.views, strict=True)),
+             "В собранном приложении недоступен предварительный просмотр подрезки по другой трубе")
+    sequence = SequencePreviewJob().run(notch_assembly, 'tube_front', ['housing_front', 'tube_rear'])
+    _require([stage.cutter_id for stage in sequence.stages] == ['housing_front', 'tube_rear'] and
+             all(stage.projection.bounds_mm == sequence.before.bounds_mm and
+                 stage.pair_before.bounds_mm == stage.pair_after.bounds_mm and
+                 all(stage.pair_before.views) and all(stage.pair_after.views) and
+                 stage.input_volume_mm3 > stage.remaining_volume_mm3 > 0 and stage.removed_volume_mm3 > 0
+                 for stage in sequence.stages) and
+             math.isclose(sequence.stages[0].remaining_volume_mm3, sequence.stages[1].input_volume_mm3,
+                          rel_tol=1e-8) and
+             sequence.before.bounds_mm == sequence.after.bounds_mm and
+             any(a != b for a, b in zip(sequence.before.views, sequence.after.views, strict=True)),
+             "В собранном приложении недоступен предварительный просмотр нескольких резов")
 
     # Искусственная поверхность с единственным круговым контуром, как отдельный
     # тест наличия кода восстановления в собранной программе.
@@ -257,10 +307,177 @@ def run_cad_check() -> None:
     # Проверяем и пользовательский путь повторного открытия в упакованном Qt.
     from unittest.mock import patch
 
-    from PySide6.QtWidgets import QFileDialog, QMessageBox
+    from PySide6.QtCore import QEvent, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+    from PySide6.QtWidgets import QApplication, QFileDialog, QInputDialog, QMessageBox
 
     from .model.kim_format import read_document, write_document
+    from .model.templates import load_template
+    from .ui.fixed_arm_housings_dialog import FixedArmHousingsDialog
+    from .ui.fixed_arm_skeleton_dialog import FixedArmSkeletonDialog
     from .ui.rear_tube_dialog import RearTubeDialog
+
+    # Проверяем именно новый пользовательский путь в замороженном приложении:
+    # снимок, две сгруппированные трубы во вложенном CAD-процессе и повторное открытие.
+    fixed_controller = AppController()
+    fixed_controller.project = load_template('ring')
+    fixed_dialog = FixedArmSkeletonDialog(fixed_controller)
+    fixed_dialog.show()
+    panel = fixed_dialog._cad
+    try:
+        fixed_dialog._capture_snapshot()
+        _require(fixed_dialog.preview is not None, "Не удалось зафиксировать расчётный снимок рычага")
+        assert fixed_dialog.preview is not None
+        anchors = fixed_dialog.preview.anchors
+        fixed_dialog._tabs.setCurrentIndex(4)
+        panel._quality.setCurrentIndex(1)
+        panel._enable.setChecked(True)
+        mesh = wait_for_mesh()
+        _require(mesh.part_names == ('tube_front', 'tube_rear') and mesh.triangle_parts is not None and
+                 all((mesh.triangle_parts == index).any() for index in (0, 1)) and
+                 not panel._view.grab().isNull(), "Трубы по снимку не отображаются раздельно")
+        fixed_dialog._tabs.setCurrentIndex(1)
+        app.processEvents()
+        canvas = fixed_dialog._projections[0]
+        a, b = anchors[0], anchors[2]
+        vertex = (a[0] * .6 + b[0] * .4, a[1] * .6 + b[1] * .4, a[2] * .6 + b[2] * .4)
+        click = canvas._screen_point(vertex)
+
+        def mouse(event_type: QEvent.Type, position: QPointF, button: Qt.MouseButton,
+                  buttons: Qt.MouseButton) -> None:
+            event = QMouseEvent(event_type, position, position, button, buttons, Qt.KeyboardModifier.NoModifier)
+            QApplication.sendEvent(canvas, event)
+
+        mouse(QEvent.Type.MouseButtonPress, click, Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton)
+        mouse(QEvent.Type.MouseButtonRelease, click, Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton)
+        _require(fixed_dialog._draft is not None and panel._view.mesh is None,
+                 "Щелчок по трубе не добавил черновую вершину или не очистил старый CAD")
+        assert fixed_dialog._draft is not None
+        start = canvas._screen_point(fixed_dialog._draft[1])
+        drag_target = start + QPointF(70, 0)
+        with patch.object(QInputDialog, 'getDouble', return_value=(30., True)):
+            mouse(QEvent.Type.MouseButtonPress, start, Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton)
+            mouse(QEvent.Type.MouseMove, drag_target, Qt.MouseButton.NoButton, Qt.MouseButton.LeftButton)
+            mouse(QEvent.Type.MouseButtonRelease, drag_target, Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton)
+        _require(fixed_dialog._draft is None and panel._view.mesh is None,
+                 "Вершина не перемещена или старая CAD-модель не очищена")
+        fixed_dialog._tabs.setCurrentIndex(4)
+        wait_for_mesh()
+        _require(fixed_dialog.preview is not None and fixed_dialog.preview.anchors == anchors and
+                 panel._document is not None and
+                 panel._document['parts'][0]['geometry']['kind'] == 'prototype_arm_bent_tube',
+                 "Гнутая труба по снимку не перестроена с исходными опорами")
+
+        def enter_housings(editor: FixedArmHousingsDialog) -> int:
+            for leg, values in (('front', (40, 25, 32, 1, 2, 3)), ('rear', (52, 31, 44, 0, -1, 0))):
+                for key, value in zip(('outer_diameter_mm', 'bore_diameter_mm', 'length_mm',
+                                       'axis_x', 'axis_y', 'axis_z'), values, strict=True):
+                    editor.fields[leg][key].setText(str(value))
+                editor.confirm_center[leg].setChecked(True)
+            editor.accept()
+            return editor.result()
+
+        with patch.object(FixedArmHousingsDialog, 'exec', enter_housings):
+            fixed_dialog._edit_housings()
+        mesh = wait_for_mesh()
+        _require(mesh.part_names == ('tube_front', 'tube_rear', 'housing_front', 'housing_rear') and
+                 mesh.triangle_parts is not None and all((mesh.triangle_parts == i).any() for i in range(4)),
+                 "Две трубы и два корпуса не построены раздельно")
+        fixed_dialog._notch_checks['front'].setChecked(True)
+        _require(panel._view.mesh is None and fixed_dialog._cad_candidate is None,
+                 "CAD не скрыт при незаданном зазоре подрезки")
+        fixed_dialog._notch_clearances['front'].setText('0')
+        mesh = wait_for_mesh()
+        _require(len(mesh.part_names) == 4 and fixed_dialog._cad_candidate is not None and
+                 fixed_dialog._cad_candidate.get('notches') == {'front': 0.},
+                 "Подрезка передней трубы по корпусу не построена")
+        fixed_dialog._tube_joint.setCurrentIndex(fixed_dialog._tube_joint.findData('rear'))
+        _require(panel._view.mesh is None and fixed_dialog._cad_candidate is None,
+                 "CAD не скрыт при незаданном зазоре между трубами")
+        fixed_dialog._joint_clearance.setText('0')
+        mesh = wait_for_mesh()
+        _require(len(mesh.part_names) == 4 and fixed_dialog._tube_joint_values() ==
+                 {'target': 'rear', 'radial_clearance_mm': 0.}, "Подрезка по другой трубе не построена")
+        overlap = fixed_dialog._overlap
+        overlap._start()
+        deadline = monotonic() + 60
+        while overlap._worker is not None and monotonic() < deadline:
+            app.processEvents()
+            sleep(0.02)
+        _require(overlap._worker is None and 'не проверка касания' in overlap._status.text(),
+                 "Изолированная проверка пересечения труб недоступна: " + overlap._status.text())
+        overlap._start_all()
+        deadline = monotonic() + 90
+        while overlap._worker is not None and monotonic() < deadline:
+            app.processEvents()
+            sleep(0.02)
+        _require(overlap._worker is None and overlap._table.rowCount() == 6 and
+                 'не означает наличие зазора' in overlap._status.text(),
+                 "Попарная проверка деталей недоступна: " + overlap._status.text())
+        overlap._start_proximity()
+        deadline = monotonic() + 90
+        while overlap._worker is not None and monotonic() < deadline:
+            app.processEvents()
+            sleep(0.02)
+        _require(overlap._worker is None and overlap._table.rowCount() == 6 and
+                 'ошибок: 0' in overlap._status.text(),
+                 "Проверка расстояний деталей недоступна: " + overlap._status.text())
+        overlap._minimum.setText('0.5')
+        overlap._commit_requirement()
+        _require(overlap._suggest_button.isEnabled(), "Подбор не принимает явный минимум")
+        before_candidate = fixed_dialog._cad_candidate
+        overlap._start_suggestion()
+        deadline = monotonic() + 180
+        while overlap._worker is not None and monotonic() < deadline:
+            app.processEvents()
+            sleep(0.02)
+        _require(overlap._worker is None and fixed_dialog._cad_candidate == before_candidate and
+                 ('Подбор завершён' in overlap._status.text() or 'Предложение не применено' in overlap._status.text()),
+                 "Проверка предложений недоступна или изменила исходные параметры: " + overlap._status.text())
+        if overlap._suggestion is not None:
+            _require(overlap._comparison_button.isEnabled() and overlap._comparison.rowCount() == 6,
+                     "Не показано сравнение всех пар до и после предложения")
+        overlap._start_auto()
+        deadline = monotonic() + 240
+        while overlap._worker is not None and monotonic() < deadline:
+            app.processEvents()
+            sleep(0.02)
+        _require(overlap._worker is None and len(overlap._auto_results) == 6 and
+                 overlap._table.columnCount() == 8 and fixed_dialog._cad_candidate == before_candidate,
+                 "Автоподбор пар недоступен или изменил исходные параметры: " + overlap._status.text())
+        overlap.set_requirements({'tube_front|tube_rear': .5, 'housing_front|housing_rear': 0}, housings=True)
+        overlap._start_plan()
+        deadline = monotonic() + 240
+        while overlap._worker is not None and monotonic() < deadline:
+            app.processEvents()
+            sleep(0.02)
+        _require(overlap._worker is None and overlap._table.rowCount() == 6 and
+                 'Не найдено двух' in overlap._auto_summary.text() and fixed_dialog._cad_candidate == before_candidate,
+                 "Проверка составного плана недоступна или изменила геометрию: " + overlap._auto_summary.text())
+        overlap.set_requirements({'tube_front|tube_rear': .5}, housings=True)
+        with TemporaryDirectory(prefix="suspensionlab-fixed-arm-reopen-") as directory:
+            source = Path(directory) / "скелет.slarm"
+            with patch.object(QFileDialog, "getSaveFileName", return_value=(str(source), "")):
+                fixed_dialog._save_file()
+            _require(source.exists(), "Скелет не сохранён в отдельный файл")
+            original = source.read_bytes()
+            with patch.object(QFileDialog, "getOpenFileName", return_value=(str(source), "")):
+                fixed_dialog._open_file()
+            _require(fixed_dialog.preview is not None and fixed_dialog.preview.anchors == anchors and
+                     fixed_dialog._housings is not None and fixed_dialog._notch_checks['front'].isChecked() and
+                     fixed_dialog._notch_values() == {'front': 0.} and fixed_dialog._tube_joint_values() ==
+                     {'target': 'rear', 'radial_clearance_mm': 0.} and
+                     overlap.requirements() == {'tube_front|tube_rear': 0.5} and overlap._table.isHidden() and
+                     source.read_bytes() == original,
+                     "Снимок, параметры подрезки и требование не восстановлены или показан старый результат")
+            mesh = wait_for_mesh()
+            _require(len(mesh.part_names) == 4 and panel._document is not None and
+                     panel._document.get('notches') == {'front': 0.} and panel._document.get('tube_joint') ==
+                     {'target': 'rear', 'radial_clearance_mm': 0.}, "Подрезка не восстановлена в CAD")
+    finally:
+        with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes):
+            fixed_dialog.close()
+            app.processEvents()
 
     controller = AppController()
     controller.set_axle_type("rear", "live_axle_coil")
@@ -387,6 +604,8 @@ def run_packaging_check() -> None:
 
     import ezdxf
     import numpy as np
+    from OpenGL import GL
+    from OpenGL.GL import shaders
     from PySide6.QtCore import QEvent, QPointF, Qt
     from PySide6.QtGui import QMouseEvent
     from PySide6.QtWidgets import QComboBox, QDialog, QFileDialog, QInputDialog, QLineEdit, QMessageBox
@@ -397,9 +616,15 @@ def run_packaging_check() -> None:
     from .core.camera_views import camera_view_angles
     from .ui.cad_preview_dialog import CadPreviewDialog
     from .ui.cad_preview_settings import CadPreviewSettingsDialog
+    from .ui.canvas.cad_gl_renderer import CadGlRenderer
     from .ui.canvas.cad_preview import CadPreview
     from .ui.sketch_draft_dialog import FilletChoiceDialog, SketchDraftDialog, SketchExtrusionPreview
     from .ui.widgets.camera_views import CameraViews
+
+    # Only verify that the frozen program contains the lazy imports. Creating an
+    # OpenGL context or claiming hardware acceleration requires a real display.
+    _require(callable(CadGlRenderer) and callable(shaders.compileProgram) and bool(GL.GL_TRIANGLES),
+             "В сборке недоступны компоненты OpenGL")
 
     with TemporaryDirectory(prefix="suspensionlab-sketch-check-") as sketch_dir:
         sketch = SketchDraftDialog()
@@ -553,6 +778,16 @@ def run_packaging_check() -> None:
         window.show()
         window.controller.new_project("ring")
         window._show_workspace()
+        window._tabs.setCurrentWidget(window._kinematics)
+        workspace = window._kinematics
+        workspace.role.setCurrentIndex(1)
+        workspace._timer.stop()
+        workspace._calculate()
+        _require(workspace.result is not None and workspace.preview.frame is not None and
+                 len(workspace.preview.link_targets) == 5 and 'пять тяг' in workspace.status.text(),
+                 'Расчёт задней пятирычажной схемы недоступен')
+        workspace._timer.stop()
+        window._tabs.setCurrentWidget(window._canvases['front'])
         app.processEvents()
         point_table = PointTableDialog(window.controller, window)
         _require(bool(window.action_point_table.text()) and bool(point_table._rows), "Таблица исходных точек недоступна")

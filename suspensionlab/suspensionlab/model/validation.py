@@ -75,7 +75,9 @@ def validate_axle(axle: Axle, project: Project | None = None) -> list[Issue]:
     if spec.role != role:
         issues.append(_issue("error", "diag.type_role_mismatch", role, type=axle.type_code))
 
-    if axle.type_code != "double_wishbone":
+    if role == 'rear' and axle.type_code == 'multilink_rear':
+        issues.append(_issue('info', 'diag.rear_workspace_solver', role))
+    elif axle.type_code != "double_wishbone":
         issues.append(_issue("info", "diag.no_kinematic_solver", role))
     if axle.drivetrain.driven:
         issues.append(_issue("info", "diag.drive_geometry_only", role))

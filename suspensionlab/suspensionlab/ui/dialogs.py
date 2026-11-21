@@ -67,6 +67,11 @@ class TemplateDialog(QDialog):
         self._front_drive.toggled.connect(self._update_powertrain_hint)
         self._rear_drive.toggled.connect(self._update_powertrain_hint)
         self._rear.currentIndexChanged.connect(self._rear_changed)
+        self._kinematics_hint = QLabel(self._config)
+        self._kinematics_hint.setWordWrap(True)
+        form.addRow(self._kinematics_hint)
+        self._front.currentIndexChanged.connect(self._update_kinematics_hint)
+        self._rear.currentIndexChanged.connect(self._update_kinematics_hint)
         self._description = QLabel(self)
         self._description.setObjectName("Hint")
         self._description.setWordWrap(True)
@@ -106,11 +111,24 @@ class TemplateDialog(QDialog):
             self._rear_drive.setChecked(row == 1)
             self._rear_changed()
             self._update_powertrain_hint()
+            self._update_kinematics_hint()
             self._description.setText(tr("template.config.limits"))
         elif 2 <= row < len(self._templates) + 2:
-            self._description.setText(tr(self._templates[row - 2].description_key))
+            self._description.setText(tr(self._templates[row - 2].description_key) +
+                                      ' Экспериментальный расчёт хода доступен для передней двухрычажной '
+                                      'и задней пятирычажной схем; остальные показаны статически.')
         else:
             self._description.setText("")
+
+    def _update_kinematics_hint(self, *_args: object) -> None:
+        front = self._front.currentData()
+        front_text = ('Для передней двухрычажной доступен экспериментальный расчёт хода.'
+                      if front == 'double_wishbone' else
+                      'Для выбранной передней схемы расчёт хода пока не реализован.')
+        rear_text = (' Для задней пятирычажной доступен экспериментальный расчёт хода.'
+                     if self._rear.currentData() == 'multilink_rear' else
+                     ' Для выбранной задней схемы расчёт хода пока не реализован.')
+        self._kinematics_hint.setText(front_text + rear_text)
 
     def _rear_changed(self) -> None:
         allowed = self._rear.currentData() != "torsion_beam_rear"

@@ -88,6 +88,21 @@ def test_weldment_worker_is_dispatched_before_gui(monkeypatch) -> None:
     assert packaging_entry.main() == 11 and called == [["source", "output", "report", "2.0"]]
 
 
+def test_fixed_arm_overlap_worker_is_dispatched_before_gui(monkeypatch) -> None:
+    worker = ModuleType('suspensionlab.core.cad_fixed_arm_overlap')
+    called: list[list[str]] = []
+    worker.main = lambda args: called.append(args) or 31  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, 'suspensionlab.core.cad_fixed_arm_overlap', worker)
+    monkeypatch.setattr(sys, 'argv', ['app', '--fixed-arm-overlap-worker', 'source', 'output'])
+    assert packaging_entry.main() == 31 and called == [['source', 'output']]
+    monkeypatch.setattr(sys, 'argv', ['app', '--fixed-arm-overlap-worker', 'source', 'output', 'all'])
+    assert packaging_entry.main() == 31 and called[-1] == ['source', 'output', 'all']
+    monkeypatch.setattr(sys, 'argv', ['app', '--fixed-arm-overlap-worker', 'source', 'output', 'proximity'])
+    assert packaging_entry.main() == 31 and called[-1] == ['source', 'output', 'proximity']
+    monkeypatch.setattr(sys, 'argv', ['app', '--fixed-arm-overlap-worker', 'source', 'output', 'suggest'])
+    assert packaging_entry.main() == 31 and called[-1] == ['source', 'output', 'suggest']
+
+
 def test_sketch_worker_routes_both_old_and_direction_arguments(monkeypatch) -> None:
     worker = ModuleType("suspensionlab.core.sketch_solid_worker")
     called: list[list[str]] = []
@@ -102,6 +117,16 @@ def test_sketch_worker_routes_both_old_and_direction_arguments(monkeypatch) -> N
         assert packaging_entry.main() == 13 and called[-1] == args
 
 
+def test_tube_notch_worker_is_dispatched_before_gui(monkeypatch) -> None:
+    worker = ModuleType('suspensionlab.core.cad_tube_notch_worker')
+    called: list[list[str]] = []
+    worker.main = lambda args: called.append(args) or 23  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, 'suspensionlab.core.cad_tube_notch_worker', worker)
+    args = ['source', 'output', 'report', 'tube_front', 'housing_front', '1.5']
+    monkeypatch.setattr(sys, 'argv', ['app', '--tube-notch-worker', *args])
+    assert packaging_entry.main() == 23 and called == [args]
+
+
 def test_assembly_projection_worker_is_dispatched_before_gui(monkeypatch) -> None:
     worker = ModuleType('suspensionlab.core.cad_assembly_projection_worker')
     called: list[list[str]] = []
@@ -109,3 +134,15 @@ def test_assembly_projection_worker_is_dispatched_before_gui(monkeypatch) -> Non
     monkeypatch.setitem(sys.modules, 'suspensionlab.core.cad_assembly_projection_worker', worker)
     monkeypatch.setattr(sys, 'argv', ['app', '--assembly-projection-worker', 'source', 'output', 'report'])
     assert packaging_entry.main() == 19 and called == [['source', 'output', 'report']]
+
+
+def test_sequence_worker_routes_one_to_four_cutters_before_gui(monkeypatch) -> None:
+    worker = ModuleType('suspensionlab.core.cad_tube_notch_sequence_worker')
+    called: list[list[str]] = []
+    worker.main = lambda args: called.append(args) or 29  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, 'suspensionlab.core.cad_tube_notch_sequence_worker', worker)
+    cutters = ['housing_front', 'housing_rear', 'ball_plate', 'tube_rear']
+    for count in range(1, 5):
+        args = ['source', 'output', 'report', 'tube_front', *cutters[:count]]
+        monkeypatch.setattr(sys, 'argv', ['app', '--tube-notch-sequence-worker', *args])
+        assert packaging_entry.main() == 29 and called[-1] == args

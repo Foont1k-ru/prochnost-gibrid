@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from math import ceil, isfinite
 
-from .double_wishbone import DoubleWishbone, KinematicsError, Pose, validate_sweep_input
+from .double_wishbone import KinematicsError, Pose, RigidFiveLinkSolver, validate_sweep_input
 
 
 @dataclass(frozen=True)
@@ -50,7 +50,7 @@ def travel_grid(from_mm: float, to_mm: float, *, max_spacing_mm: float = 1.0) ->
     return result
 
 
-def limited_sweep(model: DoubleWishbone, travels_mm: list[float], max_step_mm: float = 2.0) -> LimitedSweep:
+def limited_sweep(model: RigidFiveLinkSolver, travels_mm: list[float], max_step_mm: float = 2.0) -> LimitedSweep:
     """Продолжает обе ветви от статики, сохраняя точки до первого отказа.
 
     Границы — последние успешно решённые численные шаги, не доказанные

@@ -6,8 +6,9 @@ from typing import Any
 from ..model.kim_format import _assembly, _part
 
 
-def _build_bent_tube(geometry: dict[str, Any], *, endpoints: tuple[Any, Any] | None = None) -> Any:
-    """Круглое полое сечение вдоль двух прямых и касательной дуги."""
+def _build_bent_tube(geometry: dict[str, Any], *, endpoints: tuple[Any, Any] | None = None,
+                     solid_envelope: bool = False, radial_clearance_mm: float = 0.) -> Any:
+    """Полая труба или сплошной наружный объём вдоль прямых и касательной дуги."""
     from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakeWire
     from OCP.BRepCheck import BRepCheck_Analyzer
     from OCP.BRepOffsetAPI import BRepOffsetAPI_MakePipe
@@ -20,8 +21,9 @@ def _build_bent_tube(geometry: dict[str, Any], *, endpoints: tuple[Any, Any] | N
     if endpoints is None:
         points = geometry["source"]["coordinates_mm"]
         endpoints = (points[0 if geometry["leg"] == "front" else 1], points[2])
+    outer = float(geometry["radius_mm"]) + radial_clearance_mm
     path = make_bend_path(endpoints[0], geometry["bend_vertex_mm"], endpoints[1],
-                          geometry["bend_radius_mm"], geometry["radius_mm"])
+                          geometry["bend_radius_mm"], outer)
     start, t1, middle, t2, end = (gp_Pnt(*p) for p in
                                    (path.start, path.tangent_start, path.midpoint, path.tangent_end, path.end))
     arc = GC_MakeArcOfCircle(t1, middle, t2)
@@ -35,12 +37,12 @@ def _build_bent_tube(geometry: dict[str, Any], *, endpoints: tuple[Any, Any] | N
         raise RuntimeError("could not construct bend path")
     direction = [path.tangent_start[i] - path.start[i] for i in range(3)]
     axis = gp_Ax2(start, gp_Dir(*direction))
-    outer = float(geometry["radius_mm"])
-    inner = outer - float(geometry["wall_mm"])
     def circle(radius: float) -> Any:
         return BRepBuilderAPI_MakeWire(BRepBuilderAPI_MakeEdge(gp_Circ(axis, radius)).Edge()).Wire()
     face = BRepBuilderAPI_MakeFace(circle(outer), True)
-    face.Add(TopoDS.Wire(circle(inner).Reversed()))
+    if not solid_envelope:
+        inner = outer - float(geometry["wall_mm"])
+        face.Add(TopoDS.Wire(circle(inner).Reversed()))
     if not face.IsDone():
         raise RuntimeError("could not construct hollow section")
     sweep = BRepOffsetAPI_MakePipe(wire.Wire(), face.Face())
@@ -157,6 +159,124 @@ def build_weldment_tubes_preview(document: dict[str, Any]) -> Any:
     builder.MakeCompound(compound)
     for part in document["parts"]:
         builder.Add(compound, build_part(part))
+    return compound
+
+
+def _fixed_arm_tube_envelope(part: dict[str, Any], clearance: float) -> Any:
+    """Сплошной наружный объём исходной трубы, без продления её осевой линии."""
+    import math
+
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder
+    from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt
+
+    geometry = part['geometry']
+    if geometry['kind'] == 'prototype_arm_bent_tube':
+        return _build_bent_tube(geometry, solid_envelope=True, radial_clearance_mm=clearance)
+    if geometry['kind'] != 'prototype_arm_tube':
+        raise ValueError('unsupported tube')
+    points = geometry['source']['coordinates_mm']
+    start, end = points[0 if geometry['leg'] == 'front' else 1], points[2]
+    direction = [float(end[i]) - float(start[i]) for i in range(3)]
+    frame = gp_Ax2(gp_Pnt(*map(float, start)), gp_Dir(*direction))
+    return BRepPrimAPI_MakeCylinder(frame, float(geometry['radius_mm']) + clearance,
+                                     math.dist(start, end)).Shape()
+
+
+class FixedArmNotchError(ValueError):
+    """Отклонённая подрезка одной ветви; никакая частичная сборка не выдаётся."""
+
+    def __init__(self, leg: str, code: str, *, tube_joint: bool = False) -> None:
+        super().__init__(code)
+        self.leg = leg
+        self.code = code
+        self.tube_joint = tube_joint
+
+
+def build_fixed_arm_housing_preview(document: dict[str, Any]) -> Any:
+    """Две трубы, опциональные корпуса и явно выбранные неподвижные резы."""
+    import math
+
+    from OCP.BRep import BRep_Builder
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+    from OCP.BRepCheck import BRepCheck_Analyzer
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder
+    from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt
+    from OCP.TopoDS import TopoDS_Compound
+
+    from ..model.fixed_arm_housings import validate_housing_preview
+
+    validate_housing_preview(document)
+    tube_doc = document['tubes']
+    points = tube_doc['parts'][0]['geometry']['source']['coordinates_mm']
+    from .cad_tube_notch import TubeNotchError, _cut_tube
+
+    builder, compound = BRep_Builder(), TopoDS_Compound()
+    builder.MakeCompound(compound)
+    joint = document.get('tube_joint')
+    if joint is not None and joint['target'] == 'miter':
+        from .cad_fixed_arm_miter import build_miter_tubes
+
+        try:
+            tubes = list(build_miter_tubes(tube_doc))
+        except Exception as error:
+            raise FixedArmNotchError('miter', 'failed', tube_joint=True) from error
+    else:
+        tubes = [build_part(part) for part in tube_doc['parts']]
+    housings = []
+    notches = document.get('notches') or {}
+    housing_data = document['housings']
+    for index, leg in enumerate(('front', 'rear')) if housing_data is not None else ():
+        data = housing_data[leg]
+        axis = data['axis']
+        norm = math.hypot(*axis)
+        direction = [v / norm for v in axis]
+        length = float(data['length_mm'])
+        origin = [float(points[index][i]) - direction[i] * length / 2 for i in range(3)]
+        frame = gp_Ax2(gp_Pnt(*origin), gp_Dir(*direction))
+        outer = BRepPrimAPI_MakeCylinder(frame, float(data['outer_diameter_mm']) / 2, length).Shape()
+        inner = BRepPrimAPI_MakeCylinder(frame, float(data['bore_diameter_mm']) / 2, length).Shape()
+        cut = BRepAlgoAPI_Cut(outer, inner)
+        if not cut.IsDone() or cut.Shape().IsNull() or not BRepCheck_Analyzer(cut.Shape()).IsValid():
+            raise RuntimeError('invalid housing')
+        housings.append(cut.Shape())
+        if leg in notches:
+            # Solid outside envelope, not the housing's annular material. The
+            # finite length and requested radial clearance are never extended.
+            cutter = BRepPrimAPI_MakeCylinder(frame, float(data['outer_diameter_mm']) / 2 +
+                                               float(notches[leg]), length).Shape()
+            try:
+                result = _cut_tube(tubes[index], cutter, f'tube_{leg}', f'housing_{leg}')
+            except TubeNotchError as error:
+                raise FixedArmNotchError(leg, error.code) from error
+            tubes[index] = result.shape
+    if joint is not None and joint['target'] == 'miter' and notches:
+        from .cad_fixed_arm_miter import miter_geometry, validate_miter_face
+
+        try:
+            miter = miter_geometry(tube_doc)
+            for index, tube in enumerate(tubes):
+                validate_miter_face(tube, miter, tube_doc['parts'][index]['geometry'], index)
+        except Exception as error:
+            raise FixedArmNotchError('miter', 'failed', tube_joint=True) from error
+    if joint is not None and joint['target'] != 'miter':
+        leg = joint['target']
+        target_index = ('front', 'rear').index(leg)
+        other_index = 1 - target_index
+        try:
+            # The cutter always uses the ORIGINAL opposite tube, not its
+            # optionally housing-notched result. No guessed extension or weld.
+            cutter = _fixed_arm_tube_envelope(tube_doc['parts'][other_index], joint['radial_clearance_mm'])
+            result = _cut_tube(tubes[target_index], cutter, f'tube_{leg}',
+                               f'tube_{("front", "rear")[other_index]}')
+        except TubeNotchError as error:
+            raise FixedArmNotchError(leg, error.code, tube_joint=True) from error
+        except Exception as error:
+            raise FixedArmNotchError(leg, 'failed', tube_joint=True) from error
+        tubes[target_index] = result.shape
+    for shape in (*tubes, *housings):
+        if shape.IsNull() or not BRepCheck_Analyzer(shape).IsValid():
+            raise RuntimeError('invalid part')
+        builder.Add(compound, shape)
     return compound
 
 
@@ -373,13 +493,50 @@ def build_rear_joint_layout_preview(document: dict[str, Any]) -> Any:
     return compound
 
 
-def build_scheme_arm_assembly_preview(document: dict[str, Any]) -> Any:
-    """Две встроенные трубы и два размещённых корпуса без объединения."""
+def _place_scheme_arm_housing(part: dict[str, Any], point: Any, axis: str) -> Any:
+    """Разместить валидированный корпус в системе снимка сборки."""
     import math
 
-    from OCP.BRep import BRep_Builder
     from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
     from OCP.gp import gp_Ax1, gp_Dir, gp_Pnt, gp_Trsf, gp_Vec
+
+    transform = gp_Trsf()
+    if axis == 'x':
+        transform.SetRotation(gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(0, 1, 0)), math.pi / 2)
+    elif axis == 'y':
+        transform.SetRotation(gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(1, 0, 0)), -math.pi / 2)
+    transform.SetTranslationPart(gp_Vec(*point))
+    placed = BRepBuilderAPI_Transform(build_part(part), transform, True).Shape()
+    if placed.IsNull():
+        raise RuntimeError('housing placement failed')
+    return placed
+
+
+def _place_scheme_arm_plate(document: dict[str, Any]) -> Any:
+    """Разместить валидированную пластину по снимку, с её отверстием."""
+    import math
+
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
+    from OCP.gp import gp_Ax1, gp_Dir, gp_Pnt, gp_Trsf, gp_Vec
+
+    points = document['parts'][0]['geometry']['source']['coordinates_mm']
+    placement = document['plate_placement']
+    transform = gp_Trsf()
+    if placement['normal'] == 'x':
+        transform.SetRotation(gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(0, 1, 0)), math.pi / 2)
+    elif placement['normal'] == 'y':
+        transform.SetRotation(gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(1, 0, 0)), -math.pi / 2)
+    position = [float(points[2][i]) + float(placement['offset_mm'][i]) for i in range(3)]
+    transform.SetTranslationPart(gp_Vec(*position))
+    plate = BRepBuilderAPI_Transform(build_part(document['parts'][4]), transform, True).Shape()
+    if plate.IsNull():
+        raise RuntimeError('plate placement failed')
+    return plate
+
+
+def build_scheme_arm_assembly_preview(document: dict[str, Any]) -> Any:
+    """Две встроенные трубы и размещённые детали без объединения."""
+    from OCP.BRep import BRep_Builder
     from OCP.TopoDS import TopoDS_Compound
 
     from ..model.scheme_arm_assembly import validate_scheme_arm_assembly
@@ -391,27 +548,7 @@ def build_scheme_arm_assembly_preview(document: dict[str, Any]) -> Any:
         builder.Add(compound, build_part(part))
     points = document['parts'][0]['geometry']['source']['coordinates_mm']
     for part, point in zip(document['parts'][2:4], points[:2], strict=True):
-        transform = gp_Trsf()
-        if document['axis'] == 'x':
-            transform.SetRotation(gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(0, 1, 0)), math.pi / 2)
-        elif document['axis'] == 'y':
-            transform.SetRotation(gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(1, 0, 0)), -math.pi / 2)
-        transform.SetTranslationPart(gp_Vec(*point))
-        placed = BRepBuilderAPI_Transform(build_part(part), transform, True).Shape()
-        if placed.IsNull():
-            raise RuntimeError('housing placement failed')
-        builder.Add(compound, placed)
+        builder.Add(compound, _place_scheme_arm_housing(part, point, document['axis']))
     if document['version'] == '0.16':
-        placement = document['plate_placement']
-        transform = gp_Trsf()
-        if placement['normal'] == 'x':
-            transform.SetRotation(gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(0, 1, 0)), math.pi / 2)
-        elif placement['normal'] == 'y':
-            transform.SetRotation(gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(1, 0, 0)), -math.pi / 2)
-        position = [float(points[2][i]) + float(placement['offset_mm'][i]) for i in range(3)]
-        transform.SetTranslationPart(gp_Vec(*position))
-        plate = BRepBuilderAPI_Transform(build_part(document['parts'][4]), transform, True).Shape()
-        if plate.IsNull():
-            raise RuntimeError('plate placement failed')
-        builder.Add(compound, plate)
+        builder.Add(compound, _place_scheme_arm_plate(document))
     return compound
