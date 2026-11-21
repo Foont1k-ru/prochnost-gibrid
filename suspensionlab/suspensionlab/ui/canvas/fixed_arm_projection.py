@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from math import hypot, isfinite
 
-from PySide6.QtCore import QPointF, Qt, Signal
+from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPaintEvent, QPen, QPolygonF
-from PySide6.QtWidgets import QWidget
+from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget
 
 from ...core.pose_view import Point
 from ...model.fixed_arm_skeleton import SkeletonPreview
@@ -34,6 +35,7 @@ class SkeletonProjection(QWidget):
     dragReleased = Signal(str, object, object)  # код, индексы осей, новые XYZ
     dragMoved = Signal(str, object)
     segmentPicked = Signal(str, object)
+    dimensionsApplied = Signal(str, object, object)
 
     def __init__(self, axes: tuple[int, int], parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -46,6 +48,50 @@ class SkeletonProjection(QWidget):
         self.setMinimumSize(380, 240)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setAccessibleName('Проекция скелета ' + ''.join('XYZ'[i] for i in axes))
+        self._dimension_point: Point | None = None
+        self._dimension_anchor: Point | None = None
+        self._dimension_texts: tuple[str, str] = ('', '')
+        self._dimensions = QFrame(self)
+        self._dimensions.setFrameShape(QFrame.Shape.StyledPanel)
+        self._dimensions.setAutoFillBackground(True)
+        self._dimensions.setMaximumWidth(260)
+        form = QVBoxLayout(self._dimensions)
+        form.setContentsMargins(6, 4, 6, 4)
+        form.setSpacing(3)
+        self._dimension_title = QLabel('От своей опоры, мм', self._dimensions)
+        form.addWidget(self._dimension_title)
+        row = QHBoxLayout()
+        self._dimension_fields: list[QLineEdit] = []
+        for axis in axes:
+            row.addWidget(QLabel('Δ' + 'XYZ'[axis], self._dimensions))
+            field = QLineEdit(self._dimensions)
+            field.setObjectName('projection_offset_' + 'XYZ'[axis])
+            field.setAccessibleName('Смещение ' + 'XYZ'[axis] + ' от своей опоры, мм')
+            field.setMaximumWidth(95)
+            field.setMaxLength(64)
+            field.installEventFilter(self)
+            self._dimension_fields.append(field)
+            row.addWidget(field)
+        form.addLayout(row)
+        self._dimension_distances = QLabel(self._dimensions)
+        self._dimension_distances.setWordWrap(True)
+        form.addWidget(self._dimension_distances)
+        self._dimension_error = QLabel(self._dimensions)
+        self._dimension_error.setWordWrap(True)
+        self._dimension_error.hide()
+        form.addWidget(self._dimension_error)
+        apply_button = QPushButton('Применить размеры', self._dimensions)
+        apply_button.setAutoDefault(False)
+        apply_button.clicked.connect(self._apply_dimensions)
+        form.addWidget(apply_button)
+        self._dimensions.hide()
+
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802
+        if (watched in self._dimension_fields and event.type() == QEvent.Type.KeyPress and
+                event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter)):
+            self._apply_dimensions()
+            return True
+        return super().eventFilter(watched, event)
 
     def _cancel_drag(self) -> None:
         self._segment_start = None
@@ -60,11 +106,87 @@ class SkeletonProjection(QWidget):
         self.preview = preview
         self.points = points if preview is not None else ()
         self.selected_point = None
+        self._dimensions.hide()
+        self._dimension_point = None
         self.update()
 
     def select_point(self, code: str | None) -> None:
         self.selected_point = code
+        self._dimensions.hide()
+        self._dimension_point = None
+        if self.preview is not None and code in ('bend_front', 'bend_rear'):
+            point = next((point for name, point in self.points if name == code), None)
+            if point is not None and len(self.preview.anchors) >= 3:
+                anchor = self.preview.anchors[0 if code == 'bend_front' else 1]
+                ball = self.preview.anchors[2]
+                self._dimension_point, self._dimension_anchor = point, anchor
+                texts = tuple(repr(point[axis] - anchor[axis]) for axis in self.axes)
+                self._dimension_texts = (texts[0], texts[1])
+                for field, text in zip(self._dimension_fields, self._dimension_texts, strict=True):
+                    field.setText(text)
+                a, b = self.axes
+                first = hypot(point[a] - anchor[a], point[b] - anchor[b])
+                second = hypot(point[a] - ball[a], point[b] - ball[b])
+                self._dimension_distances.setText(
+                    f'В проекции: опора–вершина {first:.2f} мм; вершина–шаровая {second:.2f} мм. '
+                    'Это не длины труб.')
+                self._dimension_error.hide()
+                self._dimensions.adjustSize()
+                self._place_dimensions()
+                self._dimensions.show()
+                self._dimensions.raise_()
         self.update()
+
+    def _place_dimensions(self) -> None:
+        if self._dimension_point is None or self.preview is None:
+            return
+        pos = self._screen_point(self._dimension_point)
+        panel_width = min(self._dimensions.sizeHint().width(), max(1, self.width() - 16))
+        panel_height = self._dimensions.sizeHint().height()
+        right = max(8., self.width() - panel_width - 8.)
+        bottom = max(8., self.height() - panel_height - 24.)
+        near_x = min(max(8., pos.x() + 18), right)
+        near_y = min(max(8., pos.y() - panel_height / 2), bottom)
+        candidates = [(near_x, near_y), (8., 8.), (right, 8.), (8., bottom), (right, bottom)]
+        markers = [self._screen_point(point) for _, point in self.points]
+        line_points: list[QPointF] = []
+        for path in self.preview.centerlines:
+            projected = [self._screen_point(point) for point in path]
+            for first, second in zip(projected, projected[1:], strict=False):
+                line_points.extend(first + (second - first) * (step / 8) for step in range(9))
+        def score(candidate: tuple[float, float]) -> tuple[int, float]:
+            x, y = candidate
+            rect = QRectF(x, y, panel_width, panel_height).adjusted(-12, -12, 12, 12)
+            # Avoid blocking markers first, then avoid covering displayed paths.
+            obstruction = 1000 * sum(rect.contains(marker) for marker in markers)
+            obstruction += sum(rect.contains(point) for point in line_points)
+            distance = hypot(x + panel_width / 2 - pos.x(), y + panel_height / 2 - pos.y())
+            return obstruction, distance
+        x, y = min(candidates, key=score)
+        self._dimensions.setGeometry(int(x), int(y), panel_width, panel_height)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._place_dimensions()
+
+    def _apply_dimensions(self) -> None:
+        if self.selected_point not in ('bend_front', 'bend_rear') or self._dimension_point is None or self._dimension_anchor is None:
+            return
+        try:
+            offsets = tuple(float(field.text().strip().replace(',', '.')) for field in self._dimension_fields)
+            if not all(isfinite(value) for value in offsets):
+                raise ValueError
+        except ValueError:
+            self._dimension_error.setText('Введите конечные числа в миллиметрах.')
+            self._dimension_error.show()
+            self._place_dimensions()
+            return
+        result = list(self._dimension_point)
+        for index, axis in enumerate(self.axes):
+            # Preserve exact coordinates when an untouched displayed offset is submitted.
+            if self._dimension_fields[index].text() != self._dimension_texts[index]:
+                result[axis] = self._dimension_anchor[axis] + offsets[index]
+        self.dimensionsApplied.emit(self.selected_point, self.axes, tuple(result))
 
     def _transform(self) -> tuple[float, float, float]:
         if self.preview is None:
@@ -105,6 +227,13 @@ class SkeletonProjection(QWidget):
         painter.setPen(QPen(QColor('#388aac'), 3))
         for path in self.preview.centerlines:
             painter.drawPolyline(QPolygonF([self._screen_point(p) for p in path]))
+        if self._dimension_point is not None and self._dimension_anchor is not None:
+            anchor_pos = self._screen_point(self._dimension_anchor)
+            vertex_pos = self._screen_point(self._dimension_point)
+            corner = QPointF(vertex_pos.x(), anchor_pos.y())
+            painter.setPen(QPen(QColor('#e38d27'), 1, Qt.PenStyle.DashLine))
+            painter.drawLine(anchor_pos, corner)
+            painter.drawLine(corner, vertex_pos)
         for code, point in self.points:
             pos = self._screen_point(point)
             color = QColor('#ed9c2e' if code.startswith('bend_') else '#2da9b5')

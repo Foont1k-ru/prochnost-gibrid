@@ -153,6 +153,7 @@ class FixedArmSkeletonDialog(QDialog):
             projection.dragMoved.connect(self._drag_moved)
             projection.dragReleased.connect(self._apply_projection_drag)
             projection.segmentPicked.connect(self._create_draft)
+            projection.dimensionsApplied.connect(self._apply_projection_dimensions)
         cad_tab = QWidget(self._tabs)
         cad_layout = QVBoxLayout(cad_tab)
         self._cad_note = QLabel('Предварительный CAD: две неподрезанные полые трубы; корпуса пока не заданы. '
@@ -836,6 +837,12 @@ class FixedArmSkeletonDialog(QDialog):
         self._gesture_state = self._state()
         self._gesture_project = self.controller.project
         self._gesture_code = code
+
+    def _apply_projection_dimensions(self, code: str, axes: tuple[int, int],
+                                     coordinates: tuple[float, float, float]) -> None:
+        # The same snapshot, geometry validation and rollback path as dragging.
+        self._begin_projection_drag(code)
+        self._apply_projection_drag(code, axes, coordinates)
 
     def _apply_projection_drag(self, code: str, axes: tuple[int, int], coordinates: tuple[float, float, float]) -> None:
         state, project, expected_code = self._gesture_state, self._gesture_project, self._gesture_code

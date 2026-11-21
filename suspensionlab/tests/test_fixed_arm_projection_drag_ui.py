@@ -81,6 +81,73 @@ def test_drag_moves_only_visible_axes_and_saves(qtbot, monkeypatch, tmp_path, in
     dialog.close()
 
 
+@pytest.mark.parametrize('index,axes', [(0, (0, 1)), (1, (0, 2)), (2, (1, 2))])
+def test_inline_projection_offsets_preserve_other_coordinates(qtbot, monkeypatch, index, axes):
+    controller, dialog = setup_dialog(qtbot, monkeypatch)
+    dialog._tabs.setCurrentIndex(index + 1)
+    canvas = dialog._projections[index]
+    dialog._point_picked('bend_front')
+    assert canvas._dimensions.isVisible()
+    before = dialog._bend_editor.values()['front']['vertex_mm'][:]
+    assert not canvas._dimensions.geometry().contains(canvas._screen_point(tuple(before)).toPoint())
+    original_project = deepcopy(controller.project.to_dict())
+    anchor = dialog.preview.anchors[0]
+    new_offset = before[axes[0]] - anchor[axes[0]] + 7.25
+    canvas._dimension_fields[0].setText(str(new_offset))
+    qtbot.keyClick(canvas._dimension_fields[0], Qt.Key.Key_Return)
+    after = dialog._bend_editor.values()['front']['vertex_mm']
+    hidden_axis = ({0, 1, 2} - set(axes)).pop()
+    assert after[axes[0]] == pytest.approx(anchor[axes[0]] + new_offset)
+    assert after[axes[1]] == before[axes[1]]
+    assert after[hidden_axis] == before[hidden_axis]
+    assert controller.project.to_dict() == original_project
+    assert 'В проекции' in canvas._dimension_distances.text()
+    dialog.close()
+
+
+def test_inline_offsets_can_finish_a_draft(qtbot, monkeypatch):
+    from PySide6.QtWidgets import QInputDialog
+
+    controller = AppController()
+    controller.project = load_template('ring')
+    dialog = FixedArmSkeletonDialog(controller)
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog._capture_snapshot()
+    dialog._tabs.setCurrentIndex(1)
+    anchor, ball = dialog.preview.anchors[0], dialog.preview.anchors[2]
+    midpoint = tuple((x + y) / 2 for x, y in zip(anchor, ball, strict=True))
+    dialog._create_draft('front', midpoint)
+    canvas = dialog._projections[0]
+    assert canvas._dimensions.isVisible()
+    monkeypatch.setattr(QInputDialog, 'getDouble', lambda *args: (20., True))
+    canvas._dimension_fields[0].setText(str(midpoint[0] - anchor[0] + 50.))
+    qtbot.keyClick(canvas._dimension_fields[0], Qt.Key.Key_Return)
+    assert dialog._draft is None
+    assert dialog._bend_editor.values()['front']['vertex_mm'][0] == pytest.approx(midpoint[0] + 50.)
+    assert dialog._bend_editor.values()['front']['vertex_mm'][2] == midpoint[2]
+    monkeypatch.setattr(QMessageBox, 'question', lambda *args: QMessageBox.StandardButton.Yes)
+    dialog.close()
+
+
+def test_inline_projection_rejects_invalid_numbers_and_stale_project(qtbot, monkeypatch):
+    controller, dialog = setup_dialog(qtbot, monkeypatch)
+    dialog._tabs.setCurrentIndex(1)
+    canvas = dialog._projections[0]
+    dialog._point_picked('bend_front')
+    before = dialog._bend_editor.values()['front']['vertex_mm'][:]
+    canvas._dimension_fields[0].setText('nan')
+    qtbot.keyClick(canvas._dimension_fields[0], Qt.Key.Key_Return)
+    assert dialog._bend_editor.values()['front']['vertex_mm'] == before
+    assert dialog.isVisible() and canvas._dimension_error.isVisible()
+    canvas._dimension_fields[0].setText('90')
+    controller.project.front.hardpoints['lbj'].x += 0.000001
+    qtbot.keyClick(canvas._dimension_fields[0], Qt.Key.Key_Return)
+    assert dialog._bend_editor.values()['front']['vertex_mm'] == before
+    assert dialog.snapshot is None and dialog.preview is None
+    dialog.close()
+
+
 def test_invalid_drag_does_not_replace_valid_preview(qtbot, monkeypatch):
     controller, dialog = setup_dialog(qtbot, monkeypatch, vertex_z=140)
     dialog._tabs.setCurrentIndex(1)
