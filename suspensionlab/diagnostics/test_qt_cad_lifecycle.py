@@ -69,3 +69,59 @@ def test_two_real_cad_workers_rebuild_then_close(qtbot):
         for dialog in dialogs:
             dialog._saved = deepcopy(dialog.document)
             dialog.close()
+
+
+def test_three_rear_views_gc_invalidate_and_close_in_flight(qtbot, monkeypatch):
+    """Приближение к сценарию упавшего теста; не доказательство причины сбоя."""
+    import gc
+
+    from PySide6.QtWidgets import QMessageBox
+
+    from suspensionlab.ui.rear_tube_dialog import RearTubeDialog
+
+    monkeypatch.setattr(QMessageBox, 'question', lambda *args: QMessageBox.StandardButton.Yes)
+    controller = AppController()
+    controller.set_axle_type('rear', 'live_axle_coil')
+    for code, xyz in {'ll_in_l': (0, 0, 0), 'll_out_l': (100, 100, 0),
+                      'll_in_r': (0, 0, 0), 'll_out_r': (100, -100, 0)}.items():
+        point = controller.project.rear.hardpoints[code]
+        point.x, point.y, point.z = xyz
+    dialog = RearTubeDialog(controller)
+    qtbot.addWidget(dialog)
+    dialog._arm.setCurrentIndex(dialog._arm.findData('rear_lower_left'))
+    dialog._bend.setChecked(True)
+    for field, text in zip(dialog._fields, ('100', '0', '0', '20'), strict=True):
+        field.setText(text)
+    dialog._pair_mode.setCurrentIndex(dialog._pair_mode.findData('same'))
+    panels = (dialog._three_d, dialog._pair_three_d, dialog._pair_assembly_3d)
+    try:
+        for panel in panels:
+            panel._enable.setChecked(True)
+            _start_now(panel)
+        qtbot.waitUntil(lambda: all(_running_process(panel) for panel in panels), timeout=30000)
+        print('PHASE: three real CAD subprocesses active; collect and invalidate', flush=True)
+        gc.collect()
+        tokens = [panel.generation for panel in panels]
+        dialog._fields[3].setText('30')
+        assert all(panel._view.mesh is None and panel.generation > token for panel, token in zip(panels, tokens, strict=True))
+        gc.collect()
+        qtbot.waitUntil(lambda: all(panel._view.mesh is not None and panel._worker is None for panel in panels),
+                        timeout=90000)
+        assert all(panel.can_save() for panel in panels)
+        print('PHASE: three latest meshes ready; collect and close in flight', flush=True)
+        dialog._fields[3].setText('25')
+        for panel in panels:
+            _start_now(panel)
+        qtbot.waitUntil(lambda: all(_running_process(panel) for panel in panels), timeout=30000)
+        gc.collect()
+        workers = [panel._worker for panel in panels]
+        assert dialog.shutdown()
+        assert all(worker is not None and not worker.isRunning() for worker in workers)
+        assert all(panel._closed and panel._view.mesh is None for panel in panels)
+        assert dialog.close()
+        qtbot.wait(100)
+        gc.collect()
+        print('PHASE: all threads stopped and deferred Qt events processed', flush=True)
+    finally:
+        dialog.shutdown()
+        dialog.close()
