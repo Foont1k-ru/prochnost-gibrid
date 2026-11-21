@@ -61,7 +61,8 @@ jobs:
           tests/test_fixed_arm_tube_joint.py tests/test_fixed_arm_tube_joint_io.py
           tests/test_fixed_arm_tube_joint_cad.py tests/test_fixed_arm_tube_joint_ui.py
           tests/test_fixed_arm_miter_cad.py tests/test_fixed_arm_miter_io.py tests/test_fixed_arm_miter_ui.py
-          tests/test_fixed_arm_context_ui.py tests/test_fixed_arm_length_ui.py tests/test_fixed_arm_full_flow_ui.py tests/test_bend_length.py
+          tests/test_fixed_arm_context_ui.py tests/test_fixed_arm_length_ui.py tests/test_fixed_arm_full_flow_ui.py
+          tests/test_fixed_arm_close_lifecycle_ui.py tests/test_bend_length.py
           --junitxml=fixed-arm-results.xml
       - name: Сохранить отчёт
         if: always()

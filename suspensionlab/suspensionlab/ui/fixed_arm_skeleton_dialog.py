@@ -76,6 +76,7 @@ class FixedArmSkeletonDialog(QDialog):
         self._cad_snapshot: FixedArmSnapshot | None = None
         self._cad_cut_pick: tuple[str, int, tuple[object, ...], object] | None = None
         self._saved_state: tuple[object, ...] | None = None
+        self._closing_confirmed = False
         self._gesture_state: tuple[object, ...] | None = None
         self._gesture_project: object | None = None
         self._gesture_code: str | None = None
@@ -714,7 +715,7 @@ class FixedArmSkeletonDialog(QDialog):
             return False
 
     def confirm_close(self) -> bool:
-        if self._state() == self._saved_state:
+        if self._closing_confirmed or self._state() == self._saved_state:
             return True
         state = self._state()
         answer = QMessageBox.question(self, 'Несохранённый скелет',
@@ -734,10 +735,15 @@ class FixedArmSkeletonDialog(QDialog):
             super().reject()
 
     def closeEvent(self, event) -> None:  # noqa: N802
-        if self.confirm_close() and self.shutdown():
-            super().closeEvent(event)
-        else:
+        if not self.confirm_close() or not self.shutdown():
             event.ignore()
+            return
+        # QDialog.closeEvent вызывает reject(); не спрашивать повторно после остановки CAD.
+        self._closing_confirmed = True
+        try:
+            super().closeEvent(event)
+        finally:
+            self._closing_confirmed = False
 
     def _spin(self, minimum: float, maximum: float, value: float, step: float) -> QDoubleSpinBox:
         spin = QDoubleSpinBox(self)
