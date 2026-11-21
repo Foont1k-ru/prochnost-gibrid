@@ -182,3 +182,42 @@ def test_later_cut_damaging_miter_face_is_rejected():
     assert cut.IsDone()
     with pytest.raises(MiterError, match='Поверхность стыка'):
         validate_miter_face(cut.Shape(), geometry, doc['parts'][0]['geometry'], 0)
+
+
+@pytest.mark.parametrize('bent', [(), ('front',), ('rear',), ('front', 'rear')])
+def test_miter_faces_cover_the_same_area_not_just_equal_areas(bent):
+    project = load_template('ring')
+    snapshot = capture_fixed_arm(project, -20, 20)
+    anchors = preview_fixed_arm(snapshot, project, 10, 2).anchors
+    bends = {}
+    for index, leg in enumerate(('front', 'rear')):
+        if leg in bent:
+            vertex = [(anchors[index][i] + anchors[2][i]) / 2 for i in range(3)]
+            vertex[2] += 50 if leg == 'front' else -40
+            bends[leg] = {'vertex_mm': vertex, 'radius_mm': 20}
+    doc = fixed_arm_tube_document(snapshot, project, 10, 2, bends)
+    miter = miter_geometry(doc)
+    faces = []
+    for shape in build_miter_tubes(doc):
+        matches = []
+        it = TopExp_Explorer(shape, TopAbs_FACE)
+        while it.More():
+            face = TopoDS.Face(it.Current())
+            surface = BRepAdaptor_Surface(face)
+            if surface.GetType() == GeomAbs_Plane:
+                plane = surface.Plane()
+                origin, direction = plane.Location(), plane.Axis().Direction()
+                point = (origin.X(), origin.Y(), origin.Z())
+                normal = (direction.X(), direction.Y(), direction.Z())
+                if (abs(sum((point[i] - miter.point[i]) * miter.normal[i] for i in range(3))) < 1e-6 and
+                        abs(sum(normal[i] * miter.normal[i] for i in range(3))) > 1 - 1e-8):
+                    matches.append(face)
+            it.Next()
+        assert len(matches) == 1
+        faces.append(matches[0])
+    common = BRepAlgoAPI_Common(*faces)
+    assert common.IsDone() and not common.Shape().IsNull()
+    props = GProp_GProps()
+    BRepGProp.SurfaceProperties_s(common.Shape(), props, 1e-8)
+    expected = pi * (10**2 - 8**2) / abs(sum(miter.normal[i] * miter.directions[0][i] for i in range(3)))
+    assert float(props.Mass()) == pytest.approx(expected, rel=1e-6, abs=1e-5)

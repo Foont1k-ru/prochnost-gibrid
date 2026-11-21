@@ -125,3 +125,55 @@ def test_three_rear_views_gc_invalidate_and_close_in_flight(qtbot, monkeypatch):
     finally:
         dialog.shutdown()
         dialog.close()
+
+
+def test_joint_reopen_with_cad_worker_and_gc(qtbot, monkeypatch, tmp_path):
+    """Условия последнего локального сбоя; это диагностический стресс, не его причина."""
+    import gc
+
+    from PySide6.QtWidgets import QFileDialog, QMessageBox
+
+    from suspensionlab.ui.joint_concept_dialog import JointConceptDialog
+
+    monkeypatch.setattr(QMessageBox, 'question', lambda *args: QMessageBox.StandardButton.Yes)
+    controller = AppController()
+    for index in range(3):
+        path = tmp_path / f'joint-{index}.kima'
+        dialog = JointConceptDialog(controller)
+        qtbot.addWidget(dialog)
+        reopened = None
+        try:
+            dialog._three_d._enable.setChecked(True)
+            _start_now(dialog._three_d)
+            qtbot.waitUntil(lambda dialog=dialog: _running_process(dialog._three_d), timeout=30000)
+            gc.collect()
+            qtbot.waitUntil(lambda dialog=dialog: dialog._three_d._view.mesh is not None and dialog._save.isEnabled(), timeout=90000)
+            dialog._fields['ball']['outer_radius_mm'].setText('23')
+            _start_now(dialog._three_d)
+            gc.collect()
+            qtbot.waitUntil(lambda dialog=dialog: dialog._three_d._view.mesh is not None and dialog._save.isEnabled(), timeout=90000)
+            monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args, path=path: (str(path), ''))
+            dialog._save_copy()
+            assert path.exists() and dialog.shutdown() and dialog.close()
+            qtbot.wait(10)
+            gc.collect()
+            reopened = JointConceptDialog(controller)
+            qtbot.addWidget(reopened)
+            monkeypatch.setattr(QFileDialog, 'getOpenFileName', lambda *args, path=path: (str(path), ''))
+            reopened._open_file()
+            reopened._three_d._enable.setChecked(True)
+            _start_now(reopened._three_d)
+            qtbot.waitUntil(lambda reopened=reopened: _running_process(reopened._three_d), timeout=30000)
+            gc.collect()
+            qtbot.waitUntil(lambda reopened=reopened: reopened._three_d._view.mesh is not None, timeout=90000)
+            assert reopened._candidate['parameters']['outer_radius_mm'] == 23
+            assert reopened.shutdown() and reopened.close()
+            qtbot.wait(10)
+            gc.collect()
+            print(f'PHASE: joint save/reopen cycle {index + 1} completed', flush=True)
+        finally:
+            dialog.shutdown()
+            dialog.close()
+            if reopened is not None:
+                reopened.shutdown()
+                reopened.close()

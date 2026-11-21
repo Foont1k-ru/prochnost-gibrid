@@ -437,7 +437,8 @@ class FixedArmSkeletonDialog(QDialog):
         current = make_bend_path(start, bend['vertex_mm'], end, bend['radius_mm'], self._radius.value()).length
         length, ok = QInputDialog.getDouble(self, 'Длина осевой линии',
             'Длина до CAD-подрезок, мм. Опоры и радиус закреплены; вершина движется поперёк линии опор '
-            'по текущему направлению изгиба. Другие решения возможны.', current, 0., 1000000., 4)
+            'по текущему направлению изгиба. Проверяется конечная форма, не промежуточные; '
+            'другие решения возможны.', current, 0., 1000000., 4)
         if (state != self._state() or project is not self.controller.project or self.snapshot is None or
                 not self.snapshot.matches(project) or self._cad.generation != generation or
                 self._cad_candidate is None or not self._cad_is_current(self._cad_candidate)):

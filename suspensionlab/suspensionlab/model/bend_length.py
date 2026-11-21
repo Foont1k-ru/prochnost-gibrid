@@ -41,11 +41,13 @@ def vertex_for_length(start: Point3, end: Point3, vertex: Point3, radius: float,
     lo, hi = 0., height
     while True:
         value, fits = evaluate(hi)
-        if not fits or value >= length or hi >= MAX_COORDINATE:
+        # For radii below half the chord, fitting can be lost and then restored:
+        # an invalid intermediate height is not evidence that all later heights fail.
+        if value >= length or hi >= MAX_COORDINATE or (not fits and radius >= chord / 2):
             break
         lo, hi = hi, min(hi * 2, MAX_COORDINATE)
-    # If the fitting limit is crossed, approach it from the valid side.
-    if not fits:
+    if not fits and radius >= chord / 2:
+        # On this restricted branch, approach the first fitting limit from below.
         valid, invalid = lo, hi
         for _ in range(100):
             mid = (valid + invalid) / 2
@@ -55,7 +57,7 @@ def vertex_for_length(start: Point3, end: Point3, vertex: Point3, radius: float,
                 invalid = mid
         hi = valid
     if evaluate(hi)[0] < length - 1e-7:
-        raise BentTubeError('заданная длина не помещается при этом радиусе и направлении изгиба')
+        raise BentTubeError('не найден допустимый изгиб заданной длины при этом направлении и радиусе')
     for _ in range(100):
         mid = (lo + hi) / 2
         if evaluate(mid)[0] < length:
@@ -63,7 +65,10 @@ def vertex_for_length(start: Point3, end: Point3, vertex: Point3, radius: float,
         else:
             hi = mid
     result: Point3 = tuple(foot[i] + (lo + hi) / 2 * direction[i] for i in range(3))  # type: ignore[assignment]
-    actual = make_bend_path(start, result, end, radius, tube_radius)
+    try:
+        actual = make_bend_path(start, result, end, radius, tube_radius)
+    except BentTubeError as error:
+        raise BentTubeError('подобранный изгиб недопустим; измените направление, длину или радиус') from error
     if abs(actual.length - length) > max(1e-5, length * 1e-9):
         raise BentTubeError('не удалось точно подобрать длину')
     return result
