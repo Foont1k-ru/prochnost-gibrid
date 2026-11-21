@@ -50,11 +50,13 @@ class SkeletonProjection(QWidget):
         self.setAccessibleName('Проекция скелета ' + ''.join('XYZ'[i] for i in axes))
         self._dimension_point: Point | None = None
         self._dimension_anchor: Point | None = None
+        self._dimension_ball: Point | None = None
         self._dimension_texts: tuple[str, str] = ('', '')
+        self._distance_texts: tuple[str, str] = ('', '')
         self._dimensions = QFrame(self)
         self._dimensions.setFrameShape(QFrame.Shape.StyledPanel)
         self._dimensions.setAutoFillBackground(True)
-        self._dimensions.setMaximumWidth(260)
+        self._dimensions.setMaximumWidth(300)
         form = QVBoxLayout(self._dimensions)
         form.setContentsMargins(6, 4, 6, 4)
         form.setSpacing(3)
@@ -73,24 +75,56 @@ class SkeletonProjection(QWidget):
             self._dimension_fields.append(field)
             row.addWidget(field)
         form.addLayout(row)
-        self._dimension_distances = QLabel(self._dimensions)
+        offset_buttons = QHBoxLayout()
+        apply_button = QPushButton('Применить смещения', self._dimensions)
+        apply_button.setAutoDefault(False)
+        apply_button.clicked.connect(self._apply_dimensions)
+        offset_buttons.addWidget(apply_button)
+        reset_button = QPushButton('Сброс ввода', self._dimensions)
+        reset_button.setAutoDefault(False)
+        reset_button.setToolTip('Вернуть поля к значениям текущей геометрии без её изменения')
+        reset_button.clicked.connect(self._reset_dimensions)
+        offset_buttons.addWidget(reset_button)
+        form.addLayout(offset_buttons)
+        self._dimension_distances = QLabel('В проекции, мм · не длина трубы\nДвижение вдоль текущего луча', self._dimensions)
         self._dimension_distances.setWordWrap(True)
+        self._dimension_distances.setToolTip('Вершина движется от выбранной опоры по текущему направлению на этой '
+                                             'проекции. Скрытая координата не изменяется. Это не длины труб.')
         form.addWidget(self._dimension_distances)
+        self._distance_fields: list[QLineEdit] = []
+        for index, title in enumerate(('До опоры', 'До шаровой')):
+            distance_row = QHBoxLayout()
+            distance_row.addWidget(QLabel(title, self._dimensions))
+            field = QLineEdit(self._dimensions)
+            field.setObjectName('projection_distance_' + ('anchor' if index == 0 else 'ball'))
+            field.setAccessibleName(title + ', проекционное расстояние, мм')
+            field.setMaximumWidth(95)
+            field.setMaxLength(64)
+            field.installEventFilter(self)
+            self._distance_fields.append(field)
+            distance_row.addWidget(field)
+            button = QPushButton('↵', self._dimensions)
+            button.setFixedWidth(32)
+            button.setToolTip('Применить только это расстояние')
+            button.setAccessibleName('Применить расстояние ' + title)
+            button.setAutoDefault(False)
+            button.clicked.connect(lambda _checked=False, i=index: self._apply_distance(i))
+            distance_row.addWidget(button)
+            form.addLayout(distance_row)
         self._dimension_error = QLabel(self._dimensions)
         self._dimension_error.setWordWrap(True)
         self._dimension_error.hide()
         form.addWidget(self._dimension_error)
-        apply_button = QPushButton('Применить размеры', self._dimensions)
-        apply_button.setAutoDefault(False)
-        apply_button.clicked.connect(self._apply_dimensions)
-        form.addWidget(apply_button)
         self._dimensions.hide()
 
     def eventFilter(self, watched, event) -> bool:  # noqa: N802
-        if (watched in self._dimension_fields and event.type() == QEvent.Type.KeyPress and
-                event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter)):
-            self._apply_dimensions()
-            return True
+        if event.type() == QEvent.Type.KeyPress and event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            if watched in self._dimension_fields:
+                self._apply_dimensions()
+                return True
+            if watched in self._distance_fields:
+                self._apply_distance(self._distance_fields.index(watched))
+                return True
         return super().eventFilter(watched, event)
 
     def _cancel_drag(self) -> None:
@@ -119,7 +153,7 @@ class SkeletonProjection(QWidget):
             if point is not None and len(self.preview.anchors) >= 3:
                 anchor = self.preview.anchors[0 if code == 'bend_front' else 1]
                 ball = self.preview.anchors[2]
-                self._dimension_point, self._dimension_anchor = point, anchor
+                self._dimension_point, self._dimension_anchor, self._dimension_ball = point, anchor, ball
                 texts = tuple(repr(point[axis] - anchor[axis]) for axis in self.axes)
                 self._dimension_texts = (texts[0], texts[1])
                 for field, text in zip(self._dimension_fields, self._dimension_texts, strict=True):
@@ -127,9 +161,9 @@ class SkeletonProjection(QWidget):
                 a, b = self.axes
                 first = hypot(point[a] - anchor[a], point[b] - anchor[b])
                 second = hypot(point[a] - ball[a], point[b] - ball[b])
-                self._dimension_distances.setText(
-                    f'В проекции: опора–вершина {first:.2f} мм; вершина–шаровая {second:.2f} мм. '
-                    'Это не длины труб.')
+                self._distance_texts = (f'{first:.4f}', f'{second:.4f}')
+                for field, text in zip(self._distance_fields, self._distance_texts, strict=True):
+                    field.setText(text)
                 self._dimension_error.hide()
                 self._dimensions.adjustSize()
                 self._place_dimensions()
@@ -169,23 +203,69 @@ class SkeletonProjection(QWidget):
         super().resizeEvent(event)
         self._place_dimensions()
 
+    def _reset_dimensions(self) -> None:
+        for field, text in zip(self._dimension_fields, self._dimension_texts, strict=True):
+            field.setText(text)
+        for field, text in zip(self._distance_fields, self._distance_texts, strict=True):
+            field.setText(text)
+        self._dimension_error.hide()
+        self._place_dimensions()
+
+    def _show_dimension_error(self, message: str) -> None:
+        self._dimension_error.setText(message)
+        self._dimension_error.show()
+        self._place_dimensions()
+
     def _apply_dimensions(self) -> None:
         if self.selected_point not in ('bend_front', 'bend_rear') or self._dimension_point is None or self._dimension_anchor is None:
+            return
+        if any(field.text() != initial for field, initial in zip(self._distance_fields, self._distance_texts, strict=True)):
+            self._show_dimension_error('Сначала верните изменённые расстояния к показанным значениям.')
             return
         try:
             offsets = tuple(float(field.text().strip().replace(',', '.')) for field in self._dimension_fields)
             if not all(isfinite(value) for value in offsets):
                 raise ValueError
         except ValueError:
-            self._dimension_error.setText('Введите конечные числа в миллиметрах.')
-            self._dimension_error.show()
-            self._place_dimensions()
+            self._show_dimension_error('Введите конечные числа в миллиметрах.')
             return
+        self._dimension_error.hide()
         result = list(self._dimension_point)
         for index, axis in enumerate(self.axes):
             # Preserve exact coordinates when an untouched displayed offset is submitted.
             if self._dimension_fields[index].text() != self._dimension_texts[index]:
                 result[axis] = self._dimension_anchor[axis] + offsets[index]
+        self.dimensionsApplied.emit(self.selected_point, self.axes, tuple(result))
+
+    def _apply_distance(self, index: int) -> None:
+        if (index not in (0, 1) or self.selected_point not in ('bend_front', 'bend_rear') or
+                self._dimension_point is None or self._dimension_anchor is None or self._dimension_ball is None):
+            return
+        if (any(field.text() != initial for field, initial in zip(self._dimension_fields, self._dimension_texts, strict=True)) or
+                self._distance_fields[1 - index].text() != self._distance_texts[1 - index]):
+            self._show_dimension_error('Сначала верните остальные изменённые размеры к показанным значениям.')
+            return
+        try:
+            value = float(self._distance_fields[index].text().strip().replace(',', '.'))
+            if not isfinite(value) or not 0 < value <= 1_000_000:
+                raise ValueError
+        except ValueError:
+            self._show_dimension_error('Расстояние должно быть конечным и положительным, не более 1 000 000 мм.')
+            return
+        if self._distance_fields[index].text() == self._distance_texts[index]:
+            self._dimension_error.hide()
+            return
+        reference = (self._dimension_anchor, self._dimension_ball)[index]
+        point = self._dimension_point
+        a, b = self.axes
+        current = hypot(point[a] - reference[a], point[b] - reference[b])
+        if current < 1e-9:
+            self._show_dimension_error('Направление в проекции не определено: сначала сместите вершину от этой точки.')
+            return
+        result = list(point)
+        for axis in self.axes:
+            result[axis] = reference[axis] + (point[axis] - reference[axis]) * value / current
+        self._dimension_error.hide()
         self.dimensionsApplied.emit(self.selected_point, self.axes, tuple(result))
 
     def _transform(self) -> tuple[float, float, float]:

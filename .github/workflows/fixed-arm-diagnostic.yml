@@ -47,7 +47,7 @@ jobs:
           python -u -m pytest -v -o faulthandler_timeout=90
           tests/test_fixed_arm_skeleton.py tests/test_fixed_arm_skeleton_io.py
           tests/test_fixed_arm_skeleton_ui.py tests/test_fixed_arm_skeleton_file_ui.py
-          tests/test_fixed_arm_scene_ui.py tests/test_fixed_arm_projection_drag_ui.py
+          tests/test_fixed_arm_scene_ui.py tests/test_fixed_arm_projection_drag_ui.py tests/test_fixed_arm_projection_distance_ui.py
           tests/test_fixed_arm_interactive_ui.py tests/test_fixed_arm_tubes_cad.py tests/test_fixed_arm_tubes_cad_ui.py
           tests/test_fixed_arm_housings.py tests/test_fixed_arm_housings_ui.py tests/test_fixed_arm_housings_cad.py
           tests/test_fixed_arm_notches.py tests/test_fixed_arm_notches_ui.py tests/test_fixed_arm_notches_cad.py
