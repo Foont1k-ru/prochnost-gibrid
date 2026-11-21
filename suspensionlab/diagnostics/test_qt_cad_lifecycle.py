@@ -177,3 +177,23 @@ def test_joint_reopen_with_cad_worker_and_gc(qtbot, monkeypatch, tmp_path):
             if reopened is not None:
                 reopened.shutdown()
                 reopened.close()
+
+
+def test_joint_dialogs_are_disposed_on_gui_thread_with_explicit_ownership():
+    """Изолируем даже возможный нативный сбой проверки от процесса pytest."""
+    import json
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    probe = Path(__file__).with_name('qt_dialog_gc_probe.py')
+    for mode, before_events in (('managed', 0), ('explicit', 20)):
+        result = subprocess.run([sys.executable, '-u', str(probe), '--child', mode],
+                                env={**os.environ, 'PYTHONFAULTHANDLER': '1'}, capture_output=True,
+                                encoding='utf-8', errors='replace', timeout=60, check=False)
+        assert result.returncode == 0, result.stdout + '\n' + result.stderr
+        lines = [line for line in result.stdout.splitlines() if line.startswith('GC_PROBE ')]
+        assert len(lines) == 1, result.stdout
+        observed = json.loads(lines[0].removeprefix('GC_PROBE '))
+        assert observed == {'mode': mode, 'before_events': before_events, 'outside_main': 0}
