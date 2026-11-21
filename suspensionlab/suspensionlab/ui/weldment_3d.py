@@ -4,7 +4,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from PySide6.QtCore import Qt, QThread, QTimer, Signal
+from PySide6.QtCore import QPoint, Qt, QThread, QTimer, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -48,6 +48,8 @@ class _TubeReader(QThread):
 
 class Weldment3D(QWidget):
     availabilityChanged = Signal(bool)
+    partPicked = Signal(str)
+    partContextRequested = Signal(str, QPoint)
 
     def __init__(self, parent: QWidget | None = None, *,
                  is_current: Callable[[dict[str, Any]], bool] | None = None,
@@ -114,6 +116,9 @@ class Weldment3D(QWidget):
         self._parts_filter.textChanged.connect(self._filter_parts)
         self._parts_tree.currentItemChanged.connect(self._select_tree_part)
         self._view.triangle_picked.connect(self._pick_tree_part)
+        if self._fixed_skeleton:
+            self._view.set_context_enabled(True)
+            self._view.context_requested.connect(self._context_requested)
         split = QSplitter(Qt.Orientation.Horizontal, self)
         split.addWidget(self._parts_panel)
         split.addWidget(self._view)
@@ -206,7 +211,10 @@ class Weldment3D(QWidget):
         self._populate_parts(mesh)
         self._ready = True
         self._retry.setEnabled(True)
-        ready_key = ("weldment_3d.fixed_tube_joint_ready" if self._fixed_skeleton and
+        ready_key = ("weldment_3d.fixed_miter_ready" if self._fixed_skeleton and
+                     self._document.get('format') == 'suspensionlab-fixed-arm-housing-preview' and
+                     (self._document.get('tube_joint') or {}).get('target') == 'miter' else
+                     "weldment_3d.fixed_tube_joint_ready" if self._fixed_skeleton and
                      self._document.get('format') == 'suspensionlab-fixed-arm-housing-preview' and
                      self._document.get('tube_joint') else
                      "weldment_3d.fixed_notch_ready" if self._fixed_skeleton and
@@ -293,6 +301,19 @@ class Weldment3D(QWidget):
                 if item.isHidden():
                     self._parts_filter.clear()
                 self._parts_tree.setCurrentItem(item)
+                self.partPicked.emit(mesh.part_names[group])
+
+    def _context_requested(self, position: QPoint) -> None:
+        mesh = self._view.mesh
+        item = self._parts_tree.currentItem()
+        if not self._ready or mesh is None or item is None or self._document is None:
+            return
+        if self._is_current is not None and not self._is_current(self._document):
+            self._failed(self.generation, 'changed')
+            return
+        index = item.data(0, Qt.ItemDataRole.UserRole)
+        if type(index) is int and 0 <= index < len(mesh.part_names):
+            self.partContextRequested.emit(mesh.part_names[index], position)
 
     def _failed(self, token: int, code: str) -> None:
         if token != self.generation or self._closed:
@@ -301,6 +322,7 @@ class Weldment3D(QWidget):
                  "missing_face", "coordinates", "no_faces", "no_shape", "output", "unexpected", "changed"}
         notch_errors = {f'{prefix}_{leg}_{reason}' for prefix in ('notch', 'tube_joint')
                         for leg in ('front', 'rear') for reason in ('no_overlap', 'empty_or_split', 'failed')}
+        notch_errors.add('tube_joint_miter_failed')
         if code not in known and code not in notch_errors:
             code = "unexpected"
         self._ready = False
@@ -308,7 +330,10 @@ class Weldment3D(QWidget):
         self._clear_parts()
         self._retry.setEnabled(self._document is not None and self._enable.isChecked())
         specific = {"timeout", "memory", "changed"}
-        if code in notch_errors:
+        if code == 'tube_joint_miter_failed':
+            reason = ('Общий стык на ус не построен: проверьте форму, угол и длину прямых участков труб '
+                      'или отключите этот рез. Предыдущая геометрия не показана.')
+        elif code in notch_errors:
             is_joint = code.startswith('tube_joint_')
             leg, error = code.removeprefix('tube_joint_' if is_joint else 'notch_').split('_', 1)
             branch = 'Передняя ветвь' if leg == 'front' else 'Задняя ветвь'

@@ -6,7 +6,7 @@ from time import perf_counter
 from typing import TYPE_CHECKING
 
 import numpy as np
-from PySide6.QtCore import QPointF, Qt, QTimer, Signal
+from PySide6.QtCore import QPoint, QPointF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QImage, QPainter, QPen
 from PySide6.QtWidgets import QApplication, QPushButton, QWidget
 
@@ -26,6 +26,7 @@ class CadPreview(QWidget):
     triangle_picked = Signal(int)
     point_picked = Signal(object)
     point_missed = Signal()
+    context_requested = Signal(QPoint)
 
     def __init__(self, parent: QWidget | None = None, *, empty_text_key: str = "cad_preview.empty") -> None:
         super().__init__(parent)
@@ -46,6 +47,9 @@ class CadPreview(QWidget):
         self._drag: QPointF | None = None
         self._press: QPointF | None = None
         self._pan_drag: QPointF | None = None
+        self._pan_origin: QPointF | None = None
+        self._pan_moved = False
+        self._context_enabled = False
         self._pan_button: Qt.MouseButton | None = None
         self._dragging = False
         self._pick_allowed = False
@@ -72,6 +76,10 @@ class CadPreview(QWidget):
         self._settle.setInterval(200)
         self._settle.timeout.connect(self._finish_moving)
         self.reset_camera()
+
+    def set_context_enabled(self, enabled: bool) -> None:
+        """Разрешить контекстный щелчок без движения; перетаскивание остаётся сдвигом."""
+        self._context_enabled = bool(enabled)
 
     def set_performance_diagnostics(self, enabled: bool) -> None:
         """Opt-in, bounded local timings; never records geometry or file names."""
@@ -133,6 +141,8 @@ class CadPreview(QWidget):
         self._drag = None
         self._press = None
         self._pan_drag = None
+        self._pan_origin = None
+        self._pan_moved = False
         self._pan_button = None
         self._dragging = False
         self._frame_key = None
@@ -237,6 +247,8 @@ class CadPreview(QWidget):
         self._drag = None
         self._press = None
         self._pan_drag = None
+        self._pan_origin = None
+        self._pan_moved = False
         self._pan_button = None
         self._dragging = False
         self._settle.stop()
@@ -250,6 +262,8 @@ class CadPreview(QWidget):
         self._drag = None
         self._press = None
         self._pan_drag = None
+        self._pan_origin = None
+        self._pan_moved = False
         self._pan_button = None
         self._dragging = False
         self._pick_allowed = False
@@ -344,7 +358,8 @@ class CadPreview(QWidget):
     def mousePressEvent(self, event) -> None:  # noqa: N802
         if event.button() in (Qt.MouseButton.MiddleButton, Qt.MouseButton.RightButton) and self._drag is None and self._pan_drag is None:
             self._settle.stop()
-            self._pan_drag = event.position()
+            self._pan_drag = self._pan_origin = event.position()
+            self._pan_moved = False
             self._pan_button = event.button()
             event.accept()
         elif event.button() == Qt.MouseButton.LeftButton and self._pan_drag is None:
@@ -360,6 +375,8 @@ class CadPreview(QWidget):
     def mouseMoveEvent(self, event) -> None:  # noqa: N802
         if self._pan_drag is not None and self._pan_button is not None and event.buttons() & self._pan_button:
             current = event.position()
+            if self._pan_origin is not None and (current - self._pan_origin).manhattanLength() >= QApplication.startDragDistance():
+                self._pan_moved = True
             delta, self._pan_drag = current - self._pan_drag, current
             self.pan_x += delta.x()
             self.pan_y += delta.y()
@@ -384,9 +401,16 @@ class CadPreview(QWidget):
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802
         if self._pan_button is not None and event.button() == self._pan_button:
+            context_click = (self._context_enabled and self._pan_button == Qt.MouseButton.RightButton and
+                             self._pan_origin is not None and not self._pan_moved and
+                             (event.position() - self._pan_origin).manhattanLength() < QApplication.startDragDistance())
             self._pan_drag = None
+            self._pan_origin = None
+            self._pan_moved = False
             self._pan_button = None
             self._finish_moving()
+            if context_click:
+                self.context_requested.emit(self.mapToGlobal(event.position().toPoint()))
             event.accept()
         elif event.button() == Qt.MouseButton.LeftButton and self._pan_drag is None:
             position = event.position()

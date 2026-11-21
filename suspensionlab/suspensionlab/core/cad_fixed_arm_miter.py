@@ -82,21 +82,17 @@ def miter_geometry(document: dict[str, Any]) -> MiterGeometry:
 def build_miter_tubes(document: dict[str, Any]) -> tuple[Any, Any]:
     """Построить две валидные непересекающиеся трубы со стыком по плоскости.
 
-    Возвращает только обе трубы, без корпусов и подрезок по ним. Применение в
-    редакторе требует отдельной интеграции и проверки сохранения и истории.
+    Возвращает только обе трубы, без корпусов и подрезок по ним.
     """
-    from OCP.BRepAdaptor import BRepAdaptor_Surface
     from OCP.BRepAlgoAPI import BRepAlgoAPI_Common, BRepAlgoAPI_Cut
     from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
     from OCP.BRepCheck import BRepCheck_Analyzer
     from OCP.BRepGProp import BRepGProp
     from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder, BRepPrimAPI_MakeHalfSpace
-    from OCP.GeomAbs import GeomAbs_Plane
     from OCP.gp import gp_Ax2, gp_Dir, gp_Pln, gp_Pnt
     from OCP.GProp import GProp_GProps
-    from OCP.TopAbs import TopAbs_FACE, TopAbs_SOLID
+    from OCP.TopAbs import TopAbs_SOLID
     from OCP.TopExp import TopExp_Explorer
-    from OCP.TopoDS import TopoDS
 
     from .cad_kim_prototype import _build_bent_tube, build_part
 
@@ -141,26 +137,41 @@ def build_miter_tubes(document: dict[str, Any]) -> tuple[Any, Any]:
         BRepGProp.VolumeProperties_s(build_part(document['parts'][index]), original_props, 1e-8)
         if not math.isclose(props.Mass(), original_props.Mass(), rel_tol=1e-6, abs_tol=1e-5):
             raise MiterError('Плоскость затрагивает другие участки трубы')
-        expected = (math.pi * (g['radius_mm'] ** 2 - (g['radius_mm'] - g['wall_mm']) ** 2) /
-                    abs(sum(normal[i] * u[i] for i in range(3))))
-        face_areas = []
-        faces = TopExp_Explorer(result, TopAbs_FACE)
-        while faces.More():
-            item = TopoDS.Face(faces.Current())
-            surface = BRepAdaptor_Surface(item)
-            if surface.GetType() == GeomAbs_Plane:
-                face_plane = surface.Plane()
-                location, axis = face_plane.Location(), face_plane.Axis().Direction()
-                p = (location.X(), location.Y(), location.Z())
-                n = (axis.X(), axis.Y(), axis.Z())
-                offset = sum((p[i] - point[i]) * normal[i] for i in range(3))
-                alignment = abs(sum(n[i] * normal[i] for i in range(3)))
-                if abs(offset) < 1e-6 and alignment > 1 - 1e-8:
-                    surface_props = GProp_GProps()
-                    BRepGProp.SurfaceProperties_s(item, surface_props, 1e-8)
-                    face_areas.append(float(surface_props.Mass()))
-            faces.Next()
-        if len(face_areas) != 1 or not math.isclose(face_areas[0], expected, rel_tol=1e-6, abs_tol=1e-5):
-            raise MiterError('Поверхность стыка неполная или вырожденная')
+        validate_miter_face(result, miter, g, index)
         results.append(result)
     return results[0], results[1]
+
+
+def validate_miter_face(shape: Any, miter: MiterGeometry, geometry: dict[str, Any], index: int) -> None:
+    """После дополнительных резов полный торец стыка должен остаться целым."""
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.BRepGProp import BRepGProp
+    from OCP.GeomAbs import GeomAbs_Plane
+    from OCP.GProp import GProp_GProps
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    point, normal, u = miter.point, miter.normal, miter.directions[index]
+    expected = (math.pi * (geometry['radius_mm'] ** 2 -
+                           (geometry['radius_mm'] - geometry['wall_mm']) ** 2) /
+                abs(sum(normal[i] * u[i] for i in range(3))))
+    areas = []
+    faces = TopExp_Explorer(shape, TopAbs_FACE)
+    while faces.More():
+        item = TopoDS.Face(faces.Current())
+        surface = BRepAdaptor_Surface(item)
+        if surface.GetType() == GeomAbs_Plane:
+            face_plane = surface.Plane()
+            location, axis = face_plane.Location(), face_plane.Axis().Direction()
+            p = (location.X(), location.Y(), location.Z())
+            n = (axis.X(), axis.Y(), axis.Z())
+            offset = sum((p[i] - point[i]) * normal[i] for i in range(3))
+            alignment = abs(sum(n[i] * normal[i] for i in range(3)))
+            if abs(offset) < 1e-6 and alignment > 1 - 1e-8:
+                props = GProp_GProps()
+                BRepGProp.SurfaceProperties_s(item, props, 1e-8)
+                areas.append(float(props.Mass()))
+        faces.Next()
+    if len(areas) != 1 or not math.isclose(areas[0], expected, rel_tol=1e-6, abs_tol=1e-5):
+        raise MiterError('Поверхность стыка неполная или вырожденная')

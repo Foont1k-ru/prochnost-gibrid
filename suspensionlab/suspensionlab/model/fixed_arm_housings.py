@@ -66,14 +66,16 @@ def validate_notches(value: Any) -> dict[str, float]:
     return {leg: _number(clearance, low=0, high=100) for leg, clearance in value.items()}
 
 
-def validate_tube_joint(value: Any) -> dict[str, Any]:
-    """Один явно выбранный рез по наружному объёму исходной противоположной ветви."""
+def validate_tube_joint(value: Any, *, allow_miter: bool = False) -> dict[str, Any]:
+    """Выбранный рез; общий стык разрешён только в новых версиях формата."""
     if not isinstance(value, dict) or set(value) != {'target', 'radial_clearance_mm'}:
         raise HousingError('Выберите подрезаемую ветвь и задайте радиальный зазор')
-    if value['target'] not in ('front', 'rear'):
+    if value['target'] not in (('front', 'rear', 'miter') if allow_miter else ('front', 'rear')):
         raise HousingError('Неизвестная подрезаемая ветвь')
-    return {'target': value['target'],
-            'radial_clearance_mm': _number(value['radial_clearance_mm'], low=0, high=100)}
+    clearance = _number(value['radial_clearance_mm'], low=0, high=100)
+    if value['target'] == 'miter' and clearance != 0:
+        raise HousingError('Общий стык пока поддерживает только нулевой зазор')
+    return {'target': value['target'], 'radial_clearance_mm': clearance}
 
 
 def validate_housing_preview(value: Any) -> None:
@@ -81,26 +83,28 @@ def validate_housing_preview(value: Any) -> None:
         raise HousingError('Неверный временный снимок CAD')
     version = value.get('version')
     keys = {'format', 'version', 'name', 'tubes', 'housings'}
-    if version in ('2', '3'):
+    if version in ('2', '3', '4'):
         keys.add('notches')
-    if version == '3':
+    if version in ('3', '4'):
         keys.add('tube_joint')
     if set(value) != keys:
         raise HousingError('Неверный временный снимок CAD')
-    if (value['format'] != PREVIEW_FORMAT or version not in (PREVIEW_VERSION, '2', '3') or
+    if (value['format'] != PREVIEW_FORMAT or version not in (PREVIEW_VERSION, '2', '3', '4') or
             value['name'] != 'Трубы и корпуса — предварительный просмотр'):
         raise HousingError('Неизвестный временный снимок CAD')
     try:
         if not weldment_source_matches(value['tubes']):
             raise HousingError('Опоры труб не совпадают со снимком')
-        if version != '3' or value['housings'] is not None:
+        if version not in ('3', '4') or value['housings'] is not None:
             validate_housings(value['housings'])
-        if version == '2' or (version == '3' and value['notches'] is not None):
+        if version == '2' or (version in ('3', '4') and value['notches'] is not None):
             if value['housings'] is None:
                 raise HousingError('Для подрезки по корпусу нужны корпуса')
             validate_notches(value['notches'])
-        if version == '3':
-            validate_tube_joint(value['tube_joint'])
+        if version in ('3', '4'):
+            joint = validate_tube_joint(value['tube_joint'], allow_miter=version == '4')
+            if version == '4' and joint['target'] != 'miter':
+                raise HousingError('Версия общего стыка требует общий рез')
     except (TypeError, ValueError, KeyError, OverflowError, RecursionError) as error:
         raise HousingError('Недопустимый снимок труб, корпусов или подрезки') from error
 
@@ -114,9 +118,10 @@ def make_housing_preview(tubes: dict[str, Any], housings: dict[str, Any] | None,
                            'name': 'Трубы и корпуса — предварительный просмотр',
                            'tubes': tubes, 'housings': validate_housings(housings) if housings is not None else None}
     if tube_joint is not None:
-        doc['version'] = '3'
+        validated_joint = validate_tube_joint(tube_joint, allow_miter=True)
+        doc['version'] = '4' if validated_joint['target'] == 'miter' else '3'
         doc['notches'] = validate_notches(notches) if notches is not None else None
-        doc['tube_joint'] = validate_tube_joint(tube_joint)
+        doc['tube_joint'] = validated_joint
     elif notches is not None:
         doc['version'] = '2'
         doc['notches'] = validate_notches(notches)

@@ -6,7 +6,8 @@ from math import dist
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QSignalBlocker, Qt
+from PySide6.QtCore import QEvent, QObject, QPoint, QSignalBlocker, Qt
+from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -19,6 +20,7 @@ from PySide6.QtWidgets import (
     QInputDialog,
     QLabel,
     QLineEdit,
+    QMenu,
     QMessageBox,
     QPushButton,
     QScrollArea,
@@ -31,6 +33,7 @@ from PySide6.QtWidgets import (
 from ..core.cad_fixed_arm_overlap_job import PlanResult, SuggestionResult
 from ..core.fixed_arm_plans import acceptable_plan, plan_document, plan_options
 from ..core.fixed_arm_suggestions import candidate_document
+from ..model.bend_length import vertex_for_length
 from ..model.bent_tube import make_bend_path
 from ..model.cad_handoff import CadHandoff, HandoffError
 from ..model.fixed_arm_housings import (
@@ -71,6 +74,7 @@ class FixedArmSkeletonDialog(QDialog):
         self._housings: dict[str, Any] | None = None
         self._cad_candidate: dict[str, Any] | None = None
         self._cad_snapshot: FixedArmSnapshot | None = None
+        self._cad_cut_pick: tuple[str, int, tuple[object, ...], object] | None = None
         self._saved_state: tuple[object, ...] | None = None
         self._gesture_state: tuple[object, ...] | None = None
         self._gesture_project: object | None = None
@@ -210,9 +214,9 @@ class FixedArmSkeletonDialog(QDialog):
         housing_layout.addStretch(1)
         self._cad_tools.addTab(housing_area, 'По корпусам')
         joint_area, joint_body, joint_layout = tool_page()
-        joint_note = QLabel('Подрезка одной трубы по исходному наружному объёму другой: '
-                            'сначала выбранные резы по корпусам, затем этот рез; вторая труба не удлиняется. '
-                            'Выберите подрезаемую ветвь и задайте радиальный зазор (0 — без зазора).', joint_body)
+        joint_note = QLabel('Можно подрезать одну трубу по наружному объёму другой или обе общей плоскостью на ус. '
+                            'Стык на ус временно продолжает конечные прямые участки, с нулевым зазором; '
+                            'не является проверкой монтажа, сварки или прочности.', joint_body)
         joint_note.setWordWrap(True)
         joint_layout.addWidget(joint_note)
         joint_row = QHBoxLayout()
@@ -220,6 +224,7 @@ class FixedArmSkeletonDialog(QDialog):
         self._tube_joint.addItem('Не подрезать по другой трубе', None)
         self._tube_joint.addItem('Переднюю по задней', 'front')
         self._tube_joint.addItem('Заднюю по передней', 'rear')
+        self._tube_joint.addItem('Обе трубы: общий стык на ус', 'miter')
         self._tube_joint.setAccessibleName('Выбор подрезаемой трубы')
         self._tube_joint.setEnabled(False)
         self._joint_clearance = QLineEdit(joint_body)
@@ -247,10 +252,22 @@ class FixedArmSkeletonDialog(QDialog):
         self._notch_status = QLabel('', cad_tab)
         self._notch_status.setWordWrap(True)
         cad_layout.addWidget(self._notch_status)
+        self._cad_pick_status = QLabel('Выберите трубу на модели и щёлкните правой кнопкой для меню.', cad_tab)
+        self._cad_pick_status.setWordWrap(True)
+        cad_layout.addWidget(self._cad_pick_status)
+        self._cad_pick_cancel = QPushButton('Отменить выбор элемента для реза', cad_tab)
+        self._cad_pick_cancel.setVisible(False)
+        self._cad_pick_cancel.clicked.connect(self._cancel_cad_cut_pick)
+        cad_layout.addWidget(self._cad_pick_cancel)
         cad_viewport = QScrollArea(cad_tab)
         cad_viewport.setWidgetResizable(True)
         cad_viewport.setMinimumHeight(180)
         self._cad = Weldment3D(cad_viewport, is_current=self._cad_is_current, fixed_skeleton=True)
+        self._cad.partContextRequested.connect(self._cad_context_menu)
+        self._cad.partPicked.connect(self._cad_cutter_picked)
+        self._cad.availabilityChanged.connect(self._cad_availability_changed)
+        self._cad._view.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self._cad._view.installEventFilter(self)
         cad_viewport.setWidget(self._cad)
         cad_layout.addWidget(cad_viewport, 1)
         self._tabs.addTab(cad_tab, '3D · детали (CAD)')
@@ -356,8 +373,159 @@ class FixedArmSkeletonDialog(QDialog):
         self._file_status.setText('Переданы снимок и размеры двух прямых труб. Проверка условных форм '
                                   'не переносится в .slarm и не подтверждает CAD, изгибы или безопасность.')
 
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # noqa: N802
+        if (hasattr(self, '_cad') and watched is self._cad._view and event.type() == QEvent.Type.KeyPress and
+                isinstance(event, QKeyEvent) and event.key() == Qt.Key.Key_Escape and self._cad_cut_pick is not None):
+            self._cancel_cad_cut_pick()
+            return True
+        return super().eventFilter(watched, event)
+
+    def _cad_availability_changed(self, _available: bool) -> None:
+        if self._cad_cut_pick is not None and not self._cad._ready:
+            self._cancel_cad_cut_pick()
+            self._cad_pick_status.setText('CAD-геометрия изменилась; выбор реза отменён.')
+
+    def _cad_context_menu(self, part: str, position: QPoint) -> None:
+        if (part not in ('tube_front', 'tube_rear') or self._cad_candidate is None or not self._cad._ready or
+                not self._cad_is_current(self._cad_candidate)):
+            return
+        self._cancel_cad_cut_pick()
+        state, generation, project = self._state(), self._cad.generation, self.controller.project
+        menu = QMenu(self)
+        edit = menu.addMenu('Редактировать')
+        shape = edit.addAction('Форму и изгиб на проекции…')
+        length = edit.addAction('Длину трубы…')
+        cut = menu.addAction('Обрезать по выбранному элементу…')
+        chosen = menu.exec(position)
+        if (self._state() != state or self._cad.generation != generation or self.controller.project is not project or
+                self._cad_candidate is None or not self._cad_is_current(self._cad_candidate)):
+            self._cancel_cad_cut_pick()
+            if self.snapshot is None or not self.snapshot.matches(self.controller.project):
+                self._refresh()
+            return
+        if chosen == shape:
+            self._cancel_cad_cut_pick()
+            leg = part.removeprefix('tube_')
+            code = f'bend_{leg}'
+            self._tabs.setCurrentIndex(1)
+            if self._point_selection.findData(code) >= 0:
+                self._point_picked(code)
+            elif self.preview is not None:
+                start, end = self.preview.anchors[0 if leg == 'front' else 1], self.preview.anchors[2]
+                midpoint = tuple((start[i] + end[i]) / 2 for i in range(3))
+                self._create_draft(leg, midpoint)  # type: ignore[arg-type]
+        elif chosen == length:
+            self._edit_tube_length(part.removeprefix('tube_'))
+        elif chosen == cut:
+            self._cad_cut_pick = (part, generation, state, project)
+            self._cad_pick_status.setText('Выберите мышью вторую трубу для общего стыка на ус или свой корпус '
+                                          'для подрезки по корпусу. Esc отменяет выбор.')
+            self._cad_pick_cancel.setVisible(True)
+            self._cad._view.setFocus()
+
+    def _edit_tube_length(self, leg: str) -> None:
+        if self.snapshot is None or self.preview is None or leg not in ('front', 'rear'):
+            return
+        state, project, generation = self._state(), self.controller.project, self._cad.generation
+        bends = self._bend_editor.values()
+        if leg not in bends:
+            QMessageBox.information(self, 'Длина трубы', 'Направление изгиба неоднозначно. Сначала создайте '
+                                    'вершину на проекции и задайте радиус, затем измените длину.')
+            return
+        start, end = self.preview.anchors[0 if leg == 'front' else 1], self.preview.anchors[2]
+        bend = bends[leg]
+        current = make_bend_path(start, bend['vertex_mm'], end, bend['radius_mm'], self._radius.value()).length
+        length, ok = QInputDialog.getDouble(self, 'Длина осевой линии',
+            'Длина до CAD-подрезок, мм. Опоры и радиус закреплены; вершина движется поперёк линии опор '
+            'по текущему направлению изгиба. Другие решения возможны.', current, 0., 1000000., 4)
+        if (state != self._state() or project is not self.controller.project or self.snapshot is None or
+                not self.snapshot.matches(project) or self._cad.generation != generation or
+                self._cad_candidate is None or not self._cad_is_current(self._cad_candidate)):
+            self._refresh()
+            return
+        if not ok:
+            return
+        try:
+            vertex = vertex_for_length(start, end, tuple(bend['vertex_mm']), bend['radius_mm'],
+                                       self._radius.value(), length)
+            bends[leg]['vertex_mm'] = list(vertex)
+            preview_fixed_arm(self.snapshot, project, self._radius.value(), self._wall.value(), bends)
+        except (SkeletonError, KimFormatError, ValueError) as error:
+            QMessageBox.warning(self, 'Длина не изменена', f'{error}. Прежняя геометрия сохранена.')
+            return
+        if (state != self._state() or project is not self.controller.project or self.snapshot is None or
+                not self.snapshot.matches(project) or self._cad.generation != generation):
+            return
+        self._bend_editor.load(bends)
+        self._bend_editor.changed.emit()
+
+    def _cancel_cad_cut_pick(self) -> None:
+        self._cad_cut_pick = None
+        if hasattr(self, '_cad_pick_status'):
+            self._cad_pick_status.setText('Выберите трубу на модели и щёлкните правой кнопкой для меню.')
+            self._cad_pick_cancel.setVisible(False)
+
+    def _cad_cut_pick_current(self, pick: tuple[str, int, tuple[object, ...], object]) -> bool:
+        return (self._cad_cut_pick is pick and self._cad.generation == pick[1] and self._state() == pick[2] and
+                self.controller.project is pick[3] and self.snapshot is not None and
+                self.snapshot.matches(self.controller.project) and self._cad._ready and self._cad_candidate is not None and
+                self._cad_is_current(self._cad_candidate))
+
+    def _cad_cutter_picked(self, part: str) -> None:
+        pick = self._cad_cut_pick
+        if pick is None:
+            return
+        if not self._cad_cut_pick_current(pick):
+            self._cancel_cad_cut_pick()
+            self._cad_pick_status.setText('Геометрия изменилась; выбор реза отменён.')
+            return
+        target = pick[0].removeprefix('tube_')
+        other = 'rear' if target == 'front' else 'front'
+        if part == f'tube_{other}':
+            existing = self._tube_joint.currentData()
+            warning = ('Текущая подрезка между трубами будет заменена. ' if existing is not None else '')
+            answer = QMessageBox.question(self, 'Общий стык на ус', warning +
+                'Продолжить конечные прямые участки и подрезать обе трубы общей плоскостью без зазора? '
+                'Это не проверка сварки, монтажа или прочности.',
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
+            if not self._cad_cut_pick_current(pick):
+                self._cancel_cad_cut_pick()
+                if self.snapshot is None or not self.snapshot.matches(self.controller.project):
+                    self._refresh()
+                return
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+            self._cancel_cad_cut_pick()
+            self._tube_joint.setCurrentIndex(self._tube_joint.findData('miter'))
+        elif part == f'housing_{target}':
+            try:
+                old = float(self._notch_clearances[target].text().replace(',', '.'))
+            except ValueError:
+                old = 0.
+            clearance, ok = QInputDialog.getDouble(self, 'Подрезка по корпусу',
+                'Радиальный зазор до наружного цилиндра своего корпуса, мм:', max(0., min(old, 100.)), 0., 100., 2)
+            if not self._cad_cut_pick_current(pick):
+                self._cancel_cad_cut_pick()
+                if self.snapshot is None or not self.snapshot.matches(self.controller.project):
+                    self._refresh()
+                return
+            if not ok:
+                return
+            self._cancel_cad_cut_pick()
+            controls = [self._notch_checks[target], self._notch_clearances[target]]
+            blockers = [QSignalBlocker(widget) for widget in controls]
+            self._notch_checks[target].setChecked(True)
+            self._notch_clearances[target].setText(repr(clearance))
+            del blockers
+            self._trim_edited()
+        else:
+            self._cad_pick_status.setText('Выберите другую трубу либо собственный корпус выбранной трубы. '
+                                          'Другие резы пока не поддерживаются; Esc отменяет выбор.')
+
     def _view_tab_changed(self, index: int) -> None:
         skeleton_view = index != self._tabs.count() - 1
+        if skeleton_view:
+            self._cancel_cad_cut_pick()
         self._reset_camera.setVisible(skeleton_view)
         self._point_selection.setVisible(skeleton_view)
         self._selection_status.setVisible(skeleton_view)
@@ -425,7 +593,7 @@ class FixedArmSkeletonDialog(QDialog):
         notch_state = tuple((leg, self._notch_clearances[leg].text()) for leg in ('front', 'rear')
                             if self._notch_checks[leg].isChecked())
         joint_target = self._tube_joint.currentData()
-        joint_state = (joint_target, self._joint_clearance.text() if joint_target is not None else '')
+        joint_state = (joint_target, self._joint_clearance.text() if joint_target in ('front', 'rear') else '')
         return (self.snapshot, self._from.value(), self._to.value(), self._spacing.value(),
                 self._radius.value(), self._wall.value(), self._bend_editor.state(), self._draft, housing_state,
                 notch_state, joint_state, tuple(sorted(self._overlap.requirements().items())),
@@ -461,6 +629,8 @@ class FixedArmSkeletonDialog(QDialog):
         target = self._tube_joint.currentData()
         if target is None:
             return None
+        if target == 'miter':
+            return validate_tube_joint({'target': 'miter', 'radial_clearance_mm': 0.}, allow_miter=True)
         try:
             clearance = float(self._joint_clearance.text().strip().replace(',', '.'))
         except ValueError as error:
@@ -578,6 +748,7 @@ class FixedArmSkeletonDialog(QDialog):
         return spin
 
     def _clear_preview(self) -> None:
+        self._cancel_cad_cut_pick()
         self._draft = None
         self._trim_buttons()
         self.preview = None
@@ -1072,7 +1243,7 @@ class FixedArmSkeletonDialog(QDialog):
             self._notch_checks[leg].setEnabled(self._housings is not None)
             self._notch_clearances[leg].setEnabled(self._housings is not None and self._notch_checks[leg].isChecked())
         self._tube_joint.setEnabled(True)
-        self._joint_clearance.setEnabled(self._tube_joint.currentData() is not None)
+        self._joint_clearance.setEnabled(self._tube_joint.currentData() in ('front', 'rear'))
         self._notch_status.clear()
         cad_document: dict[str, Any] | None = document
         notches = None
@@ -1092,7 +1263,10 @@ class FixedArmSkeletonDialog(QDialog):
         self._overlap.set_document(cad_document)
         self._housing_status.setText('Оба корпуса заданы; центры совпадают с опорами снимка.' if self._housings is not None
                                      else 'Корпуса не заданы.')
-        self._cad_note.setText('Предварительный CAD: одна ветвь подрезается по исходной другой трубе; '
+        self._cad_note.setText('Предварительный CAD: обе трубы подрезаны общей плоскостью на ус; '
+                               'монтаж, сварка, зазоры на ходу и прочность не проверяются.'
+                               if joint and joint['target'] == 'miter' else
+                               'Предварительный CAD: одна ветвь подрезается по исходной другой трубе; '
                                'остальные пересечения, сварка, зазоры и прочность не проверяются.'
                                if joint else
                                'Предварительный CAD: выбранные ветви подрезаются только по своим корпусам; '

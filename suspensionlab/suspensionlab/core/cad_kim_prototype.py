@@ -212,7 +212,16 @@ def build_fixed_arm_housing_preview(document: dict[str, Any]) -> Any:
 
     builder, compound = BRep_Builder(), TopoDS_Compound()
     builder.MakeCompound(compound)
-    tubes = [build_part(part) for part in tube_doc['parts']]
+    joint = document.get('tube_joint')
+    if joint is not None and joint['target'] == 'miter':
+        from .cad_fixed_arm_miter import build_miter_tubes
+
+        try:
+            tubes = list(build_miter_tubes(tube_doc))
+        except Exception as error:
+            raise FixedArmNotchError('miter', 'failed', tube_joint=True) from error
+    else:
+        tubes = [build_part(part) for part in tube_doc['parts']]
     housings = []
     notches = document.get('notches') or {}
     housing_data = document['housings']
@@ -240,8 +249,16 @@ def build_fixed_arm_housing_preview(document: dict[str, Any]) -> Any:
             except TubeNotchError as error:
                 raise FixedArmNotchError(leg, error.code) from error
             tubes[index] = result.shape
-    if document.get('tube_joint') is not None:
-        joint = document['tube_joint']
+    if joint is not None and joint['target'] == 'miter' and notches:
+        from .cad_fixed_arm_miter import miter_geometry, validate_miter_face
+
+        try:
+            miter = miter_geometry(tube_doc)
+            for index, tube in enumerate(tubes):
+                validate_miter_face(tube, miter, tube_doc['parts'][index]['geometry'], index)
+        except Exception as error:
+            raise FixedArmNotchError('miter', 'failed', tube_joint=True) from error
+    if joint is not None and joint['target'] != 'miter':
         leg = joint['target']
         target_index = ('front', 'rear').index(leg)
         other_index = 1 - target_index

@@ -17,7 +17,13 @@ from OCP.TopExp import TopExp_Explorer  # noqa: E402
 from OCP.TopoDS import TopoDS, TopoDS_Iterator  # noqa: E402
 
 from suspensionlab.core.cad_fixed_arm_miter import MiterError, build_miter_tubes, miter_geometry  # noqa: E402
-from suspensionlab.core.cad_kim_prototype import build_weldment_tubes_preview  # noqa: E402
+from suspensionlab.core.cad_kim_prototype import (  # noqa: E402
+    build_fixed_arm_housing_preview,
+    build_weldment_tubes_preview,
+)
+from suspensionlab.core.cad_transport import CadPreviewError  # noqa: E402
+from suspensionlab.core.cad_weldment_job import WeldmentCadJob  # noqa: E402
+from suspensionlab.model.fixed_arm_housings import make_housing_preview  # noqa: E402
 from suspensionlab.model.fixed_arm_skeleton import (  # noqa: E402
     capture_fixed_arm,
     fixed_arm_tube_document,
@@ -97,6 +103,23 @@ def test_shared_plane_produces_both_complete_mating_faces(bent):
     assert document == before_document and project.to_dict() == before_project
 
 
+def test_miter_preview_worker_builds_two_mesh_parts_and_reports_invalid_geometry():
+    project = load_template('ring')
+    snapshot = capture_fixed_arm(project, -20, 20)
+    joint = {'target': 'miter', 'radial_clearance_mm': 0.}
+    tubes = fixed_arm_tube_document(snapshot, project, 10, 2)
+    doc = make_housing_preview(tubes, None, tube_joint=joint)
+    shape = build_fixed_arm_housing_preview(doc)
+    assert len(original_parts(shape)) == 2
+    mesh = WeldmentCadJob().run(doc, deviation=2)
+    assert mesh.part_names == ('tube_front', 'tube_rear')
+    assert set(mesh.triangle_parts.tolist()) == {0, 1}
+    bad = make_housing_preview(fixed_arm_tube_document(snapshot, project, 200, 2), None, tube_joint=joint)
+    with pytest.raises(CadPreviewError) as exc:
+        WeldmentCadJob().run(bad, deviation=2)
+    assert exc.value.code == 'tube_joint_miter_failed'
+
+
 def test_miter_that_reaches_the_opposite_support_is_rejected():
     project = load_template('ring')
     snapshot = capture_fixed_arm(project, 0, 0)
@@ -115,3 +138,47 @@ def test_too_close_directions_are_rejected():
     document = fixed_arm_tube_document(snapshot, project, 10, 2)
     with pytest.raises(MiterError, match='слишком близки'):
         miter_geometry(document)
+
+
+def test_miter_with_housings_notches_and_overlap_checks():
+    from test_fixed_arm_housings import housings
+
+    from suspensionlab.core.cad_fixed_arm_overlap import measure_all_pairs
+    from suspensionlab.core.fixed_arm_suggestions import candidate_document, candidate_options
+
+    project = load_template('ring')
+    snapshot = capture_fixed_arm(project, -20, 20)
+    tubes = fixed_arm_tube_document(snapshot, project, 10, 2)
+    doc = make_housing_preview(tubes, housings(), {'front': 0., 'rear': 0.},
+                               {'target': 'miter', 'radial_clearance_mm': 0.})
+    shape = build_fixed_arm_housing_preview(doc)
+    parts = original_parts(shape)
+    assert len(parts) == 4
+    geometry = miter_geometry(tubes)
+    for part in parts[:2]:
+        assert len(cut_face_areas(part, geometry)) == 1
+    rows = measure_all_pairs(doc)
+    assert len(rows) == 6 and rows[0]['overlap_mm3'] < 1e-5
+    options, constrained = candidate_options(doc, 'tube_front', 'tube_rear', 1.)
+    assert not options and constrained
+    with pytest.raises(ValueError, match='existing_joint'):
+        candidate_document(doc, 'joint', 'front', 1.)
+
+
+def test_later_cut_damaging_miter_face_is_rejected():
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeSphere
+    from OCP.gp import gp_Pnt
+
+    from suspensionlab.core.cad_fixed_arm_miter import validate_miter_face
+
+    project = load_template('ring')
+    snapshot = capture_fixed_arm(project, -20, 20)
+    doc = fixed_arm_tube_document(snapshot, project, 10, 2)
+    geometry = miter_geometry(doc)
+    tube = build_miter_tubes(doc)[0]
+    cutter = BRepPrimAPI_MakeSphere(gp_Pnt(*geometry.point), 15).Shape()
+    cut = BRepAlgoAPI_Cut(tube, cutter)
+    assert cut.IsDone()
+    with pytest.raises(MiterError, match='Поверхность стыка'):
+        validate_miter_face(cut.Shape(), geometry, doc['parts'][0]['geometry'], 0)
