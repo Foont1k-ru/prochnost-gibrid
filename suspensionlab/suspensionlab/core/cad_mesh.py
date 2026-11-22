@@ -103,8 +103,9 @@ class CadMesh:
         return center, max(radius, 1.)
 
 
-def project_points(triangles: np.ndarray, center: np.ndarray, yaw: float, elevation: float) -> tuple[np.ndarray, np.ndarray]:
-    """Проекция заранее центрированной камеры без повторного вычисления границ."""
+def project_points_depth(triangles: np.ndarray, center: np.ndarray, yaw: float,
+                         elevation: float) -> tuple[np.ndarray, np.ndarray]:
+    """Проекция и средняя глубина без сортировки, в исходном порядке треугольников."""
     if not np.isfinite(yaw) or not np.isfinite(elevation):
         raise ValueError("Углы камеры должны быть конечными")
     points = triangles - center
@@ -113,6 +114,12 @@ def project_points(triangles: np.ndarray, center: np.ndarray, yaw: float, elevat
     x, y, z = points[:, :, 0], points[:, :, 1], points[:, :, 2]
     projected = np.stack((cy * x + sy * y, -sy * se * x + cy * se * y + ce * z), axis=-1)
     distance = (sy * ce * x - cy * ce * y + se * z).mean(axis=1)
+    return projected, distance
+
+
+def project_points(triangles: np.ndarray, center: np.ndarray, yaw: float, elevation: float) -> tuple[np.ndarray, np.ndarray]:
+    """Проекция заранее центрированной камеры без повторного вычисления границ."""
+    projected, distance = project_points_depth(triangles, center, yaw, elevation)
     return projected, np.argsort(distance, kind="stable")
 
 

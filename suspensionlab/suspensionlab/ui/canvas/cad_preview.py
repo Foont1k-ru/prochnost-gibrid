@@ -10,7 +10,7 @@ from PySide6.QtCore import QPoint, QPointF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPolygonF
 from PySide6.QtWidgets import QApplication, QPushButton, QWidget
 
-from ...core.cad_interaction import interaction_geometry
+from ...core.cad_interaction import INTERACTION_THRESHOLD, interaction_geometry, interaction_geometry_by_part
 from ...core.cad_measurement import point_on_projected_triangle
 from ...core.cad_mesh import CadMesh
 from ...core.cad_raster import pick_triangle, rasterize, screen_projection, triangle_shades
@@ -40,6 +40,7 @@ class CadPreview(QWidget):
         self._fast_shades = self._shades
         self._highlight: np.ndarray | None = None
         self._fast_highlight: np.ndarray | None = None
+        self._part_interaction_cache: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None = None
         self._through = False
         self._measure_mode = False
         self._markers: tuple[tuple[float, float, float], ...] = ()
@@ -131,10 +132,11 @@ class CadPreview(QWidget):
                 raise ValueError("Некорректная маска подсветки")
             highlight = np.array(highlight, dtype=bool, copy=True)
             highlight.flags.writeable = False
-        # CadMesh owns immutable arrays: its bounds and full-mesh shading can be
-        # reused when only selection/highlight changes. The interaction mesh and
-        # GPU revision still change because they depend on the new mask.
+        # CadMesh owns immutable arrays. Cached interaction geometry is valid only
+        # for this exact mesh and whole-part selections, never partial face masks.
         same_mesh = mesh is not None and mesh is self.mesh
+        if not same_mesh:
+            self._part_interaction_cache = None
         self._mesh_revision += 1
         self._highlight = highlight
         self._through = bool(through and highlight is not None)
@@ -165,12 +167,32 @@ class CadPreview(QWidget):
                 self._center, self._radius = mesh.bounds()
                 self._shades = triangle_shades(self._triangles)
             interaction_started = perf_counter() if self._perf_enabled else 0.0
-            self._fast_triangles, self._fast_highlight = interaction_geometry(mesh, highlight)
-            self._fast_shades = (self._shades if self._fast_triangles is self._triangles
-                                 else triangle_shades(self._fast_triangles))
+            self._prepare_interaction(mesh, highlight)
             self._perf_elapsed("mesh_interaction", interaction_started)
         self._perf_elapsed("mesh_setup", started)
         self.update()
+
+    def _prepare_interaction(self, mesh: CadMesh, highlight: np.ndarray | None) -> None:
+        parts = mesh.triangle_parts
+        if parts is not None and len(parts) > INTERACTION_THRESHOLD:
+            cache = self._part_interaction_cache
+            counts = cache[3] if cache is not None else np.bincount(parts, minlength=len(mesh.part_names))
+            selected = (np.bincount(parts[highlight], minlength=len(mesh.part_names)) if highlight is not None else None)
+            whole_parts = selected is None or not np.any((selected > 0) & (selected < counts))
+            if whole_parts:
+                if cache is None:
+                    fast, fast_parts = interaction_geometry_by_part(mesh)
+                    shades = self._shades if fast is self._triangles else triangle_shades(fast)
+                    cache = (fast, fast_parts, shades, counts)
+                    self._part_interaction_cache = cache
+                self._fast_triangles, fast_parts, self._fast_shades, _ = cache
+                self._fast_highlight = (selected[fast_parts] > 0) if selected is not None else None
+                return
+        # Partial face/instance masks must still be simplified separately, so
+        # highlighted and unhighlighted geometry never collapse into one group.
+        self._fast_triangles, self._fast_highlight = interaction_geometry(mesh, highlight)
+        self._fast_shades = (self._shades if self._fast_triangles is self._triangles
+                             else triangle_shades(self._fast_triangles))
 
     def _renderer_toggled(self, enabled: bool) -> None:
         self._frame_key = None

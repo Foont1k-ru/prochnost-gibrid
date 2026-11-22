@@ -4,7 +4,7 @@ from __future__ import annotations
 import numpy as np
 from PIL import Image, ImageDraw
 
-from .cad_mesh import project_points
+from .cad_mesh import project_points_depth
 
 COLORS = [(v * 3 // 4, v * 9 // 10, v) for v in range(256)]
 HIGHLIGHT_COLORS = [(min(255, v + 50), v * 2 // 3, v // 6) for v in range(256)]
@@ -21,11 +21,19 @@ def screen_projection(triangles: np.ndarray, center: np.ndarray, radius: float,
                       yaw: float, elevation: float, zoom: float, width: int, height: int,
                       margin: float = 24., offset: tuple[float, float] = (0., 0.)) -> tuple[np.ndarray, np.ndarray]:
     """Пиксельные координаты и тот же порядок, что используется в отрисовке."""
-    projected, order = project_points(triangles, center, yaw, elevation)
+    projected, depth = _screen_projection_depth(triangles, center, radius, yaw, elevation, zoom, width, height,
+                                                 margin, offset)
+    return projected, np.argsort(depth, kind="stable")
+
+
+def _screen_projection_depth(triangles: np.ndarray, center: np.ndarray, radius: float,
+                             yaw: float, elevation: float, zoom: float, width: int, height: int,
+                             margin: float, offset: tuple[float, float]) -> tuple[np.ndarray, np.ndarray]:
+    projected, depth = project_points_depth(triangles, center, yaw, elevation)
     scale = max(1., min(width - margin, height - margin)) / (2 * radius) * zoom
     projected[:, :, 0] = width / 2 + offset[0] + projected[:, :, 0] * scale
     projected[:, :, 1] = height / 2 + offset[1] - projected[:, :, 1] * scale
-    return projected, order
+    return projected, depth
 
 
 def pick_triangle(triangles: np.ndarray, center: np.ndarray, radius: float,
@@ -43,15 +51,17 @@ def pick_triangle(triangles: np.ndarray, center: np.ndarray, radius: float,
         return None
     if highlight is not None and (highlight.shape != (len(triangles),) or highlight.dtype.kind != "b"):
         raise ValueError("Некорректная маска подсветки")
-    projected, order = screen_projection(triangles, center, radius, yaw, elevation, zoom, width, height, margin, offset)
+    projected, depth = _screen_projection_depth(triangles, center, radius, yaw, elevation, zoom, width, height,
+                                                 margin, offset)
     coords = np.trunc(projected).astype(np.int64)
-    # Грубый отбор по прямоугольникам сокращает число вызовов PIL, но не
-    # определяет результат: окончательное совпадение проверяет сам растеризатор.
+    # Сначала ограничиваем возможные попадания, затем стабильно сортируем только их.
+    # Равные глубины сохраняют исходный порядок, как при полной отрисовке.
     hit = ((coords[:, :, 0].min(axis=1) <= x) & (coords[:, :, 0].max(axis=1) >= x) &
            (coords[:, :, 1].min(axis=1) <= y) & (coords[:, :, 1].max(axis=1) >= y))
-    candidates = order[hit[order]]
+    candidates = np.flatnonzero(hit)
     if not len(candidates):
         return None
+    candidates = candidates[np.argsort(depth[candidates], kind="stable")]
     image = Image.new("RGB", (width, height), (0, 0, 0))
     draw = ImageDraw.Draw(image)
 
