@@ -211,7 +211,10 @@ class Weldment3D(QWidget):
         self._populate_parts(mesh)
         self._ready = True
         self._retry.setEnabled(True)
-        ready_key = ("weldment_3d.fixed_miter_ready" if self._fixed_skeleton and
+        ready_key = ("weldment_3d.fixed_ball_housing_ready" if self._fixed_skeleton and
+                     self._document.get('format') == 'suspensionlab-fixed-arm-housing-preview' and
+                     self._document.get('ball_housing') is not None else
+                     "weldment_3d.fixed_miter_ready" if self._fixed_skeleton and
                      self._document.get('format') == 'suspensionlab-fixed-arm-housing-preview' and
                      (self._document.get('tube_joint') or {}).get('target') == 'miter' else
                      "weldment_3d.fixed_tube_joint_ready" if self._fixed_skeleton and
@@ -323,6 +326,7 @@ class Weldment3D(QWidget):
         notch_errors = {f'{prefix}_{leg}_{reason}' for prefix in ('notch', 'tube_joint')
                         for leg in ('front', 'rear') for reason in ('no_overlap', 'empty_or_split', 'failed')}
         notch_errors.add('tube_joint_miter_failed')
+        known.add('ball_housing_failed')
         if code not in known and code not in notch_errors:
             code = "unexpected"
         self._ready = False
@@ -330,7 +334,10 @@ class Weldment3D(QWidget):
         self._clear_parts()
         self._retry.setEnabled(self._document is not None and self._enable.isChecked())
         specific = {"timeout", "memory", "changed"}
-        if code == 'tube_joint_miter_failed':
+        if code == 'ball_housing_failed':
+            reason = ('Центральный корпус или подрезка труб не построены. Проверьте размеры, ось, '
+                      'смещение и форму труб. Предыдущая геометрия не показана.')
+        elif code == 'tube_joint_miter_failed':
             reason = ('Общий стык на ус не построен: проверьте форму, угол и длину прямых участков труб '
                       'или отключите этот рез. Предыдущая геометрия не показана.')
         elif code in notch_errors:

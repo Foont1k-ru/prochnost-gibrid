@@ -44,6 +44,7 @@ def create_grouped_mesh(path: Path, deviation: float) -> tuple[np.ndarray, int, 
     except (ImportError, OSError) as error:
         raise CadWorkerError("missing_cad") from error
     if path.suffix.lower() == '.slpreview':
+        from ..model.ball_housing import BallHousingError
         from ..model.fixed_arm_housings import validate_housing_preview
         from ..model.project_io import _read_project_bytes, _unique_object
 
@@ -55,6 +56,8 @@ def create_grouped_mesh(path: Path, deviation: float) -> tuple[np.ndarray, int, 
             reason = error.code if error.code in ('no_overlap', 'empty_or_split') else 'failed'
             prefix = 'tube_joint' if error.tube_joint else 'notch'
             raise CadWorkerError(f'{prefix}_{error.leg}_{reason}') from error
+        except BallHousingError as error:
+            raise CadWorkerError('ball_housing_failed') from error
     elif path.suffix.lower() == ".kim":
         doc = read_document(path, "part")
         if doc["version"] not in ("0.4", "0.6"):

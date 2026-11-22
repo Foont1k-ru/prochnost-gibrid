@@ -213,7 +213,14 @@ def build_fixed_arm_housing_preview(document: dict[str, Any]) -> Any:
     builder, compound = BRep_Builder(), TopoDS_Compound()
     builder.MakeCompound(compound)
     joint = document.get('tube_joint')
-    if joint is not None and joint['target'] == 'miter':
+    ball_housing = None
+    if document.get('ball_housing') is not None:
+        from .cad_ball_housing import build_ball_housing_tubes
+
+        front, rear, ball_housing = build_ball_housing_tubes(tube_doc, document['ball_housing'])
+        tubes = [front, rear]
+        original_ball_tubes = list(tubes)
+    elif joint is not None and joint['target'] == 'miter':
         from .cad_fixed_arm_miter import build_miter_tubes
 
         try:
@@ -273,6 +280,12 @@ def build_fixed_arm_housing_preview(document: dict[str, Any]) -> Any:
         except Exception as error:
             raise FixedArmNotchError(leg, 'failed', tube_joint=True) from error
         tubes[target_index] = result.shape
+    if ball_housing is not None:
+        if notches:
+            from .cad_ball_housing import validate_ball_housing_contacts
+
+            validate_ball_housing_contacts(tube_doc, document['ball_housing'], original_ball_tubes, tubes)
+        housings.append(ball_housing)
     for shape in (*tubes, *housings):
         if shape.IsNull() or not BRepCheck_Analyzer(shape).IsValid():
             raise RuntimeError('invalid part')

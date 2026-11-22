@@ -21,6 +21,8 @@ def validate_request(value: Any) -> tuple[dict[str, Any], str, str, float]:
         raise ValueError('invalid_document')
     if doc.get('format') == PREVIEW_FORMAT:
         validate_housing_preview(doc)
+        if doc.get('ball_housing') is not None:
+            raise ValueError('ball_housing_unsupported')
     elif not weldment_source_matches(doc):
         raise ValueError('invalid_document')
     if (type(minimum) not in (int, float) or not math.isfinite(minimum) or
@@ -40,6 +42,8 @@ def validate_request(value: Any) -> tuple[dict[str, Any], str, str, float]:
 
 def candidate_document(doc: dict[str, Any], kind: str, target: str, clearance: float) -> dict[str, Any]:
     """Строит только поддержанный рез, не меняя другие параметры."""
+    if doc.get('ball_housing') is not None:
+        raise ValueError('ball_housing_unsupported')
     if doc.get('format') == PREVIEW_FORMAT:
         tubes, housings = doc['tubes'], doc['housings']
         notches, joint = dict(doc.get('notches') or {}), doc.get('tube_joint')

@@ -22,6 +22,8 @@ def preview_parts(document: dict[str, Any]) -> tuple[PreviewPart, ...]:
         parts = [('tube_front', 'Передняя труба'), ('tube_rear', 'Задняя труба')]
         if document.get('housings') is not None:
             parts.extend((('housing_front', 'Передний корпус'), ('housing_rear', 'Задний корпус')))
+        if document.get('ball_housing') is not None:
+            parts.append(('ball_housing', 'Центральный корпус'))
         return tuple(PreviewPart(identifier, (index,), name=name) for index, (identifier, name) in enumerate(parts))
     if document.get('format') != 'kima-assembly':
         return ()

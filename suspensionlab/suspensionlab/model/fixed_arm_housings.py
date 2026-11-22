@@ -83,24 +83,30 @@ def validate_housing_preview(value: Any) -> None:
         raise HousingError('Неверный временный снимок CAD')
     version = value.get('version')
     keys = {'format', 'version', 'name', 'tubes', 'housings'}
-    if version in ('2', '3', '4'):
+    if version in ('2', '3', '4', '5'):
         keys.add('notches')
     if version in ('3', '4'):
         keys.add('tube_joint')
+    if version == '5':
+        keys.add('ball_housing')
     if set(value) != keys:
         raise HousingError('Неверный временный снимок CAD')
-    if (value['format'] != PREVIEW_FORMAT or version not in (PREVIEW_VERSION, '2', '3', '4') or
+    if (value['format'] != PREVIEW_FORMAT or version not in (PREVIEW_VERSION, '2', '3', '4', '5') or
             value['name'] != 'Трубы и корпуса — предварительный просмотр'):
         raise HousingError('Неизвестный временный снимок CAD')
     try:
         if not weldment_source_matches(value['tubes']):
             raise HousingError('Опоры труб не совпадают со снимком')
-        if version not in ('3', '4') or value['housings'] is not None:
+        if version not in ('3', '4', '5') or value['housings'] is not None:
             validate_housings(value['housings'])
-        if version == '2' or (version in ('3', '4') and value['notches'] is not None):
+        if version == '2' or (version in ('3', '4', '5') and value['notches'] is not None):
             if value['housings'] is None:
                 raise HousingError('Для подрезки по корпусу нужны корпуса')
             validate_notches(value['notches'])
+        if version == '5':
+            from .ball_housing import validate_ball_housing
+
+            validate_ball_housing(value['ball_housing'])
         if version in ('3', '4'):
             joint = validate_tube_joint(value['tube_joint'], allow_miter=version == '4')
             if version == '4' and joint['target'] != 'miter':
@@ -111,13 +117,22 @@ def validate_housing_preview(value: Any) -> None:
 
 def make_housing_preview(tubes: dict[str, Any], housings: dict[str, Any] | None,
                          notches: dict[str, float] | None = None,
-                         tube_joint: dict[str, Any] | None = None) -> dict[str, Any]:
-    if housings is None and (tube_joint is None or notches is not None):
+                         tube_joint: dict[str, Any] | None = None, *,
+                         ball_housing: dict[str, Any] | None = None) -> dict[str, Any]:
+    if ball_housing is not None and tube_joint is not None:
+        raise HousingError('Корпус шаровой нельзя объединить с другим стыком труб')
+    if housings is None and ((tube_joint is None and ball_housing is None) or notches is not None):
         raise HousingError('Для подрезки по корпусу нужны корпуса')
     doc: dict[str, Any] = {'format': PREVIEW_FORMAT, 'version': '2' if notches else PREVIEW_VERSION,
                            'name': 'Трубы и корпуса — предварительный просмотр',
                            'tubes': tubes, 'housings': validate_housings(housings) if housings is not None else None}
-    if tube_joint is not None:
+    if ball_housing is not None:
+        from .ball_housing import validate_ball_housing
+
+        doc['version'] = '5'
+        doc['notches'] = validate_notches(notches) if notches is not None else None
+        doc['ball_housing'] = validate_ball_housing(ball_housing)
+    elif tube_joint is not None:
         validated_joint = validate_tube_joint(tube_joint, allow_miter=True)
         doc['version'] = '4' if validated_joint['target'] == 'miter' else '3'
         doc['notches'] = validate_notches(notches) if notches is not None else None

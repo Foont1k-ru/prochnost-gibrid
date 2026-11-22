@@ -19,6 +19,7 @@ from PySide6.QtWidgets import QWidget
 from ...core.powertrain_layout import layout_diagram
 from ...core.wheel_projection import wheel_projection
 from ...i18n import tr
+from ...model.arm_scheme_dimensions import Dimension
 from ...model.entities import Axle
 from ..controller import AppController, Selection
 from ..theme import canvas_colors
@@ -68,6 +69,7 @@ class AxleCanvas(QWidget):
         self._hovered: tuple[str, str] | None = None
         self._dragging = False
         self._drag_last = QPointF()
+        self._dimension_hits: dict[Dimension, QRectF] = {}
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setMinimumSize(320, 240)
@@ -76,6 +78,11 @@ class AxleCanvas(QWidget):
         controller.modelChanged.connect(self._on_model_changed)
         controller.projectReplaced.connect(self._request_fit)
         controller.selectionChanged.connect(lambda _selection: self.update())
+
+        from .arm_dimensions_panel import ArmDimensionsPanel
+
+        self._arm_dimensions = ArmDimensionsPanel(self, controller)
+        self._arm_dimensions.move(8, 8)
 
     # ------------------------------------------------------------------ настройки
     def set_view_mode(self, mode: str) -> None:
@@ -97,6 +104,7 @@ class AxleCanvas(QWidget):
             return
         self._roles = roles
         self._request_fit()
+        self._arm_dimensions._refresh()
         self.update()
 
     def roles(self) -> tuple[str, ...]:
@@ -257,8 +265,48 @@ class AxleCanvas(QWidget):
         self._draw_powertrain(painter, colors)
         for role in self._roles:
             self._draw_axle(painter, self._controller.project.axle(role), colors)
+        self._draw_arm_dimensions(painter)
         self._draw_legend(painter, colors)
         painter.end()
+
+    def _draw_arm_dimensions(self, painter: QPainter) -> None:
+        """Вспомогательные проекционные линии, не пространственные длины."""
+        self._dimension_hits.clear()
+        if (self._mode != 'top' or self._roles != ('front',) or
+                not self._arm_dimensions.toggle.isChecked() or
+                self._controller.project.front.type_code != 'double_wishbone'):
+            return
+        from ...model.arm_scheme_dimensions import arm_codes, arm_dimensions
+
+        axle = self._controller.project.front
+        arm = self._arm_dimensions.arm.currentData()
+        try:
+            front, rear, ball = (axle.hardpoints[code] for code in arm_codes(axle, arm))
+            values = arm_dimensions(axle, arm)
+        except (ValueError, KeyError):
+            return
+        a, b, c = [self._to_screen(*self._axle_project(axle, p.x, p.y, p.z)) for p in (front, rear, ball)]
+        painter.save()
+        painter.setPen(QPen(QColor('#d17a00'), 1.5, Qt.PenStyle.DashLine))
+        # Размерные линии отнесены от точек, чтобы не заслонять осевые линии.
+        lines: dict[Dimension, tuple[QPointF, QPointF]] = {
+            'span_x': (QPointF(a.x(), a.y() - 22), QPointF(b.x(), a.y() - 22)),
+            'ball_x': (QPointF(a.x(), c.y() + 22), QPointF(c.x(), c.y() + 22)),
+            'ball_y': (QPointF(c.x() + 22, a.y()), QPointF(c.x() + 22, c.y())),
+        }
+        for key, (start, end) in lines.items():
+            painter.drawLine(start, end)
+            text = f'{values[key]:.2f} мм'
+            bounds = painter.fontMetrics().boundingRect(text)
+            center = (start + end) / 2
+            rect = QRectF(center.x() - bounds.width() / 2 - 3, center.y() - bounds.height() / 2 - 2,
+                          bounds.width() + 6, bounds.height() + 4)
+            painter.fillRect(rect, QColor('#fff3d6'))
+            painter.setPen(QPen(QColor('#713e00')))
+            painter.drawText(rect, int(Qt.AlignmentFlag.AlignCenter), text)
+            self._dimension_hits[key] = rect
+            painter.setPen(QPen(QColor('#d17a00'), 1.5, Qt.PenStyle.DashLine))
+        painter.restore()
 
     def _draw_grid(self, painter: QPainter, colors) -> None:
         """Сетка с шагом 50 мм и масштабная линейка."""
@@ -575,6 +623,13 @@ class AxleCanvas(QWidget):
     def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802 (Qt API)
         """Выбор точки или начало панорамирования."""
         position = event.position()
+        if event.button() == Qt.MouseButton.LeftButton:
+            for key, rect in self._dimension_hits.items():
+                if rect.contains(position):
+                    field = self._arm_dimensions.fields[key]
+                    field.setFocus()
+                    field.selectAll()
+                    return
         hit = self._hit_test(position)
         if hit is not None and event.button() == Qt.MouseButton.LeftButton:
             role, code = hit

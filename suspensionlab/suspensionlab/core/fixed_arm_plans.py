@@ -26,6 +26,8 @@ def validate_plan_request(value: Any) -> tuple[dict[str, Any], dict[str, float]]
         raise ValueError('invalid_document')
     if document.get('format') == PREVIEW_FORMAT:
         validate_housing_preview(document)
+        if document.get('ball_housing') is not None:
+            raise ValueError('ball_housing_unsupported')
     elif not weldment_source_matches(document):
         raise ValueError('invalid_document')
     housings = document.get('format') == PREVIEW_FORMAT and document.get('housings') is not None

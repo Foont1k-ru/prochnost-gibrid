@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .ball_housing import ball_housing_centerlines, validate_ball_housing
 from .entities import Project
 from .fixed_arm_clearances import validate_requirements
 from .fixed_arm_housings import HousingError, validate_housings, validate_notches, validate_tube_joint
@@ -42,6 +43,7 @@ class LoadedSkeleton:
     notches: dict[str, float] | None = None
     tube_joint: dict[str, Any] | None = None
     clearance_requirements: dict[str, float] | None = None
+    ball_housing: dict[str, Any] | None = None
 
 
 def _keys(value: Any, expected: set[str]) -> dict[str, Any]:
@@ -101,7 +103,7 @@ def _canonical(value: Any) -> str:
 
 def _recheck(data: Any, current: Project) -> LoadedSkeleton:
     doc = _keys(data, {'format', 'version', 'units', 'frame', 'project', 'raw_solver_points', 'calculation', 'geometry'})
-    if (doc['format'] != _FORMAT or doc['version'] not in (_VERSION, '2', '3', '4', '5', '6') or doc['units'] != 'mm' or
+    if (doc['format'] != _FORMAT or doc['version'] not in (_VERSION, '2', '3', '4', '5', '6', '7') or doc['units'] != 'mm' or
             doc['frame'] != 'vehicle_front_left'):
         raise SkeletonFileError('Неподдерживаемый формат, версия или система координат')
     calc = _keys(doc['calculation'], {'algorithm', 'from_mm', 'to_mm', 'spacing_mm', 'max_step_mm',
@@ -117,22 +119,27 @@ def _recheck(data: Any, current: Project) -> LoadedSkeleton:
         raise SkeletonFileError('Неверная сетка расчёта')
     travels = [_number(x, -250, 250) for x in calc['travels_mm']]
     geometry_keys = {'radius_mm', 'wall_mm', 'bends'}
-    if doc['version'] in ('2', '3', '4', '5', '6'):
+    if doc['version'] in ('2', '3', '4', '5', '6', '7'):
         geometry_keys.add('housings')
-    if doc['version'] in ('3', '4', '5', '6'):
+    if doc['version'] in ('3', '4', '5', '6', '7'):
         geometry_keys.add('notches')
-    if doc['version'] in ('4', '5', '6'):
+    if doc['version'] in ('4', '5', '6', '7'):
         geometry_keys.add('tube_joint')
-    if doc['version'] in ('5', '6'):
+    if doc['version'] in ('5', '6', '7'):
         geometry_keys.add('clearance_requirements_mm')
+    if doc['version'] == '7':
+        geometry_keys.add('ball_housing')
     geom = _keys(doc['geometry'], geometry_keys)
     try:
         housings = (validate_housings(geom['housings']) if doc['version'] in ('2', '3') or
-                    (doc['version'] in ('4', '5', '6') and geom['housings'] is not None) else None)
+                    (doc['version'] in ('4', '5', '6', '7') and geom['housings'] is not None) else None)
         notches = (validate_notches(geom['notches']) if doc['version'] == '3' or
-                   (doc['version'] in ('4', '5', '6') and geom['notches'] is not None) else None)
+                   (doc['version'] in ('4', '5', '6', '7') and geom['notches'] is not None) else None)
         tube_joint = (validate_tube_joint(geom['tube_joint'], allow_miter=doc['version'] == '6')
-                      if doc['version'] in ('4', '5', '6') and geom['tube_joint'] is not None else None)
+                      if doc['version'] in ('4', '5', '6', '7') and geom['tube_joint'] is not None else None)
+        ball_housing = validate_ball_housing(geom['ball_housing']) if doc['version'] == '7' else None
+        if ball_housing is not None and tube_joint is not None:
+            raise HousingError('Центральный корпус несовместим с другим стыком')
         if doc['version'] == '6' and (tube_joint is None or tube_joint['target'] != 'miter'):
             raise HousingError('Версия общего стыка требует общий рез')
         if doc['version'] == '4' and tube_joint is None:
@@ -140,7 +147,9 @@ def _recheck(data: Any, current: Project) -> LoadedSkeleton:
         if notches is not None and housings is None:
             raise HousingError('Для подрезки по корпусу нужны корпуса')
         requirements = (validate_requirements(geom['clearance_requirements_mm'], housings=housings is not None)
-                        if doc['version'] in ('5', '6') else {})
+                        if doc['version'] in ('5', '6', '7') else {})
+        if ball_housing is not None and requirements:
+            raise HousingError('Требования к зазорам для центрального корпуса пока не поддерживаются')
         if doc['version'] == '5' and not requirements:
             raise ValueError('Нет заданных требований')
     except ValueError as error:
@@ -163,7 +172,9 @@ def _recheck(data: Any, current: Project) -> LoadedSkeleton:
             raise SkeletonFileError('Точные исходные координаты изменились во время расчёта')
         if list(snapshot.travels_mm) != travels:
             raise SkeletonFileError('Сетка файла не соответствует указанным условиям')
-        preview_fixed_arm(snapshot, current, radius, wall, bends)
+        preview = preview_fixed_arm(snapshot, current, radius, wall, bends)
+        if ball_housing is not None:
+            ball_housing_centerlines(preview.anchors, bends, radius, ball_housing)
         if tube_joint is not None and tube_joint['target'] == 'miter':
             from ..core.cad_fixed_arm_miter import miter_geometry
             from .fixed_arm_skeleton import fixed_arm_tube_document
@@ -171,14 +182,15 @@ def _recheck(data: Any, current: Project) -> LoadedSkeleton:
             miter_geometry(fixed_arm_tube_document(snapshot, current, radius, wall, bends))
     except (SkeletonError, ValueError) as error:
         raise SkeletonFileError(f'Повторный расчёт или построение не выполнены: {error}') from error
-    return LoadedSkeleton(snapshot, radius, wall, bends, old_residual, housings, notches, tube_joint, requirements or None)
+    return LoadedSkeleton(snapshot, radius, wall, bends, old_residual, housings, notches, tube_joint, requirements or None, ball_housing)
 
 
 def make_skeleton_data(snapshot: FixedArmSnapshot, current: Project, radius_mm: float, wall_mm: float,
                        bends: dict[str, dict[str, Any]], housings: dict[str, Any] | None = None,
                        notches: dict[str, float] | None = None,
                        tube_joint: dict[str, Any] | None = None,
-                       clearance_requirements: dict[str, float] | None = None) -> dict[str, Any]:
+                       clearance_requirements: dict[str, float] | None = None, *,
+                       ball_housing: dict[str, Any] | None = None) -> dict[str, Any]:
     """Проверка актуальности, геометрии и повторный расчёт перед записью."""
     if not snapshot.matches(current):
         raise SkeletonFileError('Проект отличается от снимка')
@@ -191,7 +203,7 @@ def make_skeleton_data(snapshot: FixedArmSnapshot, current: Project, radius_mm: 
         raise SkeletonFileError(f'Неверные требования к зазорам: {error}') from error
     is_miter = isinstance(tube_joint, dict) and tube_joint.get('target') == 'miter'
     data: dict[str, Any] = {
-        'format': _FORMAT, 'version': ('6' if is_miter else '5' if requirements else '4' if tube_joint is not None else '3' if notches is not None else
+        'format': _FORMAT, 'version': ('7' if ball_housing is not None else '6' if is_miter else '5' if requirements else '4' if tube_joint is not None else '3' if notches is not None else
                                       '2' if housings is not None else _VERSION),
         'units': 'mm', 'frame': 'vehicle_front_left',
         'project': json.loads(snapshot.project_json),
@@ -208,11 +220,13 @@ def make_skeleton_data(snapshot: FixedArmSnapshot, current: Project, radius_mm: 
         data['geometry']['notches'] = notches
     if tube_joint is not None:
         data['geometry']['tube_joint'] = tube_joint
-    if requirements or is_miter:
+    if requirements or is_miter or ball_housing is not None:
         data['geometry']['housings'] = housings
         data['geometry']['notches'] = notches
         data['geometry']['tube_joint'] = tube_joint
         data['geometry']['clearance_requirements_mm'] = requirements
+    if ball_housing is not None:
+        data['geometry']['ball_housing'] = ball_housing
     checked = _recheck(data, current)
     if checked.snapshot != snapshot:
         raise SkeletonFileError('Расчётный снимок изменился; требуется новая фиксация')
@@ -240,7 +254,8 @@ def write_skeleton(path: str | Path, snapshot: FixedArmSnapshot, current: Projec
                    wall_mm: float, bends: dict[str, dict[str, Any]], housings: dict[str, Any] | None = None,
                    notches: dict[str, float] | None = None,
                    tube_joint: dict[str, Any] | None = None,
-                   clearance_requirements: dict[str, float] | None = None) -> Path:
+                   clearance_requirements: dict[str, float] | None = None, *,
+                   ball_housing: dict[str, Any] | None = None) -> Path:
     """Записать новый файл атомарным созданием без перезаписи и без ссылок."""
     target = Path(path)
     if target.suffix.lower() != SUFFIX:
@@ -248,7 +263,7 @@ def write_skeleton(path: str | Path, snapshot: FixedArmSnapshot, current: Projec
     temporary: str | None = None
     try:
         data = make_skeleton_data(snapshot, current, radius_mm, wall_mm, bends, housings, notches, tube_joint,
-                                  clearance_requirements)
+                                  clearance_requirements, ball_housing=ball_housing)
         content = json.dumps(data, ensure_ascii=False, indent=2, allow_nan=False).encode('utf-8')
         if len(content) > MAX_PROJECT_BYTES:
             raise SkeletonFileError('Файл слишком велик')

@@ -18,16 +18,20 @@ LABELS = {
     'lca_f_in': 'Передняя опора',
     'lca_r_in': 'Задняя опора',
     'lbj': 'Шаровая',
+    'ball_housing_center': 'Центр корпуса',
     'bend_front': 'Вершина передней трубы',
     'bend_rear': 'Вершина задней трубы',
 }
 
 
-def skeleton_scene(preview: SkeletonPreview, bends: dict[str, dict[str, Any]]) -> Scene3D:
+def skeleton_scene(preview: SkeletonPreview, bends: dict[str, dict[str, Any]], *,
+                   show_ball_housing: bool = False) -> Scene3D:
     """Только проверенные осевые линии и явно введённые вершины изгиба."""
     segments = tuple(Segment3D(a, b, 'arm') for path in preview.centerlines
                      for a, b in zip(path, path[1:], strict=False))
     points: list[tuple[str, Point]] = list(zip(('lca_f_in', 'lca_r_in', 'lbj'), preview.anchors, strict=True))
+    if show_ball_housing and preview.centerlines[0][-1] != preview.anchors[2]:
+        points.append(('ball_housing_center', preview.centerlines[0][-1]))
     for leg in ('front', 'rear'):
         if leg in bends:
             vertex = bends[leg]['vertex_mm']
