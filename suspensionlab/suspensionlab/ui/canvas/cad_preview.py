@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 from PySide6.QtCore import QPoint, QPointF, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QImage, QPainter, QPen
+from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPolygonF
 from PySide6.QtWidgets import QApplication, QPushButton, QWidget
 
 from ...core.cad_interaction import interaction_geometry
@@ -24,6 +24,7 @@ if TYPE_CHECKING:
 
 class CadPreview(QWidget):
     triangle_picked = Signal(int)
+    context_triangle_picked = Signal(int)
     point_picked = Signal(object)
     point_missed = Signal()
     context_requested = Signal(QPoint)
@@ -42,6 +43,8 @@ class CadPreview(QWidget):
         self._through = False
         self._measure_mode = False
         self._markers: tuple[tuple[float, float, float], ...] = ()
+        self._sketch_path: tuple[tuple[float, float, float], ...] = ()
+        self._sketch_vertex: tuple[float, float, float] | None = None
         self._center = np.zeros(3)
         self._radius = 1.
         self._drag: QPointF | None = None
@@ -241,6 +244,16 @@ class CadPreview(QWidget):
         self._markers = tuple((float(p[0]), float(p[1]), float(p[2])) for p in points)
         self.update()
 
+    def set_sketch_overlay(self, path: tuple[tuple[float, float, float], ...] = (),
+                           vertex: tuple[float, float, float] | None = None) -> None:
+        """Временная осевая линия поверх сетки; не выбор поверхности и не CAD."""
+        points = (*path, *((vertex,) if vertex is not None else ()))
+        if len(path) > 258 or any(len(p) != 3 or not all(np.isfinite(v) for v in p) for p in points):
+            raise ValueError('Некорректный эскиз')
+        self._sketch_path = tuple((float(p[0]), float(p[1]), float(p[2])) for p in path)
+        self._sketch_vertex = tuple(float(v) for v in vertex) if vertex is not None else None  # type: ignore[assignment]
+        self.update()
+
     def reset_camera(self) -> None:
         self.yaw, self.elevation, self.zoom = -0.65, 0.35, 1.0
         self.pan_x, self.pan_y = 0., 0.
@@ -325,6 +338,22 @@ class CadPreview(QWidget):
             self._frame_key = key
         if self._frame is not None:
             painter.drawImage(self.rect(), self._frame)
+        if self._sketch_path:
+            sketch = (*self._sketch_path, *((self._sketch_vertex,) if self._sketch_vertex is not None else ()))
+            triangles = np.repeat(np.asarray(sketch)[:, None, :], 3, axis=1)
+            screen, _ = screen_projection(triangles, self._center, self._radius, self.yaw, self.elevation,
+                                          self.zoom, width, height, margin=24 * ratio, offset=offset)
+            positions = [QPointF(float(p[0, 0]) * self.width() / width, float(p[0, 1]) * self.height() / height)
+                         for p in screen]
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            painter.setPen(QPen(QColor('#ffe466'), 3, Qt.PenStyle.DashLine))
+            painter.drawPolyline(QPolygonF(positions[:len(self._sketch_path)]))
+            if self._sketch_vertex is not None:
+                vertex_pos = positions[-1]
+                painter.setPen(QPen(QColor('#f7952c'), 2))
+                painter.setBrush(QColor('#f7952c'))
+                painter.drawEllipse(vertex_pos, 5, 5)
+                painter.drawText(vertex_pos + QPointF(8, -8), 'Вершина')
         if self._markers:
             marker_triangles = np.repeat(np.asarray(self._markers)[:, None, :], 3, axis=1)
             screen, _ = screen_projection(marker_triangles, self._center, self._radius, self.yaw, self.elevation,
@@ -399,6 +428,31 @@ class CadPreview(QWidget):
         else:
             super().mouseMoveEvent(event)
 
+    def _pick_index(self, x: int, y: int, width: int, height: int, ratio: float) -> int | None:
+        pick_started = perf_counter() if self._perf_enabled else 0.0
+        pick_renderer = "gl" if self._renderer_button.isChecked() else "cpu"
+        if self._renderer_button.isChecked():
+            background = self.palette().base().color()
+            rgb = (background.red(), background.green(), background.blue())
+            offset = self._pixel_offset(width, height)
+            current_key = (width, height, ratio, rgb, self.yaw, self.elevation, self.zoom, False, offset, True)
+            index = None
+            # Never use a different or stale frame to infer the visible surface.
+            if self._gpu is not None and self._frame_key == current_key:
+                try:
+                    index = self._gpu.pick(self._center, self.yaw, self.elevation, self.zoom, width, height,
+                                           24 * ratio, offset, self._highlight, self._through, x, y)
+                except Exception as error:
+                    self._gpu_failed(error)
+                    self.update()
+        else:
+            index = pick_triangle(self._triangles, self._center, self._radius, self.yaw, self.elevation,
+                                  self.zoom, width, height, x, y, margin=24 * ratio,
+                                  highlight=self._highlight, through=self._through,
+                                  offset=self._pixel_offset(width, height))
+        self._perf_elapsed("pick", pick_started, renderer=pick_renderer)
+        return index
+
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802
         if self._pan_button is not None and event.button() == self._pan_button:
             context_click = (self._context_enabled and self._pan_button == Qt.MouseButton.RightButton and
@@ -409,8 +463,16 @@ class CadPreview(QWidget):
             self._pan_moved = False
             self._pan_button = None
             self._finish_moving()
-            if context_click:
-                self.context_requested.emit(self.mapToGlobal(event.position().toPoint()))
+            if context_click and self.mesh is not None and self.mesh.triangle_parts is not None:
+                ratio = self.devicePixelRatioF()
+                width, height = max(1, round(self.width() * ratio)), max(1, round(self.height() * ratio))
+                x = int(event.position().x() * width / max(1, self.width()))
+                y = int(event.position().y() * height / max(1, self.height()))
+                if 0 <= x < width and 0 <= y < height:
+                    index = self._pick_index(x, y, width, height, ratio)
+                    if index is not None:
+                        self.context_triangle_picked.emit(index)
+                        self.context_requested.emit(self.mapToGlobal(event.position().toPoint()))
             event.accept()
         elif event.button() == Qt.MouseButton.LeftButton and self._pan_drag is None:
             position = event.position()
@@ -425,28 +487,7 @@ class CadPreview(QWidget):
                 width, height = max(1, round(self.width() * ratio)), max(1, round(self.height() * ratio))
                 x = int(position.x() * width / max(1, self.width()))
                 y = int(position.y() * height / max(1, self.height()))
-                pick_started = perf_counter() if self._perf_enabled else 0.0
-                pick_renderer = "gl" if self._renderer_button.isChecked() else "cpu"
-                if self._renderer_button.isChecked():
-                    background = self.palette().base().color()
-                    rgb = (background.red(), background.green(), background.blue())
-                    offset = self._pixel_offset(width, height)
-                    current_key = (width, height, ratio, rgb, self.yaw, self.elevation, self.zoom, False, offset, True)
-                    index = None
-                    # Never use a different or stale frame to infer the visible surface.
-                    if self._gpu is not None and self._frame_key == current_key:
-                        try:
-                            index = self._gpu.pick(self._center, self.yaw, self.elevation, self.zoom, width, height,
-                                                   24 * ratio, offset, self._highlight, self._through, x, y)
-                        except Exception as error:
-                            self._gpu_failed(error)
-                            self.update()
-                else:
-                    index = pick_triangle(self._triangles, self._center, self._radius, self.yaw, self.elevation,
-                                          self.zoom, width, height, x, y, margin=24 * ratio,
-                                          highlight=self._highlight, through=self._through,
-                                          offset=self._pixel_offset(width, height))
-                self._perf_elapsed("pick", pick_started, renderer=pick_renderer)
+                index = self._pick_index(x, y, width, height, ratio)
                 if self._measure_mode:
                     point = None
                     if index is not None:

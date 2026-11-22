@@ -20,6 +20,7 @@ def make_editor(qtbot, monkeypatch):
     dialog.show()
     dialog._capture_snapshot()
     dialog._tabs.setCurrentIndex(4)
+    dialog._advanced_toggle.setChecked(True)
     dialog._cad_tools.setCurrentIndex(1)
     return controller, dialog
 

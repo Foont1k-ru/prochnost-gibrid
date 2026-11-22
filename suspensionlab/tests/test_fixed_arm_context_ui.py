@@ -25,7 +25,11 @@ def _start_cut(dialog, qtbot, monkeypatch, part='tube_front'):
             else:
                 menu.close()
     QTimer.singleShot(50, choose)
-    qtbot.mouseClick(dialog._cad._view, Qt.MouseButton.RightButton, pos=QPoint(100, 100))
+    mesh = dialog._cad._view.mesh
+    triangle = int(np.flatnonzero(mesh.triangle_parts == mesh.part_names.index(part))[0])
+    with monkeypatch.context() as patch:
+        patch.setattr(dialog._cad._view, '_pick_index', lambda *args: triangle)
+        qtbot.mouseClick(dialog._cad._view, Qt.MouseButton.RightButton, pos=QPoint(100, 100))
     assert dialog._cad_cut_pick is not None and dialog._cad_cut_pick[0] == part
 
 

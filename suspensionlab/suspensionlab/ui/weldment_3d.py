@@ -65,6 +65,7 @@ class Weldment3D(QWidget):
         self._rear_joint_layout = rear_joint_layout
         self._scheme_part = scheme_part
         self._fixed_skeleton = fixed_skeleton
+        self._workspace_compact = False
         self._document: dict[str, Any] | None = None
         self._pending: dict[str, Any] | None = None
         self._worker: _TubeReader | None = None
@@ -85,9 +86,9 @@ class Weldment3D(QWidget):
         self._enable = QCheckBox(tr(enable_key), self)
         self._enable.toggled.connect(self._toggle)
         layout.addWidget(self._enable)
-        quality_label = QLabel(tr("weldment_3d.quality_label"), self)
-        quality_label.setWordWrap(True)
-        layout.addWidget(quality_label)
+        self._quality_label = QLabel(tr("weldment_3d.quality_label"), self)
+        self._quality_label.setWordWrap(True)
+        layout.addWidget(self._quality_label)
         self._quality = QComboBox(self)
         self._quality.setAccessibleName(tr("weldment_3d.quality_accessible"))
         self._quality.addItem(tr("weldment_3d.quality_smooth"), 0.2)
@@ -118,6 +119,7 @@ class Weldment3D(QWidget):
         self._view.triangle_picked.connect(self._pick_tree_part)
         if self._fixed_skeleton:
             self._view.set_context_enabled(True)
+            self._view.context_triangle_picked.connect(lambda index: self._pick_tree_part(index, notify=False))
             self._view.context_requested.connect(self._context_requested)
         split = QSplitter(Qt.Orientation.Horizontal, self)
         split.addWidget(self._parts_panel)
@@ -131,6 +133,15 @@ class Weldment3D(QWidget):
         self._reset = QPushButton(tr("weldment_3d.reset"), self)
         self._reset.clicked.connect(self._view.reset_camera)
         layout.addWidget(self._reset)
+
+    def set_workspace_compact(self, compact: bool) -> None:
+        """Свернуть второстепенные элементы, оставляя управление CAD доступным."""
+        self._workspace_compact = compact
+        self._quality_label.setVisible(not compact)
+        self._quality.setVisible(not compact)
+        self._retry.setVisible(not compact)
+        self._reset.setVisible(not compact)
+        self._parts_panel.setVisible(not compact and self._parts_tree.topLevelItemCount() > 0)
 
     def can_save(self) -> bool:
         return not self._closed and (not self._enable.isChecked() or self._ready)
@@ -258,7 +269,7 @@ class Weldment3D(QWidget):
             root.addChild(item)
         root.setExpanded(True)
         self._parts_tree.setCurrentItem(root)
-        self._parts_panel.show()
+        self._parts_panel.setVisible(not self._workspace_compact)
 
     def _filter_parts(self, text: str) -> None:
         root = self._parts_tree.topLevelItem(0)
@@ -288,7 +299,7 @@ class Weldment3D(QWidget):
         highlight = mesh.triangle_parts == index if type(index) is int and 0 <= index < len(mesh.part_names) else None
         self._view.set_mesh(mesh, highlight)
 
-    def _pick_tree_part(self, index: int) -> None:
+    def _pick_tree_part(self, index: int, *, notify: bool = True) -> None:
         mesh = self._view.mesh
         root = self._parts_tree.topLevelItem(0)
         if (mesh is None or root is None or mesh.triangle_parts is None or
@@ -304,7 +315,8 @@ class Weldment3D(QWidget):
                 if item.isHidden():
                     self._parts_filter.clear()
                 self._parts_tree.setCurrentItem(item)
-                self.partPicked.emit(mesh.part_names[group])
+                if notify:
+                    self.partPicked.emit(mesh.part_names[group])
 
     def _context_requested(self, position: QPoint) -> None:
         mesh = self._view.mesh

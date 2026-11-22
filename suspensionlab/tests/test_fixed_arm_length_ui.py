@@ -116,7 +116,8 @@ def test_cad_context_menu_can_edit_length(qtbot, monkeypatch):
         menu = QApplication.activePopupWidget()
         if not isinstance(menu, QMenu):
             return
-        qtbot.keyClick(menu, Qt.Key.Key_Down)
+        edit = next(action for action in menu.actions() if action.menu() is not None)
+        menu.setActiveAction(edit)
         qtbot.keyClick(menu, Qt.Key.Key_Right)
         submenu = QApplication.activePopupWidget()
         if not isinstance(submenu, QMenu) or submenu is menu:
@@ -125,7 +126,9 @@ def test_cad_context_menu_can_edit_length(qtbot, monkeypatch):
         action = next(action for action in submenu.actions() if action.text().startswith('Длину трубы'))
         qtbot.mouseClick(submenu, Qt.MouseButton.LeftButton, pos=submenu.actionGeometry(action).center())
     QTimer.singleShot(50, choose_length)
-    qtbot.mouseClick(cad._view, Qt.MouseButton.RightButton, pos=QPoint(100, 100))
+    with monkeypatch.context() as patch:
+        patch.setattr(cad._view, '_pick_index', lambda *args: index)
+        qtbot.mouseClick(cad._view, Qt.MouseButton.RightButton, pos=QPoint(100, 100))
     result = dialog._bend_editor.values()['front']
     assert make_bend_path(a, result['vertex_mm'], b, result['radius_mm'], dialog._radius.value()).length == pytest.approx(length + 3.)
     assert dialog.shutdown()

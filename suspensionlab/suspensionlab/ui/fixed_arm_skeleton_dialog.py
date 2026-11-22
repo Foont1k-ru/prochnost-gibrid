@@ -61,6 +61,7 @@ from .canvas.fixed_arm_scene import LABELS, FixedArmScene, skeleton_scene
 from .controller import AppController
 from .fixed_arm_housings_dialog import FixedArmHousingsDialog
 from .fixed_arm_overlap import FixedArmOverlap
+from .inline_tube_sketch import InlineTubeSketch
 from .weldment_3d import Weldment3D
 
 
@@ -78,6 +79,7 @@ class FixedArmSkeletonDialog(QDialog):
         self._cad_candidate: dict[str, Any] | None = None
         self._cad_snapshot: FixedArmSnapshot | None = None
         self._cad_cut_pick: tuple[str, int, tuple[object, ...], object] | None = None
+        self._inline_session: tuple[str, int, tuple[object, ...], object] | None = None
         self._saved_state: tuple[object, ...] | None = None
         self._closing_confirmed = False
         self._gesture_state: tuple[object, ...] | None = None
@@ -102,7 +104,12 @@ class FixedArmSkeletonDialog(QDialog):
         split.addWidget(view_panel)
         split.setStretchFactor(0, 1)
         split.setStretchFactor(1, 2)
-        split.setSizes([420, 640])
+        split.setSizes([320, 760])
+        self._settings_toggle = QPushButton('Параметры и файлы', self)
+        self._settings_toggle.setCheckable(True)
+        self._settings_toggle.setChecked(True)
+        self._settings_toggle.toggled.connect(scroll.setVisible)
+        root.insertWidget(0, self._settings_toggle)
         warning = QLabel('Передний нижний левый рычаг. Проверяется только сходимость в дискретных точках хода. '
                          'Проверка условных форм не проверяет этот CAD и не сохраняется в .slarm. '
                          'Зазоры, прочность, поворот и безопасность не подтверждены. '
@@ -175,6 +182,12 @@ class FixedArmSkeletonDialog(QDialog):
             projection.dimensionsApplied.connect(self._apply_projection_dimensions)
         cad_tab = QWidget(self._tabs)
         cad_layout = QVBoxLayout(cad_tab)
+        self._advanced_toggle = QPushButton('Дополнительные CAD-инструменты', cad_tab)
+        self._advanced_toggle.setCheckable(True)
+        cad_layout.addWidget(self._advanced_toggle)
+        cad_warning = QLabel('Предварительная геометрия: зазоры на ходу, сварка и прочность не подтверждены.', cad_tab)
+        cad_warning.setWordWrap(True)
+        cad_layout.addWidget(cad_warning)
         self._cad_note = QLabel('Предварительный CAD: две неподрезанные полые трубы; корпуса пока не заданы. '
                                 'Шаровой, швов и проверки зазоров или прочности нет.', cad_tab)
         self._cad_note.setWordWrap(True)
@@ -267,7 +280,7 @@ class FixedArmSkeletonDialog(QDialog):
         self._notch_status = QLabel('', cad_tab)
         self._notch_status.setWordWrap(True)
         cad_layout.addWidget(self._notch_status)
-        self._cad_pick_status = QLabel('Выберите трубу на модели и щёлкните правой кнопкой для меню.', cad_tab)
+        self._cad_pick_status = QLabel('Щёлкните правой кнопкой по трубе для редактирования.', cad_tab)
         self._cad_pick_status.setWordWrap(True)
         cad_layout.addWidget(self._cad_pick_status)
         self._cad_pick_cancel = QPushButton('Отменить выбор элемента для реза', cad_tab)
@@ -285,6 +298,13 @@ class FixedArmSkeletonDialog(QDialog):
         self._cad._view.installEventFilter(self)
         cad_viewport.setWidget(self._cad)
         cad_layout.addWidget(cad_viewport, 1)
+        self._inline_sketch = InlineTubeSketch(self._cad._view)
+        self._inline_sketch.applied.connect(self._apply_inline_sketch)
+        self._inline_sketch.candidateChanged.connect(self._preview_inline_sketch)
+        self._inline_sketch.cancelled.connect(self._close_inline_sketch)
+        self._inline_sketch.move(8, 8)
+        self._advanced_toggle.toggled.connect(self._set_advanced_cad)
+        self._set_advanced_cad(False)
         self._tabs.addTab(cad_tab, '3D · детали (CAD)')
         view_layout.addWidget(self._tabs, 1)
         self._reset_camera = QPushButton('Сбросить 3D-камеру', self)
@@ -390,12 +410,95 @@ class FixedArmSkeletonDialog(QDialog):
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # noqa: N802
         if (hasattr(self, '_cad') and watched is self._cad._view and event.type() == QEvent.Type.KeyPress and
+                isinstance(event, QKeyEvent) and event.key() == Qt.Key.Key_Escape and self._inline_session is not None):
+            self._close_inline_sketch()
+            return True
+        if (hasattr(self, '_cad') and watched is self._cad._view and event.type() == QEvent.Type.KeyPress and
                 isinstance(event, QKeyEvent) and event.key() == Qt.Key.Key_Escape and self._cad_cut_pick is not None):
             self._cancel_cad_cut_pick()
             return True
         return super().eventFilter(watched, event)
 
+    def _set_advanced_cad(self, visible: bool) -> None:
+        self._cad_note.setVisible(visible)
+        self._cad_tools.setVisible(visible)
+        self._trim_undo.setVisible(visible)
+        self._trim_redo.setVisible(visible)
+        self._cad.set_workspace_compact(not visible)
+
+    def _close_inline_sketch(self) -> None:
+        self._inline_session = None
+        if hasattr(self, '_inline_sketch'):
+            self._inline_sketch.hide()
+            self._cad._view.set_sketch_overlay()
+
+    def _inline_current(self) -> bool:
+        session = self._inline_session
+        return bool(session is not None and self._state() == session[2] and
+                    self.controller.project is session[3] and self.snapshot is not None and
+                    self.snapshot.matches(self.controller.project) and self._cad.generation == session[1] and
+                    self._cad._ready and self._cad_candidate is not None and self._cad_is_current(self._cad_candidate))
+
+    def _discard_stale_inline(self) -> None:
+        self._close_inline_sketch()
+        if self.snapshot is not None and not self.snapshot.matches(self.controller.project):
+            self._refresh()
+
+    def _open_inline_sketch(self, leg: str) -> None:
+        if self.preview is None or self.snapshot is None or self._cad_candidate is None or not self._cad._ready:
+            return
+        if not self._cad_is_current(self._cad_candidate):
+            return
+        bends = self._bend_editor.values()
+        bend = bends.get(leg)
+        path = self.preview.centerlines[0 if leg == 'front' else 1]
+        vertex = tuple(bend['vertex_mm']) if bend else tuple((a + b) / 2 for a, b in zip(path[0], path[-1], strict=True))
+        self._inline_session = (leg, self._cad.generation, self._state(), self.controller.project)
+        self._cad._view.set_sketch_overlay(path, vertex if bend else None)
+        self._inline_sketch.begin(leg, vertex, bend['radius_mm'] if bend else None)
+
+    def _preview_inline_sketch(self, values: object) -> None:
+        if not self._inline_current():
+            self._discard_stale_inline()
+            return
+        if values is None or not isinstance(values, tuple) or self._inline_session is None:
+            self._cad._view.set_sketch_overlay()
+            self._inline_sketch.status.setText('Введите конечные координаты и радиус.')
+            return
+        leg = self._inline_session[0]
+        try:
+            bends = self._bend_editor.values()
+            bends[leg] = {'vertex_mm': list(values[:3]), 'radius_mm': values[3]}
+            preview = self._checked_bend_preview(bends)
+        except (KimFormatError, SkeletonError, HousingError, BallHousingError, ValueError) as error:
+            self._cad._view.set_sketch_overlay()
+            self._inline_sketch.status.setText(f'Черновик не построен: {error}')
+            return
+        self._cad._view.set_sketch_overlay(preview.centerlines[0 if leg == 'front' else 1], values[:3])
+        self._inline_sketch.status.setText('Жёлтая линия — черновик; объём перестроится после применения.')
+
+    def _apply_inline_sketch(self, values: object) -> None:
+        if not self._inline_current() or self._inline_session is None or not isinstance(values, tuple):
+            self._discard_stale_inline()
+            return
+        session = self._inline_session
+        try:
+            bends = self._bend_editor.values()
+            bends[session[0]] = {'vertex_mm': list(values[:3]), 'radius_mm': values[3]}
+            self._checked_bend_preview(bends)
+        except (KimFormatError, SkeletonError, HousingError, BallHousingError, ValueError) as error:
+            self._inline_sketch.status.setText(f'Не применено: {error}')
+            return
+        if not self._inline_current():
+            self._discard_stale_inline()
+            return
+        self._close_inline_sketch()
+        self._bend_editor.load(bends)
+        self._bend_editor.changed.emit()
+
     def _cad_availability_changed(self, _available: bool) -> None:
+        if self._inline_session is not None and not self._cad._ready:
+            self._close_inline_sketch()
         if self._cad_cut_pick is not None and not self._cad._ready:
             self._cancel_cad_cut_pick()
             self._cad_pick_status.setText('CAD-геометрия изменилась; выбор реза отменён.')
@@ -407,6 +510,7 @@ class FixedArmSkeletonDialog(QDialog):
         self._cancel_cad_cut_pick()
         state, generation, project = self._state(), self._cad.generation, self.controller.project
         menu = QMenu(self)
+        inline = menu.addAction('Редактировать эскиз на модели')
         edit = menu.addMenu('Редактировать')
         shape = edit.addAction('Форму и изгиб на проекции…')
         length = edit.addAction('Длину трубы…')
@@ -420,7 +524,9 @@ class FixedArmSkeletonDialog(QDialog):
             if self.snapshot is None or not self.snapshot.matches(self.controller.project):
                 self._refresh()
             return
-        if chosen == shape:
+        if chosen == inline:
+            self._open_inline_sketch(part.removeprefix('tube_'))
+        elif chosen == shape:
             self._cancel_cad_cut_pick()
             leg = part.removeprefix('tube_')
             code = f'bend_{leg}'
@@ -480,7 +586,7 @@ class FixedArmSkeletonDialog(QDialog):
     def _cancel_cad_cut_pick(self) -> None:
         self._cad_cut_pick = None
         if hasattr(self, '_cad_pick_status'):
-            self._cad_pick_status.setText('Выберите трубу на модели и щёлкните правой кнопкой для меню.')
+            self._cad_pick_status.setText('Щёлкните правой кнопкой по трубе для редактирования.')
             self._cad_pick_cancel.setVisible(False)
 
     def _cad_cut_pick_current(self, pick: tuple[str, int, tuple[object, ...], object]) -> bool:
@@ -544,6 +650,7 @@ class FixedArmSkeletonDialog(QDialog):
         skeleton_view = index != self._tabs.count() - 1
         if skeleton_view:
             self._cancel_cad_cut_pick()
+            self._close_inline_sketch()
         self._reset_camera.setVisible(skeleton_view)
         self._point_selection.setVisible(skeleton_view)
         self._selection_status.setVisible(skeleton_view)
@@ -773,6 +880,7 @@ class FixedArmSkeletonDialog(QDialog):
         return spin
 
     def _clear_preview(self) -> None:
+        self._close_inline_sketch()
         self._cancel_cad_cut_pick()
         self._draft = None
         self._trim_buttons()

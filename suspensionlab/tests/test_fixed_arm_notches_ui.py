@@ -24,6 +24,7 @@ def editor(qtbot, monkeypatch):
     monkeypatch.setattr(FixedArmHousingsDialog, 'exec', accept)
     dialog._edit_housings()
     dialog._tabs.setCurrentIndex(4)
+    dialog._advanced_toggle.setChecked(True)
     return controller, dialog
 
 
