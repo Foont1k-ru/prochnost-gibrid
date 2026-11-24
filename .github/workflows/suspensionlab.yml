@@ -61,11 +61,11 @@ jobs:
           QT_SCALE_FACTOR: '1.5'
         run: python -m pytest -q tests/test_kinematics_workspace_ui.py tests/test_cad_handoff_ui.py -k "sidebar or handoff"
       - name: Проверить видимость истории подрезок на Windows
-        run: python -m pytest -q tests/test_free_arm_trim_history_ui.py -k history_buttons
+        run: python scripts/run_pytest_with_diagnostics.py -q tests/test_free_arm_trim_history_ui.py -k history_buttons --junitxml=test-results.xml
       - name: Проверить историю подрезок при масштабе 150%
         env:
           QT_SCALE_FACTOR: '1.5'
-        run: python -m pytest -q tests/test_free_arm_trim_history_ui.py -k history_buttons
+        run: python scripts/run_pytest_with_diagnostics.py -q tests/test_free_arm_trim_history_ui.py -k history_buttons --junitxml=test-results.xml
       - name: Запустить тесты, включая Qt
         run: python -m pytest -q --junitxml=test-results.xml
       - name: Показать ошибки тестов в аннотациях
