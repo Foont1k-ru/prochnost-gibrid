@@ -114,7 +114,9 @@ def test_saved_snapshot_3d_cancels_old_work_when_rebuilt(qtbot, tmp_path, monkey
             self.started.set()
             assert self.release.wait(10)
             x = document["parts"][0]["geometry"]["source"]["coordinates_mm"][2][0]
-            return CadMesh(np.array([[[x, 0, 0], [x, 1, 0], [x, 0, 1]]]), 1)
+            return CadMesh(np.array([[[x, 0, 0], [x, 1, 0], [x, 0, 1]],
+                                     [[x, 2, 0], [x, 3, 0], [x, 2, 1]]]), 2,
+                           part_names=('tube_front', 'tube_rear'), triangle_parts=np.array([0, 1]))
     monkeypatch.setattr(module, "WeldmentCadJob", Job)
     controller = AppController()
     doc = make_scheme_arm_part("arm", "Рычаг", controller.project, 12, 2)

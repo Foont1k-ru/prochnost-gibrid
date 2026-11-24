@@ -24,6 +24,7 @@ from ..core.geometry import (
     link_side_angle,
     mirror_y,
 )
+from .kinematic_elements import KinematicElements
 from .suspension_types import REGISTRY, SuspensionTypeSpec, get_type
 
 #: Текущая версия схемы файла проекта.
@@ -498,6 +499,7 @@ class Axle:
     drivetrain: Drivetrain = field(default_factory=Drivetrain)
     setup: Setup = field(default_factory=Setup)
     travel: Travel = field(default_factory=Travel)
+    kinematic_elements: KinematicElements | None = None
 
     # ------------------------------------------------------------------ тип
     @property
@@ -636,6 +638,8 @@ class Axle:
         }
         if self.layout:
             data["layout"] = self.layout
+        if self.kinematic_elements is not None:
+            data["kinematic_elements"] = self.kinematic_elements.to_dict()
         return data
 
     @classmethod
@@ -659,6 +663,8 @@ class Axle:
         axle.drivetrain.driven = bool(data.get("driven", axle.drivetrain.driven))
         axle.setup = Setup.from_dict(_as_dict(data.get("setup")))
         axle.travel = Travel.from_dict(_as_dict(data.get("travel")))
+        if 'kinematic_elements' in data:
+            axle.kinematic_elements = KinematicElements.from_dict(data['kinematic_elements'])
         axle.ensure_points()
         return axle
 

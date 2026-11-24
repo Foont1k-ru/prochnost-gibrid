@@ -242,6 +242,7 @@ class SetAxleTypeCommand(Command):
         self.new_type = new_type
         self.old_type = axle.type_code
         self.old_layout = axle.layout
+        self.old_kinematic_elements = axle.kinematic_elements
         # Сохраняем сами объекты: более ранние команды ссылаются на них.
         self.old_points = dict(axle.hardpoints)
         self.old_links = dict(axle.links)
@@ -253,6 +254,7 @@ class SetAxleTypeCommand(Command):
         """Устанавливает новый тип и добавляет недостающие точки."""
         self.axle.type_code = self.new_type
         self.axle.layout = REGISTRY[self.new_type].default_layout
+        self.axle.kinematic_elements = None
         if self.new_points is None:
             self.axle.ensure_points()
             self.new_points = dict(self.axle.hardpoints)
@@ -265,6 +267,7 @@ class SetAxleTypeCommand(Command):
         """Возвращает прежний тип и объекты без потери замков и истории."""
         self.axle.type_code = self.old_type
         self.axle.layout = self.old_layout
+        self.axle.kinematic_elements = self.old_kinematic_elements
         self.axle.hardpoints = dict(self.old_points)
         self.axle.links = dict(self.old_links)
 

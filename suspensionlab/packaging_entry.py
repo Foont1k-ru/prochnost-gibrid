@@ -45,10 +45,22 @@ def main() -> int:
         from suspensionlab.core.cad_assembly_projection_worker import main as projection_main
 
         return projection_main(sys.argv[2:])
+    if 7 <= len(sys.argv) <= 10 and sys.argv[1] == "--tube-notch-sequence-worker":
+        from suspensionlab.core.cad_tube_notch_sequence_worker import main as sequence_main
+
+        return sequence_main(sys.argv[2:])
+    if len(sys.argv) == 8 and sys.argv[1] == "--tube-notch-worker":
+        from suspensionlab.core.cad_tube_notch_worker import main as notch_main
+
+        return notch_main(sys.argv[2:])
     if len(sys.argv) == 6 and sys.argv[1] == "--weldment-preview-worker":
         from suspensionlab.core.cad_weldment_worker import main as weldment_main
 
         return weldment_main(sys.argv[2:])
+    if len(sys.argv) in (4, 5) and sys.argv[1] == "--fixed-arm-overlap-worker":
+        from suspensionlab.core.cad_fixed_arm_overlap import main as overlap_main
+
+        return overlap_main(sys.argv[2:])
     from suspensionlab.app import main as app_main
 
     return app_main()

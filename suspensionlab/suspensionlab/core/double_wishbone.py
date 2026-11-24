@@ -57,42 +57,18 @@ class Pose:
         return self.center + self.rotation @ (initial_point - initial_center)
 
 
-class DoubleWishbone:
-    """Пять жёстких связей кулака и заданный вертикальный ход колеса."""
+class RigidFiveLinkSolver:
+    """Общее продолжение твёрдого тела с пятью связями постоянной длины.
 
-    def __init__(self, axle: Axle, side: str = "left") -> None:
-        if axle.type_code != "double_wishbone":
-            raise ValueError("Требуется двухрычажная подвеска")
-        if side not in ("left", "right"):
-            raise ValueError("Сторона должна быть left или right")
-        self.side = side
-        self.sign = 1.0 if side == "left" else -1.0
-        try:
-            self.points = {
-                code: np.array((axle.hardpoints[code].x, self.sign * axle.hardpoints[code].y, axle.hardpoints[code].z), dtype=float)
-                for code in _REQUIRED
-            }
-        except KeyError as error:
-            raise KinematicsError(0, f"отсутствует точка {error.args[0]}") from error
-        if not all(np.all(np.isfinite(point)) for point in self.points.values()):
-            raise KinematicsError(0, "координаты должны быть конечными числами")
-        self.center0 = self.points["wheel_center"].copy()
-        self._pairs = (
-            ("ubj", "uca_f_in"), ("ubj", "uca_r_in"),
-            ("lbj", "lca_f_in"), ("lbj", "lca_r_in"), ("tierod_out", "tierod_in"),
-        )
-        self._local = np.stack([self.points[moving] - self.center0 for moving, _ in self._pairs])
-        self._fixed = np.stack([self.points[fixed] for _, fixed in self._pairs])
-        self._lengths = np.linalg.norm(self._local + self.center0 - self._fixed, axis=1)
-        if np.any(self._lengths < 1e-6):
-            raise KinematicsError(0, "совпадают шарниры связи")
-        for a, b in (("uca_f_in", "uca_r_in"), ("lca_f_in", "lca_r_in")):
-            if np.linalg.norm(self.points[a] - self.points[b]) < 1e-6:
-                raise KinematicsError(0, "внутренние точки оси рычага совпадают")
-        if np.linalg.norm(self.points["ubj"] - self.points["lbj"]) < 1e-6:
-            raise KinematicsError(0, "верхняя и нижняя шаровые совпадают")
-        _, jac = self._system(self.center0, np.eye(3), 0.0)
-        self._condition(jac, 0.0)
+    Подклассы обязаны инициализировать исходные точки, пары и длины, затем
+    проверить ранг якобиана. Сама модель не задаёт тип подвески.
+    """
+
+    center0: Array
+    sign: float
+    _local: Array
+    _fixed: Array
+    _lengths: Array
 
     @staticmethod
     def _condition(jac: Array, travel: float) -> float:
@@ -185,3 +161,41 @@ class DoubleWishbone:
                     pose = self._step(pose, float(value))
                 result[target] = pose
         return [result[float(t)] for t in travels_mm]
+
+
+class DoubleWishbone(RigidFiveLinkSolver):
+    """Пять жёстких связей кулака и заданный вертикальный ход колеса."""
+
+    def __init__(self, axle: Axle, side: str = "left") -> None:
+        if axle.type_code != "double_wishbone":
+            raise ValueError("Требуется двухрычажная подвеска")
+        if side not in ("left", "right"):
+            raise ValueError("Сторона должна быть left или right")
+        self.side = side
+        self.sign = 1.0 if side == "left" else -1.0
+        try:
+            self.points = {
+                code: np.array((axle.hardpoints[code].x, self.sign * axle.hardpoints[code].y, axle.hardpoints[code].z), dtype=float)
+                for code in _REQUIRED
+            }
+        except KeyError as error:
+            raise KinematicsError(0, f"отсутствует точка {error.args[0]}") from error
+        if not all(np.all(np.isfinite(point)) for point in self.points.values()):
+            raise KinematicsError(0, "координаты должны быть конечными числами")
+        self.center0 = self.points["wheel_center"].copy()
+        self._pairs = (
+            ("ubj", "uca_f_in"), ("ubj", "uca_r_in"),
+            ("lbj", "lca_f_in"), ("lbj", "lca_r_in"), ("tierod_out", "tierod_in"),
+        )
+        self._local = np.stack([self.points[moving] - self.center0 for moving, _ in self._pairs])
+        self._fixed = np.stack([self.points[fixed] for _, fixed in self._pairs])
+        self._lengths = np.linalg.norm(self._local + self.center0 - self._fixed, axis=1)
+        if np.any(self._lengths < 1e-6):
+            raise KinematicsError(0, "совпадают шарниры связи")
+        for a, b in (("uca_f_in", "uca_r_in"), ("lca_f_in", "lca_r_in")):
+            if np.linalg.norm(self.points[a] - self.points[b]) < 1e-6:
+                raise KinematicsError(0, "внутренние точки оси рычага совпадают")
+        if np.linalg.norm(self.points["ubj"] - self.points["lbj"]) < 1e-6:
+            raise KinematicsError(0, "верхняя и нижняя шаровые совпадают")
+        _, jac = self._system(self.center0, np.eye(3), 0.0)
+        self._condition(jac, 0.0)

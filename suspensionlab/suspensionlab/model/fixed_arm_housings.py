@@ -1,0 +1,144 @@
+"""Явные параметры двух корпусов; не готовая сборка и не KIMA-документ."""
+from __future__ import annotations
+
+import json
+import math
+from typing import Any
+
+from .welded_arm import weldment_source_matches
+
+PREVIEW_FORMAT = 'suspensionlab-fixed-arm-housing-preview'
+PREVIEW_VERSION = '1'
+
+
+class HousingError(ValueError):
+    """Параметры корпуса отсутствуют или геометрически недопустимы."""
+
+
+def _number(value: Any, *, low: float, high: float) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise HousingError('Введите конечные числовые параметры корпусов')
+    try:
+        number = float(value)
+    except OverflowError as error:
+        raise HousingError('Число вне допустимого диапазона') from error
+    if not math.isfinite(number) or not low <= number <= high:
+        raise HousingError('Число вне допустимого диапазона')
+    return number
+
+
+def validate_housings(value: Any) -> dict[str, Any]:
+    """Два независимых корпуса; центры опор подтверждены явно пользователем.
+
+    Ограничения — программные пределы, не инженерные нормы. Ось может быть
+    произвольной пространственной; её масштаб не влияет на направление.
+    """
+    if not isinstance(value, dict) or set(value) != {'front', 'rear'}:
+        raise HousingError('Нужны параметры обоих корпусов')
+    result: dict[str, Any] = {}
+    for leg, label in (('front', 'Передний'), ('rear', 'Задний')):
+        item = value[leg]
+        if not isinstance(item, dict) or set(item) != {'outer_diameter_mm', 'bore_diameter_mm', 'length_mm',
+                                                    'axis', 'center_on_pivot'}:
+            raise HousingError(f'{label} корпус: неверный набор параметров')
+        if item['center_on_pivot'] is not True:
+            raise HousingError(f'{label} корпус: подтвердите совпадение центра с опорой')
+        outer = _number(item['outer_diameter_mm'], low=0.02, high=20000)
+        bore = _number(item['bore_diameter_mm'], low=0.01, high=20000)
+        length = _number(item['length_mm'], low=0.01, high=20000)
+        if bore >= outer:
+            raise HousingError(f'{label} корпус: диаметр отверстия должен быть меньше наружного')
+        axis = item['axis']
+        if not isinstance(axis, list) or len(axis) != 3:
+            raise HousingError(f'{label} корпус: нужны три компоненты оси')
+        vector = [_number(x, low=-1_000_000, high=1_000_000) for x in axis]
+        if math.hypot(*vector) < 1e-9:
+            raise HousingError(f'{label} корпус: ось не может быть нулевой')
+        result[leg] = {'outer_diameter_mm': outer, 'bore_diameter_mm': bore, 'length_mm': length,
+                       'axis': vector, 'center_on_pivot': True}
+    return result
+
+
+def validate_notches(value: Any) -> dict[str, float]:
+    """Явный радиальный зазор для выбранных пар «ветвь — своя опора»."""
+    if not isinstance(value, dict) or not value or any(leg not in ('front', 'rear') for leg in value):
+        raise HousingError('Выберите ветвь и задайте её радиальный зазор')
+    return {leg: _number(clearance, low=0, high=100) for leg, clearance in value.items()}
+
+
+def validate_tube_joint(value: Any, *, allow_miter: bool = False) -> dict[str, Any]:
+    """Выбранный рез; общий стык разрешён только в новых версиях формата."""
+    if not isinstance(value, dict) or set(value) != {'target', 'radial_clearance_mm'}:
+        raise HousingError('Выберите подрезаемую ветвь и задайте радиальный зазор')
+    if value['target'] not in (('front', 'rear', 'miter') if allow_miter else ('front', 'rear')):
+        raise HousingError('Неизвестная подрезаемая ветвь')
+    clearance = _number(value['radial_clearance_mm'], low=0, high=100)
+    if value['target'] == 'miter' and clearance != 0:
+        raise HousingError('Общий стык пока поддерживает только нулевой зазор')
+    return {'target': value['target'], 'radial_clearance_mm': clearance}
+
+
+def validate_housing_preview(value: Any) -> None:
+    if not isinstance(value, dict):
+        raise HousingError('Неверный временный снимок CAD')
+    version = value.get('version')
+    keys = {'format', 'version', 'name', 'tubes', 'housings'}
+    if version in ('2', '3', '4', '5'):
+        keys.add('notches')
+    if version in ('3', '4'):
+        keys.add('tube_joint')
+    if version == '5':
+        keys.add('ball_housing')
+    if set(value) != keys:
+        raise HousingError('Неверный временный снимок CAD')
+    if (value['format'] != PREVIEW_FORMAT or version not in (PREVIEW_VERSION, '2', '3', '4', '5') or
+            value['name'] != 'Трубы и корпуса — предварительный просмотр'):
+        raise HousingError('Неизвестный временный снимок CAD')
+    try:
+        if not weldment_source_matches(value['tubes']):
+            raise HousingError('Опоры труб не совпадают со снимком')
+        if version not in ('3', '4', '5') or value['housings'] is not None:
+            validate_housings(value['housings'])
+        if version == '2' or (version in ('3', '4', '5') and value['notches'] is not None):
+            if value['housings'] is None:
+                raise HousingError('Для подрезки по корпусу нужны корпуса')
+            validate_notches(value['notches'])
+        if version == '5':
+            from .ball_housing import validate_ball_housing
+
+            validate_ball_housing(value['ball_housing'])
+        if version in ('3', '4'):
+            joint = validate_tube_joint(value['tube_joint'], allow_miter=version == '4')
+            if version == '4' and joint['target'] != 'miter':
+                raise HousingError('Версия общего стыка требует общий рез')
+    except (TypeError, ValueError, KeyError, OverflowError, RecursionError) as error:
+        raise HousingError('Недопустимый снимок труб, корпусов или подрезки') from error
+
+
+def make_housing_preview(tubes: dict[str, Any], housings: dict[str, Any] | None,
+                         notches: dict[str, float] | None = None,
+                         tube_joint: dict[str, Any] | None = None, *,
+                         ball_housing: dict[str, Any] | None = None) -> dict[str, Any]:
+    if ball_housing is not None and tube_joint is not None:
+        raise HousingError('Корпус шаровой нельзя объединить с другим стыком труб')
+    if housings is None and ((tube_joint is None and ball_housing is None) or notches is not None):
+        raise HousingError('Для подрезки по корпусу нужны корпуса')
+    doc: dict[str, Any] = {'format': PREVIEW_FORMAT, 'version': '2' if notches else PREVIEW_VERSION,
+                           'name': 'Трубы и корпуса — предварительный просмотр',
+                           'tubes': tubes, 'housings': validate_housings(housings) if housings is not None else None}
+    if ball_housing is not None:
+        from .ball_housing import validate_ball_housing
+
+        doc['version'] = '5'
+        doc['notches'] = validate_notches(notches) if notches is not None else None
+        doc['ball_housing'] = validate_ball_housing(ball_housing)
+    elif tube_joint is not None:
+        validated_joint = validate_tube_joint(tube_joint, allow_miter=True)
+        doc['version'] = '4' if validated_joint['target'] == 'miter' else '3'
+        doc['notches'] = validate_notches(notches) if notches is not None else None
+        doc['tube_joint'] = validated_joint
+    elif notches is not None:
+        doc['version'] = '2'
+        doc['notches'] = validate_notches(notches)
+    validate_housing_preview(doc)
+    return json.loads(json.dumps(doc, ensure_ascii=False, allow_nan=False))

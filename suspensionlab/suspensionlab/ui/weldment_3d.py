@@ -1,13 +1,27 @@
 """Асинхронный частичный просмотр двух труб; старые результаты не показываются."""
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from typing import Any
 
-from PySide6.QtCore import QThread, QTimer, Signal
-from PySide6.QtWidgets import QCheckBox, QComboBox, QLabel, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtCore import QPoint, Qt, QThread, QTimer, Signal
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QSplitter,
+    QTreeWidget,
+    QTreeWidgetItem,
+    QVBoxLayout,
+    QWidget,
+)
 
+from ..core.cad_document_cache import CacheKey, DocumentMeshCache, document_key
 from ..core.cad_mesh import CadMesh
+from ..core.cad_preview_parts import preview_parts
 from ..core.cad_transport import CadPreviewError
 from ..core.cad_weldment_job import WeldmentCadJob
 from ..i18n import tr
@@ -36,12 +50,14 @@ class _TubeReader(QThread):
 
 class Weldment3D(QWidget):
     availabilityChanged = Signal(bool)
+    partPicked = Signal(str)
+    partContextRequested = Signal(str, QPoint)
 
     def __init__(self, parent: QWidget | None = None, *,
                  is_current: Callable[[dict[str, Any]], bool] | None = None,
                  single_tube: bool = False, four_tubes: bool = False, joint: bool = False,
                  joint_layout: bool = False, rear_joint_layout: bool = False,
-                 scheme_part: bool = False) -> None:
+                 scheme_part: bool = False, fixed_skeleton: bool = False) -> None:
         super().__init__(parent)
         self._is_current = is_current
         self._single_tube = single_tube
@@ -50,9 +66,15 @@ class Weldment3D(QWidget):
         self._joint_layout = joint_layout
         self._rear_joint_layout = rear_joint_layout
         self._scheme_part = scheme_part
+        self._fixed_skeleton = fixed_skeleton
+        self._workspace_compact = False
         self._document: dict[str, Any] | None = None
         self._pending: dict[str, Any] | None = None
         self._worker: _TubeReader | None = None
+        self._mesh_cache = DocumentMeshCache()
+        self._active_key: CacheKey | None = None
+        self._active_cache_hit = False
+        self._pending_force = False
         self._ready = False
         self._closed = False
         self.generation = 0
@@ -61,7 +83,8 @@ class Weldment3D(QWidget):
         self._timer.setInterval(250)
         self._timer.timeout.connect(self._start)
         layout = QVBoxLayout(self)
-        enable_key = ("scheme_part_3d.enable" if scheme_part else
+        enable_key = ("weldment_3d.fixed_enable" if fixed_skeleton else
+                      "scheme_part_3d.enable" if scheme_part else
                       "rear_joint_layout.cad_enable" if rear_joint_layout else
                       "front_joint_layout.cad_enable" if joint_layout else "joint_concept.cad_enable" if joint else
                       "front_pair.cad_enable" if four_tubes else
@@ -69,9 +92,9 @@ class Weldment3D(QWidget):
         self._enable = QCheckBox(tr(enable_key), self)
         self._enable.toggled.connect(self._toggle)
         layout.addWidget(self._enable)
-        quality_label = QLabel(tr("weldment_3d.quality_label"), self)
-        quality_label.setWordWrap(True)
-        layout.addWidget(quality_label)
+        self._quality_label = QLabel(tr("weldment_3d.quality_label"), self)
+        self._quality_label.setWordWrap(True)
+        layout.addWidget(self._quality_label)
         self._quality = QComboBox(self)
         self._quality.setAccessibleName(tr("weldment_3d.quality_accessible"))
         self._quality.addItem(tr("weldment_3d.quality_smooth"), 0.2)
@@ -82,7 +105,33 @@ class Weldment3D(QWidget):
         self._status.setWordWrap(True)
         layout.addWidget(self._status)
         self._view = CadPreview(self, empty_text_key="weldment_3d.empty")
-        layout.addWidget(self._view, 1)
+        self._parts_panel = QWidget(self)
+        parts_layout = QVBoxLayout(self._parts_panel)
+        parts_layout.setContentsMargins(0, 0, 0, 0)
+        self._parts_filter = QLineEdit(self._parts_panel)
+        self._parts_filter.setPlaceholderText(tr("weldment_3d.parts_filter"))
+        self._parts_filter.setAccessibleName(tr("weldment_3d.parts_filter"))
+        parts_layout.addWidget(self._parts_filter)
+        self._parts_tree = QTreeWidget(self._parts_panel)
+        self._parts_tree.setHeaderLabels([tr("weldment_3d.parts_header")])
+        self._parts_tree.setMinimumWidth(170)
+        parts_layout.addWidget(self._parts_tree, 1)
+        hint = QLabel(tr("weldment_3d.parts_hint"), self._parts_panel)
+        hint.setWordWrap(True)
+        parts_layout.addWidget(hint)
+        self._parts_panel.hide()
+        self._parts_filter.textChanged.connect(self._filter_parts)
+        self._parts_tree.currentItemChanged.connect(self._select_tree_part)
+        self._view.triangle_picked.connect(self._pick_tree_part)
+        if self._fixed_skeleton:
+            self._view.set_context_enabled(True)
+            self._view.context_triangle_picked.connect(lambda index: self._pick_tree_part(index, notify=False))
+            self._view.context_requested.connect(self._context_requested)
+        split = QSplitter(Qt.Orientation.Horizontal, self)
+        split.addWidget(self._parts_panel)
+        split.addWidget(self._view)
+        split.setStretchFactor(1, 1)
+        layout.addWidget(split, 1)
         self._retry = QPushButton(tr("weldment_3d.retry"), self)
         self._retry.setEnabled(False)
         self._retry.clicked.connect(self._restart)
@@ -91,6 +140,16 @@ class Weldment3D(QWidget):
         self._reset.clicked.connect(self._view.reset_camera)
         layout.addWidget(self._reset)
 
+    def set_workspace_compact(self, compact: bool) -> None:
+        """Свернуть второстепенные элементы, оставляя управление CAD доступным."""
+        self._workspace_compact = compact
+        self._quality_label.setVisible(not compact)
+        self._quality.setVisible(not compact)
+        # Rebuild must remain available even when the secondary controls are folded.
+        self._retry.setVisible(True)
+        self._reset.setVisible(not compact)
+        self._parts_panel.setVisible(not compact and self._parts_tree.topLevelItemCount() > 0)
+
     def can_save(self) -> bool:
         return not self._closed and (not self._enable.isChecked() or self._ready)
 
@@ -98,18 +157,23 @@ class Weldment3D(QWidget):
         self._schedule()
 
     def _restart(self) -> None:
-        self._schedule()
+        self._schedule(force=True)
 
     def set_document(self, document: dict[str, Any] | None) -> None:
         self._document = document
         self._schedule()
 
-    def _schedule(self, *_args: object) -> None:
+    def _schedule(self, *_args: object, force: bool = False) -> None:
         self.generation += 1
         self._ready = False
+        self._active_key = None
+        self._active_cache_hit = False
+        self._pending_force = force
         self._pending = None
         self._timer.stop()
+        self._view.set_markers(())
         self._view.set_mesh(None)
+        self._clear_parts()
         self._retry.setEnabled(False)
         if self._worker is not None:
             self._worker.job.cancel()
@@ -121,7 +185,25 @@ class Weldment3D(QWidget):
             self._status.setText(tr("weldment_3d.no_data"))
         else:
             self._pending = self._document
-            building_key = ("scheme_part_3d.building" if self._scheme_part else
+            building_key = ("weldment_3d.free_joint_building" if self._fixed_skeleton and
+                            self._document.get('format') == 'suspensionlab-free-arm' and
+                            self._document.get('version') == '5' else
+                            "weldment_3d.free_miter_building" if self._fixed_skeleton and
+                            self._document.get('format') == 'suspensionlab-free-arm' and
+                            self._document.get('version') == '4' else
+                            "weldment_3d.free_inner_building" if self._fixed_skeleton and
+                            self._document.get('format') == 'suspensionlab-free-arm' and
+                            self._document.get('version') == '3' else
+                            "weldment_3d.free_housing_building" if self._fixed_skeleton and
+                            self._document.get('format') == 'suspensionlab-free-arm' and
+                            self._document.get('version') == '2' else
+                            "weldment_3d.fixed_joint_building" if self._fixed_skeleton and
+                            self._document.get('format') == 'suspensionlab-fixed-arm-housing-preview' and
+                            self._document.get('tube_joint') else
+                            "weldment_3d.fixed_housing_building" if self._fixed_skeleton and
+                            self._document.get('format') == 'suspensionlab-fixed-arm-housing-preview' else
+                            "weldment_3d.fixed_building" if self._fixed_skeleton else
+                            "scheme_part_3d.building" if self._scheme_part else
                             "rear_joint_layout.cad_building" if self._rear_joint_layout else
                             "front_joint_layout.cad_building" if self._joint_layout else
                             "joint_concept.cad_building" if self._joint else
@@ -135,7 +217,24 @@ class Weldment3D(QWidget):
         if self._worker is not None or self._pending is None or self._closed:
             return
         document, self._pending = self._pending, None
-        worker = _TubeReader(document, self.generation, self, float(self._quality.currentData()))
+        if self._is_current is not None and not self._is_current(document):
+            self._failed(self.generation, 'changed')
+            return
+        deviation = float(self._quality.currentData())
+        key = document_key(document, deviation)
+        self._active_key = key
+        if key is not None:
+            if self._pending_force:
+                self._mesh_cache.discard(key)
+            else:
+                cached = self._mesh_cache.get(key)
+                if cached is not None:
+                    self._active_cache_hit = True
+                    self._completed(self.generation, cached)
+                    return
+            # Worker receives a detached snapshot, not a mutable caller-owned object.
+            document = json.loads(key[0])
+        worker = _TubeReader(document, self.generation, self, deviation)
         self._worker = worker
         worker.completed.connect(self._completed)
         worker.failed.connect(self._failed)
@@ -148,34 +247,194 @@ class Weldment3D(QWidget):
         if self._is_current is not None and not self._is_current(self._document):
             self._failed(token, "changed")
             return
+        if self._active_key is not None:
+            deviation = float(self._quality.currentData())
+            if (document_key(self._document, deviation) != self._active_key or
+                    (not self._active_cache_hit and
+                     (self._worker is None or self._worker.token != token or
+                      document_key(self._worker.document, deviation) != self._active_key))):
+                self._failed(token, "changed")
+                return
         if not isinstance(mesh, CadMesh) or mesh.skipped_faces or mesh.recovered_faces:
             self._failed(token, "mesh")
             return
+        descriptors = preview_parts(self._document)
+        if descriptors:
+            identifiers = tuple(part.identifier for part in descriptors)
+            try:
+                if mesh.triangle_parts is None or mesh.part_names != identifiers or not mesh.all_parts_present():
+                    self._failed(token, "output")
+                    return
+            except MemoryError:
+                self._failed(token, "memory")
+                return
+        if self._active_key is not None and not self._active_cache_hit:
+            self._mesh_cache.put(self._active_key, mesh)
         self._view.set_mesh(mesh)
+        self._populate_parts(mesh)
         self._ready = True
         self._retry.setEnabled(True)
-        ready_key = ("scheme_part_3d.ready" if self._scheme_part else
+        ready_key = ("weldment_3d.free_joint_ready" if self._fixed_skeleton and
+                     self._document.get('format') == 'suspensionlab-free-arm' and
+                     self._document.get('version') == '5' else
+                     "weldment_3d.free_miter_ready" if self._fixed_skeleton and
+                     self._document.get('format') == 'suspensionlab-free-arm' and
+                     self._document.get('version') == '4' else
+                     "weldment_3d.free_inner_ready" if self._fixed_skeleton and
+                     self._document.get('format') == 'suspensionlab-free-arm' and
+                     self._document.get('version') == '3' else
+                     "weldment_3d.fixed_ball_housing_ready" if self._fixed_skeleton and
+                     ((self._document.get('format') == 'suspensionlab-fixed-arm-housing-preview' and
+                       self._document.get('ball_housing') is not None) or
+                      (self._document.get('format') == 'suspensionlab-free-arm' and
+                       (self._document.get('version') == '2' or
+                        (self._document.get('version') == '3' and self._document.get('ball_housing') is not None)))) else
+                     "weldment_3d.fixed_miter_ready" if self._fixed_skeleton and
+                     self._document.get('format') == 'suspensionlab-fixed-arm-housing-preview' and
+                     (self._document.get('tube_joint') or {}).get('target') == 'miter' else
+                     "weldment_3d.fixed_tube_joint_ready" if self._fixed_skeleton and
+                     self._document.get('format') == 'suspensionlab-fixed-arm-housing-preview' and
+                     self._document.get('tube_joint') else
+                     "weldment_3d.fixed_notch_ready" if self._fixed_skeleton and
+                     self._document.get('format') == 'suspensionlab-fixed-arm-housing-preview' and
+                     self._document.get('notches') else
+                     "weldment_3d.fixed_housing_ready" if self._fixed_skeleton and
+                     self._document.get('format') == 'suspensionlab-fixed-arm-housing-preview' else
+                     "scheme_part_3d.ready" if self._scheme_part else
                      "rear_joint_layout.cad_ready" if self._rear_joint_layout else
                      "front_joint_layout.cad_ready" if self._joint_layout else
                      "joint_concept.cad_ready" if self._joint else
                      "front_pair.cad_ready" if self._four_tubes else
                      "rear_tube.cad_ready" if self._single_tube else "weldment_3d.ready")
-        self._status.setText(tr(ready_key, triangles=len(mesh.triangles)))
+        status = tr(ready_key, triangles=len(mesh.triangles))
+        if self._active_cache_hit:
+            status += ' ' + tr('weldment_3d.cache_reused')
+        self._status.setText(status)
         self.availabilityChanged.emit(self.can_save())
+
+    def _clear_parts(self) -> None:
+        blocked = self._parts_tree.blockSignals(True)
+        self._parts_tree.clear()
+        self._parts_tree.blockSignals(blocked)
+        self._parts_filter.clear()
+        self._parts_panel.hide()
+
+    def _populate_parts(self, mesh: CadMesh) -> None:
+        self._clear_parts()
+        if self._document is None or mesh.triangle_parts is None:
+            return
+        descriptors = preview_parts(self._document)
+        if not descriptors:
+            return
+        root = QTreeWidgetItem([self._document.get('name', tr('weldment_3d.parts_root'))])
+        self._parts_tree.addTopLevelItem(root)
+        for index, part in enumerate(descriptors):
+            name = part.name or tr(part.label_key)
+            item = QTreeWidgetItem([f"{name} · {part.identifier}"])
+            item.setData(0, Qt.ItemDataRole.UserRole, index)
+            item.setToolTip(0, item.text(0))
+            root.addChild(item)
+        root.setExpanded(True)
+        self._parts_tree.setCurrentItem(root)
+        self._parts_panel.setVisible(not self._workspace_compact)
+
+    def _filter_parts(self, text: str) -> None:
+        root = self._parts_tree.topLevelItem(0)
+        if root is None:
+            return
+        if self._is_current is not None and self._document is not None and not self._is_current(self._document):
+            self._failed(self.generation, "changed")
+            return
+        query = text.strip().casefold()
+        for index in range(root.childCount()):
+            item = root.child(index)
+            if item is not None:
+                item.setHidden(bool(query) and query not in item.text(0).casefold())
+        selected = self._parts_tree.currentItem()
+        if selected is not None and selected.isHidden():
+            self._parts_tree.setCurrentItem(root)
+        root.setExpanded(True)
+
+    def _select_tree_part(self, item: QTreeWidgetItem | None, _previous: QTreeWidgetItem | None) -> None:
+        mesh = self._view.mesh
+        if mesh is None or self._document is None or not preview_parts(self._document) or mesh.triangle_parts is None:
+            return
+        if self._is_current is not None and self._document is not None and not self._is_current(self._document):
+            self._failed(self.generation, "changed")
+            return
+        index = item.data(0, Qt.ItemDataRole.UserRole) if item is not None else None
+        highlight = mesh.triangle_parts == index if type(index) is int and 0 <= index < len(mesh.part_names) else None
+        self._view.set_mesh(mesh, highlight)
+
+    def _pick_tree_part(self, index: int, *, notify: bool = True) -> None:
+        mesh = self._view.mesh
+        root = self._parts_tree.topLevelItem(0)
+        if (mesh is None or root is None or mesh.triangle_parts is None or
+                not 0 <= index < len(mesh.triangles)):
+            return
+        if self._is_current is not None and self._document is not None and not self._is_current(self._document):
+            self._failed(self.generation, "changed")
+            return
+        group = int(mesh.triangle_parts[index])
+        if 0 <= group < root.childCount():
+            item = root.child(group)
+            if item is not None:
+                if item.isHidden():
+                    self._parts_filter.clear()
+                self._parts_tree.setCurrentItem(item)
+                if notify:
+                    self.partPicked.emit(mesh.part_names[group])
+
+    def _context_requested(self, position: QPoint) -> None:
+        mesh = self._view.mesh
+        item = self._parts_tree.currentItem()
+        if not self._ready or mesh is None or item is None or self._document is None:
+            return
+        if self._is_current is not None and not self._is_current(self._document):
+            self._failed(self.generation, 'changed')
+            return
+        index = item.data(0, Qt.ItemDataRole.UserRole)
+        if type(index) is int and 0 <= index < len(mesh.part_names):
+            self.partContextRequested.emit(mesh.part_names[index], position)
 
     def _failed(self, token: int, code: str) -> None:
         if token != self.generation or self._closed:
             return
         known = {"missing_cad", "timeout", "cancelled", "start", "crash", "mesh", "memory",
                  "missing_face", "coordinates", "no_faces", "no_shape", "output", "unexpected", "changed"}
-        if code not in known:
+        notch_errors = {f'{prefix}_{leg}_{reason}' for prefix in ('notch', 'tube_joint')
+                        for leg in ('front', 'rear') for reason in ('no_overlap', 'empty_or_split', 'failed')}
+        notch_errors.add('tube_joint_miter_failed')
+        known.add('ball_housing_failed')
+        if code not in known and code not in notch_errors:
             code = "unexpected"
         self._ready = False
         self._view.set_mesh(None)
+        self._clear_parts()
         self._retry.setEnabled(self._document is not None and self._enable.isChecked())
         specific = {"timeout", "memory", "changed"}
-        reason = tr(f"weldment_3d.error_{code}") if code in specific else tr(f"cad_preview.error.{code}")
-        failed_key = ("scheme_part_3d.failed" if self._scheme_part else
+        if code == 'ball_housing_failed':
+            reason = ('Центральный корпус или подрезка труб не построены. Проверьте размеры, ось, '
+                      'смещение и форму труб. Предыдущая геометрия не показана.')
+        elif code == 'tube_joint_miter_failed':
+            reason = ('Общий стык на ус не построен: проверьте форму, угол и длину прямых участков труб '
+                      'или отключите этот рез. Предыдущая геометрия не показана.')
+        elif code in notch_errors:
+            is_joint = code.startswith('tube_joint_')
+            leg, error = code.removeprefix('tube_joint_' if is_joint else 'notch_').split('_', 1)
+            branch = 'Передняя ветвь' if leg == 'front' else 'Задняя ветвь'
+            other = 'другой трубой' if is_joint else 'корпусом'
+            explanation = {'no_overlap': f'нет существенного пересечения с {other}',
+                           'empty_or_split': 'труба удалена полностью или разрезана на части',
+                           'failed': ('геометрический результат подрезки по другой трубе не прошёл проверку'
+                                      if is_joint else 'геометрический результат не прошёл проверку')}[error]
+            reason = f'{branch}: {explanation}. Измените параметры или отключите подрезку этой ветви.'
+        else:
+            reason = tr(f"weldment_3d.error_{code}") if code in specific else tr(f"cad_preview.error.{code}")
+        failed_key = ("weldment_3d.free_failed" if self._fixed_skeleton and self._document is not None and
+                      self._document.get('format') == 'suspensionlab-free-arm' else
+                      "weldment_3d.fixed_failed" if self._fixed_skeleton else
+                      "scheme_part_3d.failed" if self._scheme_part else
                       "rear_joint_layout.cad_failed" if self._rear_joint_layout else
                       "front_joint_layout.cad_failed" if self._joint_layout else "weldment_3d.failed")
         self._status.setText(tr(failed_key, reason=reason))
@@ -193,6 +452,7 @@ class Weldment3D(QWidget):
         if not self._closed:
             self._closed = True
             self._schedule()
+            self._mesh_cache.clear()
         if self._worker is None:
             return True
         self._worker.job.cancel()

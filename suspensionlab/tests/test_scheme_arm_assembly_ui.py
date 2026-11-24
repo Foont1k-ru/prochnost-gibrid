@@ -1,6 +1,7 @@
 """Сборка рычага из отдельных файлов: создание, открытие, безопасность."""
 from copy import deepcopy
 
+import pytest
 from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import QDialog, QFileDialog, QMessageBox
 
@@ -810,6 +811,119 @@ def test_snapshot_code_updates_even_for_equal_boolean_and_number(qtbot):
     d.close()
 
 
+def test_material_estimate_follows_snapshot_without_saving_density(qtbot, tmp_path):
+    from suspensionlab.model.assembly_material_estimate import assembly_part_volumes
+    from suspensionlab.model.kim_format import read_document, write_document
+    from suspensionlab.model.scheme_arm_assembly import edit_assembly_part, make_plate, set_assembly_plate
+
+    c = AppController()
+    initial = make_doc(c)
+    d = SchemeArmAssemblyDialog(c, initial)
+    qtbot.addWidget(d)
+    d._saved = deepcopy(d.document)
+    view = d.material_estimate
+    assert view.density.text() == ''
+    assert 'только объёмы' in view.status.text()
+    assert 'tube_front' in view.result.toPlainText() and 'кг' not in view.result.toPlainText()
+    view.density.setText('7850')
+    assert 'Сумма условных масс' in view.result.toPlainText()
+    total = sum(p.volume_mm3 for p in assembly_part_volumes(initial))
+    assert f'{total * 7850 / 1e9:.3f} кг' in view.result.toPlainText()
+    assert d.document == initial and not c.dirty
+    view.density.setText('nan')
+    assert not view.result.toPlainText() and 'Проверьте плотность' in view.status.text()
+    view.density.setText('7,85e3')
+    assert 'Сумма условных масс' in view.result.toPlainText()
+    # The editor can change before a view refresh: do not calculate stale data.
+    d.document = edit_assembly_part(d.document, 'housing_front',
+                                     {'outer_radius_mm': 14, 'bore_radius_mm': 7, 'length_mm': 40})
+    view.density.setText('7800')
+    assert not view.result.toPlainText() and 'изменился' in view.status.text()
+    d._show_document()
+    assert view.density.text() == '7800' and 'Сумма условных масс' in view.result.toPlainText()
+    d.document = set_assembly_plate(d.document, make_plate(60, 50, 5, 10),
+                                     {'normal': 'z', 'offset_mm': [0, 0, 0]})
+    d._show_document()
+    assert 'ball_plate' in view.result.toPlainText()
+    path = tmp_path / 'assembly.kima'
+    write_document(path, 'assembly', d.document, overwrite=False)
+    assert read_document(path, 'assembly') == d.document
+    assert 'density' not in d.document
+    d._saved = deepcopy(d.document)
+    d.close()
+
+
+def test_compare_and_copy_snapshot_code_without_cad(qtbot):
+    from PySide6.QtWidgets import QApplication
+
+    from suspensionlab.model.assembly_snapshot_fingerprint import assembly_snapshot_fingerprint
+
+    c = AppController()
+    doc = make_doc(c)
+    d = SchemeArmAssemblyDialog(c, doc)
+    qtbot.addWidget(d)
+    d._saved = deepcopy(d.document)
+    view = d.cad_views
+    before = deepcopy(d.document)
+    code = assembly_snapshot_fingerprint(doc)
+    assert not view.enable.isChecked() and view.copy_code.isEnabled()
+    view.copy_code.click()
+    assert QApplication.clipboard().text() == code
+    assert 'устареет' in view.comparison_status.text()
+    view.comparison_input.setText('  ' + code.upper() + '  ')
+    assert not view.comparison_status.text()
+    view.compare_code.click()
+    assert 'Коды совпадают' in view.comparison_status.text()
+    assert 'не содержимое SVG' in view.comparison_status.text()
+    other = ('0' if code[0] != '0' else '1') + code[1:]
+    view.comparison_input.setText(other)
+    assert not view.comparison_status.text()
+    view.compare_code.click()
+    assert 'Коды различаются' in view.comparison_status.text()
+    for bad in ('', code[:63], code + '0', code[:10] + ' ' + code[10:], 'а' + code[1:]):
+        view.comparison_input.setText(bad)
+        view.compare_code.click()
+        assert '64 шестнадцатеричных' in view.comparison_status.text()
+    assert d.document == before and not c.dirty
+    d.close()
+
+
+def test_compare_snapshot_code_rejects_stale_document_and_clears_result(qtbot):
+    from PySide6.QtWidgets import QApplication
+
+    from suspensionlab.model.assembly_snapshot_fingerprint import assembly_snapshot_fingerprint
+
+    c = AppController()
+    d = SchemeArmAssemblyDialog(c, make_doc(c))
+    qtbot.addWidget(d)
+    d._saved = deepcopy(d.document)
+    view = d.cad_views
+    original = deepcopy(d.document)
+    code = assembly_snapshot_fingerprint(original)
+    view.comparison_input.setText(code)
+    view.compare_code.click()
+    assert 'Коды совпадают' in view.comparison_status.text()
+    # Even if Python treats True and 1 as equal, the current-document guard
+    # rejects a changed fingerprint before the widgets are refreshed.
+    d.document['scheme']['front_axle']['arb']['enabled'] = 1
+    assert d.document == original
+    view.compare_code.click()
+    assert 'изменился' in view.comparison_status.text()
+    QApplication.clipboard().setText('unchanged')
+    view.copy_code.click()
+    assert QApplication.clipboard().text() == 'unchanged'
+    d._saved = deepcopy(d.document)
+    d._show_document()
+    assert not view.comparison_status.text()
+    view.compare_code.click()
+    assert 'Коды различаются' in view.comparison_status.text()
+    view.copy_code.click()
+    assert QApplication.clipboard().text() == assembly_snapshot_fingerprint(d.document)
+    d.close()
+    view._compare_snapshot_code()
+    assert 'недоступен' in view.comparison_status.text()
+
+
 def test_export_refuses_equal_but_differently_fingerprinted_snapshot(qtbot, tmp_path, monkeypatch):
     from suspensionlab.core.cad_assembly_projection_job import CadAssemblyProjection
 
@@ -854,4 +968,599 @@ def test_delayed_projection_rejected_when_snapshot_changes_without_refresh(qtbot
                                                    (0., 0., 0., 2., 3., 4.)))
     assert view.canvas.projection is None and not view.export_button.isEnabled()
     assert 'снимок изменился' in view.status.text()
+    d.close()
+
+
+def test_tube_notch_preview_stale_result_selection_and_shutdown(qtbot, monkeypatch):
+    from threading import Event
+
+    from suspensionlab.core.cad_assembly_projection_job import CadAssemblyProjection
+    from suspensionlab.core.cad_tube_notch_job import TubeNotchPreview
+    from suspensionlab.ui import tube_notch_preview
+
+    entered, release = Event(), Event()
+    calls = []
+    lines = (((0., 0., 1., 1.),),) * 3
+    projection = CadAssemblyProjection(lines, (0., 0., 0., 2., 3., 4.))
+    result = TubeNotchPreview(projection, projection, projection, projection)
+
+    class FakeJob:
+        def run(self, doc, tube, housing, *, radial_clearance_mm=0.):
+            calls.append((tube, housing))
+            if len(calls) == 1:
+                entered.set()
+                assert release.wait(5)
+            return result
+        def cancel(self):
+            pass  # Force the first reply to arrive after selection changed.
+
+    monkeypatch.setattr(tube_notch_preview, 'TubeNotchPreviewJob', FakeJob)
+    c = AppController()
+    d = SchemeArmAssemblyDialog(c, make_doc(c))
+    qtbot.addWidget(d)
+    monkeypatch.setattr(d, '_confirm_close', lambda: True)
+    view = d.notch_preview
+    d.tabs.setCurrentWidget(view)
+    d.show()
+    assert not view.enable.isChecked() and view.canvas.result is None
+    view.enable.setChecked(True)
+    view._timer.stop()
+    view._start()
+    try:
+        assert entered.wait(3)
+        generation = view.generation
+        view.only_tube.setChecked(True)
+        assert view.generation == generation and view.canvas.tube_only
+        view.tube.setCurrentIndex(1)
+        view.housing.setCurrentIndex(1)
+        assert view.canvas.result is None
+    finally:
+        release.set()
+    qtbot.waitUntil(lambda: len(calls) == 2 and view.canvas.result is result, timeout=5000)
+    assert calls == [('tube_front', 'housing_front'), ('tube_rear', 'housing_rear')]
+    generation = view.generation
+    view.plane.setCurrentIndex(1)
+    assert view.canvas.plane == 'XZ' and view.generation == generation and view.canvas.result is result
+    assert not view.canvas.grab().toImage().isNull()
+    view.enable.setChecked(False)
+    assert view.canvas.result is None and 'Выключено' in view.status.text()
+    d._saved = deepcopy(d.document)
+    d.close()
+    assert view._closed and view.shutdown()
+
+
+def test_tube_notch_preview_failure_does_not_modify_assembly(qtbot, monkeypatch):
+    from suspensionlab.core.cad_transport import CadPreviewError
+    from suspensionlab.ui import tube_notch_preview
+
+    class FakeJob:
+        def run(self, doc, tube, housing, *, radial_clearance_mm=0.):
+            raise CadPreviewError('no_overlap')
+        def cancel(self):
+            pass
+
+    monkeypatch.setattr(tube_notch_preview, 'TubeNotchPreviewJob', FakeJob)
+    c = AppController()
+    d = SchemeArmAssemblyDialog(c, make_doc(c))
+    qtbot.addWidget(d)
+    original = deepcopy(d.document)
+    view = d.notch_preview
+    view.enable.setChecked(True)
+    view._timer.stop()
+    view._start()
+    qtbot.waitUntil(lambda: 'не пересекаются' in view.status.text(), timeout=5000)
+    assert view.canvas.result is None and view.retry.isEnabled() and d.document == original
+    d._saved = deepcopy(d.document)
+    d.close()
+    assert view._closed
+
+
+def test_tube_notch_plate_selection_and_removal_clears_stale_result(qtbot, monkeypatch):
+    from threading import Event
+
+    from suspensionlab.core.cad_assembly_projection_job import CadAssemblyProjection
+    from suspensionlab.core.cad_transport import CadPreviewError
+    from suspensionlab.core.cad_tube_notch_job import TubeNotchPreview
+    from suspensionlab.model.scheme_arm_assembly import make_plate, set_assembly_plate
+    from suspensionlab.ui import tube_notch_preview
+
+    entered, release = Event(), Event()
+    calls = []
+    lines = (((0., 0., 1., 1.),),) * 3
+    projection = CadAssemblyProjection(lines, (0., 0., 0., 2., 3., 4.))
+    result = TubeNotchPreview(projection, projection, projection, projection)
+
+    class FakeJob:
+        def run(self, doc, tube, cutter, *, radial_clearance_mm=0.):
+            calls.append((doc['version'], tube, cutter))
+            if len(calls) == 1:
+                entered.set()
+                assert release.wait(5)
+            if doc['version'] != '0.16':
+                raise CadPreviewError('missing_plate')
+            return result
+        def cancel(self):
+            pass
+
+    monkeypatch.setattr(tube_notch_preview, 'TubeNotchPreviewJob', FakeJob)
+    c = AppController()
+    doc = set_assembly_plate(make_doc(c), make_plate(60, 60, 5, 9),
+                             {'normal': 'y', 'offset_mm': [0, 0, 0]})
+    d = SchemeArmAssemblyDialog(c, doc)
+    qtbot.addWidget(d)
+    monkeypatch.setattr(d, '_confirm_close', lambda: True)
+    view = d.notch_preview
+    view.housing.setCurrentIndex(view.housing.findData('ball_plate'))
+    view.enable.setChecked(True)
+    view._timer.stop()
+    view._start()
+    try:
+        assert entered.wait(3)
+        d.document = set_assembly_plate(d.document, None)
+        d._show_document()
+        assert view.canvas.result is None
+    finally:
+        release.set()
+    qtbot.waitUntil(lambda: 'пластина не добавлена' in view.status.text(), timeout=5000)
+    assert view.canvas.result is None and view.retry.isEnabled()
+    assert calls == [('0.16', 'tube_front', 'ball_plate'), ('0.15', 'tube_front', 'ball_plate')]
+    d.document = doc
+    d._show_document()
+    qtbot.waitUntil(lambda: view.canvas.result is result, timeout=5000)
+    assert 'изменений не видно' in view.status.text()
+    assert d.document == doc
+    d._saved = deepcopy(d.document)
+    d.close()
+    assert view._closed
+
+
+def test_tube_to_tube_selection_prevents_self_cut_and_ignores_old_result(qtbot, monkeypatch):
+    from threading import Event
+
+    from suspensionlab.core.cad_assembly_projection_job import CadAssemblyProjection
+    from suspensionlab.core.cad_tube_notch_job import TubeNotchPreview
+    from suspensionlab.ui import tube_notch_preview
+
+    entered, release = Event(), Event()
+    calls = []
+    projection = CadAssemblyProjection((((0., 0., 1., 1.),),) * 3, (0., 0., 0., 2., 3., 4.))
+    result = TubeNotchPreview(projection, projection, projection, projection)
+
+    class FakeJob:
+        def run(self, doc, tube, cutter, *, radial_clearance_mm=0.):
+            calls.append((tube, cutter))
+            if len(calls) == 1:
+                entered.set()
+                assert release.wait(5)
+            return result
+        def cancel(self):
+            pass
+
+    monkeypatch.setattr(tube_notch_preview, 'TubeNotchPreviewJob', FakeJob)
+    c = AppController()
+    d = SchemeArmAssemblyDialog(c, make_doc(c))
+    qtbot.addWidget(d)
+    monkeypatch.setattr(d, '_confirm_close', lambda: True)
+    original = deepcopy(d.document)
+    view = d.notch_preview
+    view.housing.setCurrentIndex(view.housing.findData('tube_rear'))
+    view.enable.setChecked(True)
+    view._timer.stop()
+    view._start()
+    try:
+        assert entered.wait(3)
+        view.tube.setCurrentIndex(view.tube.findData('tube_rear'))
+        assert view.canvas.result is None and 'самой собой' in view.status.text()
+        assert view._pending is None and not view.retry.isEnabled()
+    finally:
+        release.set()
+    qtbot.waitUntil(lambda: view._worker is None, timeout=5000)
+    assert view.canvas.result is None and calls == [('tube_front', 'tube_rear')]
+    view.housing.setCurrentIndex(view.housing.findData('tube_front'))
+    qtbot.waitUntil(lambda: view.canvas.result is result, timeout=5000)
+    assert calls == [('tube_front', 'tube_rear'), ('tube_rear', 'tube_front')]
+    assert d.document == original
+    d._saved = deepcopy(d.document)
+    d.close()
+    assert view._closed
+
+
+def test_notch_only_tube_mode_switches_without_recalculation(qtbot, monkeypatch):
+    from suspensionlab.core.cad_assembly_projection_job import CadAssemblyProjection
+    from suspensionlab.core.cad_tube_notch_job import TubeNotchPreview
+    from suspensionlab.ui import tube_notch_preview
+
+    lines = (((0., 0., 1., 1.),),) * 3
+    different = (((0., 1., 1., 0.),),) * 3
+    bounds = (0., 0., 0., 2., 3., 4.)
+    pair = CadAssemblyProjection(lines, bounds)
+    tube_before = CadAssemblyProjection(lines, bounds)
+    tube_after = CadAssemblyProjection(different, bounds)
+    result = TubeNotchPreview(pair, pair, tube_before, tube_after)
+    calls = []
+
+    class FakeJob:
+        def run(self, doc, tube, cutter, *, radial_clearance_mm=0.):
+            calls.append((tube, cutter))
+            return result
+        def cancel(self):
+            pass
+
+    monkeypatch.setattr(tube_notch_preview, 'TubeNotchPreviewJob', FakeJob)
+    c = AppController()
+    d = SchemeArmAssemblyDialog(c, make_doc(c))
+    qtbot.addWidget(d)
+    monkeypatch.setattr(d, '_confirm_close', lambda: True)
+    view = d.notch_preview
+    d.tabs.setCurrentWidget(view)
+    d.show()
+    view.enable.setChecked(True)
+    view._timer.stop()
+    view._start()
+    qtbot.waitUntil(lambda: view.canvas.result is result, timeout=5000)
+    assert 'пара деталей' in view.status.text() and 'изменений не видно' in view.status.text()
+    pair_image = view.canvas.grab().toImage()
+    generation = view.generation
+    view.only_tube.setChecked(True)
+    assert view.canvas.tube_only and 'режущая деталь скрыта' in view.status.text()
+    assert 'изменений не видно' not in view.status.text()
+    assert view.generation == generation and calls == [('tube_front', 'housing_front')]
+    assert view.canvas.grab().toImage() != pair_image
+    view.plane.setCurrentIndex(1)
+    assert view.canvas.plane == 'XZ' and view.generation == generation
+    view.only_tube.setChecked(False)
+    assert not view.canvas.tube_only and view.generation == generation
+    assert view.canvas.result is result and calls == [('tube_front', 'housing_front')]
+    view.enable.setChecked(False)
+    assert view.canvas.result is None
+    d._saved = deepcopy(d.document)
+    d.close()
+    assert view._closed
+
+
+def test_notch_sequence_order_changes_invalidate_stale_results(qtbot, monkeypatch):
+    from threading import Event
+
+    from PySide6.QtCore import Qt
+
+    from suspensionlab.core.cad_assembly_projection_job import CadAssemblyProjection
+    from suspensionlab.core.cad_tube_notch_sequence_job import SequencePreview, SequenceStagePreview
+    from suspensionlab.ui import tube_notch_sequence_preview
+
+    entered, release = Event(), Event()
+    calls = []
+    lines = (((0., 0., 1., 1.),),) * 3
+    class FakeJob:
+        def run(self, doc, tube, cutters):
+            calls.append((tube, cutters))
+            if len(calls) == 1:
+                entered.set()
+                assert release.wait(5)
+            bounds = (0., 0., 0., 2., 3., 4.) if cutters[0] == 'tube_rear' else (0., 0., 0., 9., 9., 9.)
+            before = CadAssemblyProjection(lines, bounds)
+            return SequencePreview(before, tuple(SequenceStagePreview(c, before, before, before, 10 - i, 9 - i, 1)
+                                                 for i, c in enumerate(cutters)))
+        def cancel(self):
+            pass  # Force an obsolete reply after cancellation.
+
+    monkeypatch.setattr(tube_notch_sequence_preview, 'SequencePreviewJob', FakeJob)
+    c = AppController()
+    d = SchemeArmAssemblyDialog(c, make_doc(c))
+    qtbot.addWidget(d)
+    monkeypatch.setattr(d, '_confirm_close', lambda: True)
+    view = d.notch_sequence
+    d.tabs.setCurrentWidget(view)
+    d.show()
+    view.cutters.item(0).setCheckState(Qt.CheckState.Checked)  # front housing
+    view.cutters.item(4).setCheckState(Qt.CheckState.Checked)  # rear tube
+    view.enable.setChecked(True)
+    view._timer.stop()
+    view._start()
+    try:
+        assert entered.wait(3)
+        view.cutters.setCurrentRow(4)
+        for _ in range(4):
+            view.up.click()
+        assert view._order() == ('tube_rear', 'housing_front') and view.canvas.result is None
+    finally:
+        release.set()
+    qtbot.waitUntil(lambda: len(calls) == 2 and view.canvas.result is not None, timeout=5000)
+    assert calls == [('tube_front', ('housing_front', 'tube_rear')),
+                     ('tube_front', ('tube_rear', 'housing_front'))]
+    assert view.canvas.result.before.bounds_mm == (0., 0., 0., 2., 3., 4.)
+    assert 'только выбранная труба' in view.status.text()
+    generation = view.generation
+    view.plane.setCurrentIndex(1)
+    assert view.canvas.plane == 'XZ' and view.generation == generation
+    assert not view.canvas.grab().toImage().isNull()
+    view.enable.setChecked(False)
+    assert view.canvas.result is None and 'Выключено' in view.status.text()
+    d._saved = deepcopy(d.document)
+    d.close()
+    assert view._closed
+
+
+def test_notch_sequence_reports_failing_step_and_never_shows_partial(qtbot, monkeypatch):
+    from PySide6.QtCore import Qt
+
+    from suspensionlab.core.cad_tube_notch_sequence_job import SequencePreviewError
+    from suspensionlab.ui import tube_notch_sequence_preview
+
+    class FakeJob:
+        def run(self, doc, tube, cutters):
+            raise SequencePreviewError('no_overlap', 1, cutters[1])
+        def cancel(self):
+            pass
+    monkeypatch.setattr(tube_notch_sequence_preview, 'SequencePreviewJob', FakeJob)
+    c = AppController()
+    d = SchemeArmAssemblyDialog(c, make_doc(c))
+    qtbot.addWidget(d)
+    view = d.notch_sequence
+    original = deepcopy(d.document)
+    view.cutters.item(0).setCheckState(Qt.CheckState.Checked)
+    view.cutters.item(1).setCheckState(Qt.CheckState.Checked)
+    view.enable.setChecked(True)
+    view._timer.stop()
+    view._start()
+    qtbot.waitUntil(lambda: 'Шаг 2' in view.status.text(), timeout=5000)
+    assert 'Задний корпус' in view.status.text() and 'пересечения' in view.status.text()
+    assert 'Частичный результат не показан' in view.status.text() and view.canvas.result is None
+    assert not view.volumes.text()
+    assert view.retry.isEnabled() and d.document == original
+    d._saved = deepcopy(d.document)
+    d.close()
+    assert view._closed
+
+
+def test_notch_sequence_rejects_snapshot_changed_without_refresh(qtbot):
+    from PySide6.QtCore import Qt
+
+    from suspensionlab.core.cad_assembly_projection_job import CadAssemblyProjection
+    from suspensionlab.core.cad_tube_notch_sequence_job import SequencePreview, SequenceStagePreview
+
+    c = AppController()
+    d = SchemeArmAssemblyDialog(c, make_doc(c))
+    qtbot.addWidget(d)
+    view = d.notch_sequence
+    view.cutters.item(0).setCheckState(Qt.CheckState.Checked)
+    view.enable.setChecked(True)
+    view._timer.stop()
+    token = view.generation
+    d.document['scheme']['front_axle']['arb']['enabled'] = 1
+    p = CadAssemblyProjection((((0., 0., 1., 1.),),) * 3, (0., 0., 0., 2., 3., 4.))
+    view._completed(token, SequencePreview(p, (SequenceStagePreview('housing_front', p, p, p, 10, 9, 1),)))
+    assert view.canvas.result is None and 'снимок изменился' in view.status.text()
+    d._saved = deepcopy(d.document)
+    d.close()
+    assert view._closed
+
+
+def test_notch_sequence_shutdown_cancels_running_worker(qtbot, monkeypatch):
+    from threading import Event
+
+    from PySide6.QtCore import Qt
+
+    from suspensionlab.core.cad_transport import CadPreviewError
+    from suspensionlab.ui import tube_notch_sequence_preview
+
+    entered, stopped = Event(), Event()
+    class FakeJob:
+        def run(self, doc, tube, cutters):
+            entered.set()
+            assert stopped.wait(5)
+            raise CadPreviewError('cancelled')
+        def cancel(self):
+            stopped.set()
+    monkeypatch.setattr(tube_notch_sequence_preview, 'SequencePreviewJob', FakeJob)
+    c = AppController()
+    d = SchemeArmAssemblyDialog(c, make_doc(c))
+    qtbot.addWidget(d)
+    view = d.notch_sequence
+    view.cutters.item(0).setCheckState(Qt.CheckState.Checked)
+    view.enable.setChecked(True)
+    view._timer.stop()
+    view._start()
+    try:
+        assert entered.wait(3)
+        d._saved = deepcopy(d.document)
+        d.close()
+        assert view._closed and stopped.is_set()
+    finally:
+        stopped.set()
+        view.shutdown()
+
+
+def test_notch_sequence_switches_stages_without_new_calculation(qtbot, monkeypatch):
+    from PySide6.QtCore import Qt
+
+    from suspensionlab.core.cad_assembly_projection_job import CadAssemblyProjection
+    from suspensionlab.core.cad_tube_notch_sequence_job import SequencePreview, SequenceStagePreview
+    from suspensionlab.ui import tube_notch_sequence_preview
+
+    calls = []
+    bounds = (0., 0., 0., 2., 3., 4.)
+    before = CadAssemblyProjection((((0., 0., 1., 1.),),) * 3, bounds)
+    first = CadAssemblyProjection((((0., 1., 1., 0.),),) * 3, bounds)
+    final = CadAssemblyProjection((((0., 0., 1., 0.),),) * 3, bounds)
+    class FakeJob:
+        def run(self, doc, tube, cutters):
+            calls.append((tube, cutters))
+            return SequencePreview(before, (SequenceStagePreview(cutters[0], first, before, first, 100, 90, 10),
+                                            SequenceStagePreview(cutters[1], final, first, final, 90, 70, 20)))
+        def cancel(self):
+            pass
+
+    monkeypatch.setattr(tube_notch_sequence_preview, 'SequencePreviewJob', FakeJob)
+    c = AppController()
+    d = SchemeArmAssemblyDialog(c, make_doc(c))
+    qtbot.addWidget(d)
+    monkeypatch.setattr(d, '_confirm_close', lambda: True)
+    view = d.notch_sequence
+    d.tabs.setCurrentWidget(view)
+    d.show()
+    view.cutters.item(0).setCheckState(Qt.CheckState.Checked)
+    view.cutters.item(4).setCheckState(Qt.CheckState.Checked)
+    view.enable.setChecked(True)
+    view._timer.stop()
+    view._start()
+    qtbot.waitUntil(lambda: view.canvas.result is not None, timeout=5000)
+    assert view.stage.isEnabled() and view.stage.count() == 2 and view.stage.currentIndex() == 1
+    assert 'итог' in view.stage.currentText() and 'шага 2 из 2' in view.status.text()
+    assert 'до шага 90; после 70; удалено на шаге 20; всего по этот шаг включительно 30' in view.volumes.text()
+    assert view.canvas.result.after is final and view.canvas.after_title == 'Шаг 2'
+    final_image = view.canvas.grab().toImage()
+    generation = view.generation
+    view.stage.setCurrentIndex(0)
+    assert view.canvas.result.before is before and view.canvas.result.after is first
+    assert view.canvas.after_title == 'Шаг 1' and 'шага 1 из 2' in view.status.text()
+    assert 'до шага 100; после 90; удалено на шаге 10; всего по этот шаг включительно 10' in view.volumes.text()
+    assert 'Передний корпус' in view.status.text()
+    assert view.generation == generation and calls == [('tube_front', ('housing_front', 'tube_rear'))]
+    assert view.canvas.grab().toImage() != final_image
+    view.show_pair.setChecked(True)
+    assert not view.canvas.tube_only and view.canvas.before_title == 'До 1' and view.canvas.after_title == 'После 1'
+    assert view.canvas.result.before is before and view.canvas.result.after is first
+    assert 'непосредственно до и после шага 1' in view.status.text()
+    view.stage.setCurrentIndex(1)
+    assert view.canvas.result.before is first and view.canvas.result.after is final
+    assert 'предыдущие резы уже учтены' in view.status.text()
+    assert view.canvas.before_title == 'До 2' and view.canvas.after_title == 'После 2'
+    assert 'до шага 90; после 70; удалено на шаге 20; всего по этот шаг включительно 30' in view.volumes.text()
+    assert view.generation == generation and len(calls) == 1
+    view.show_pair.setChecked(False)
+    assert view.canvas.tube_only and view.canvas.result.tube_before is before
+    assert view.canvas.result.tube_after is final and view.canvas.before_title == 'Исходная'
+    view.plane.setCurrentIndex(1)
+    assert view.generation == generation and view.canvas.plane == 'XZ'
+    view.enable.setChecked(False)
+    assert view.canvas.result is None and view.stage.count() == 0 and not view.stage.isEnabled()
+    assert not view.volumes.text()
+    d._saved = deepcopy(d.document)
+    d.close()
+
+
+@pytest.mark.parametrize("action", ["stage", "pair", "plane"])
+def test_notch_sequence_stage_change_rejects_silently_changed_snapshot(qtbot, monkeypatch, action):
+    from PySide6.QtCore import Qt
+
+    from suspensionlab.core.cad_assembly_projection_job import CadAssemblyProjection
+    from suspensionlab.core.cad_tube_notch_sequence_job import SequencePreview, SequenceStagePreview
+    from suspensionlab.ui import tube_notch_sequence_preview
+
+    p = CadAssemblyProjection((((0., 0., 1., 1.),),) * 3, (0., 0., 0., 2., 3., 4.))
+    class FakeJob:
+        def run(self, doc, tube, cutters):
+            return SequencePreview(p, tuple(SequenceStagePreview(c, p, p, p, 10 - i, 9 - i, 1) for i, c in enumerate(cutters)))
+        def cancel(self):
+            pass
+    monkeypatch.setattr(tube_notch_sequence_preview, 'SequencePreviewJob', FakeJob)
+    c = AppController()
+    d = SchemeArmAssemblyDialog(c, make_doc(c))
+    qtbot.addWidget(d)
+    view = d.notch_sequence
+    view.cutters.item(0).setCheckState(Qt.CheckState.Checked)
+    view.cutters.item(4).setCheckState(Qt.CheckState.Checked)
+    view.enable.setChecked(True)
+    view._timer.stop()
+    view._start()
+    qtbot.waitUntil(lambda: view.canvas.result is not None, timeout=5000)
+    d.document['scheme']['front_axle']['arb']['enabled'] = 1
+    if action == 'stage':
+        view.stage.setCurrentIndex(0)
+    elif action == 'pair':
+        view.show_pair.setChecked(True)
+    else:
+        view.plane.setCurrentIndex(1)
+    assert view.canvas.result is None and 'снимок изменился' in view.status.text()
+    assert view.stage.count() == 0 and not view.stage.isEnabled()
+    assert not view.volumes.text()
+    d._saved = deepcopy(d.document)
+    d.close()
+
+
+def test_housing_clearance_edit_cancels_old_preview_and_is_housing_only(qtbot, monkeypatch):
+    from threading import Event
+
+    from suspensionlab.core.cad_assembly_projection_job import CadAssemblyProjection
+    from suspensionlab.core.cad_tube_notch_job import TubeNotchPreview
+    from suspensionlab.ui import tube_notch_preview
+
+    entered, release = Event(), Event()
+    calls, cancelled = [], []
+    p = CadAssemblyProjection((((0., 0., 1., 1.),),) * 3, (0., 0., 0., 2., 3., 4.))
+    first = TubeNotchPreview(p, p, p, p)
+    second = TubeNotchPreview(p, p, p, p)
+    class FakeJob:
+        def run(self, doc, tube, cutter, *, radial_clearance_mm=0.):
+            calls.append((tube, cutter, radial_clearance_mm))
+            if len(calls) == 1:
+                entered.set()
+                assert release.wait(5)
+                return first
+            return second
+        def cancel(self):
+            cancelled.append(True)
+
+    monkeypatch.setattr(tube_notch_preview, 'TubeNotchPreviewJob', FakeJob)
+    c = AppController()
+    d = SchemeArmAssemblyDialog(c, make_doc(c))
+    qtbot.addWidget(d)
+    original = deepcopy(d.document)
+    view = d.notch_preview
+    assert view.clearance.text() == '0' and view.clearance.isEnabled()
+    view.enable.setChecked(True)
+    view._timer.stop()
+    view._start()
+    try:
+        assert entered.wait(3)
+        view.clearance.setText('1,5')
+        assert cancelled and view.canvas.result is None
+    finally:
+        release.set()
+    qtbot.waitUntil(lambda: view.canvas.result is second, timeout=5000)
+    assert calls[:2] == [('tube_front', 'housing_front', 0.), ('tube_front', 'housing_front', 1.5)]
+    assert 'Радиальный зазор корпуса: 1,5 мм' in view.status.text()
+    generation = view.generation
+    view.only_tube.setChecked(True)
+    view.plane.setCurrentIndex(1)
+    assert view.generation == generation and len(calls) == 2
+    view.housing.setCurrentIndex(view.housing.findData('tube_rear'))
+    assert not view.clearance.isEnabled() and view.canvas.result is None
+    qtbot.waitUntil(lambda: len(calls) == 3 and view.canvas.result is second, timeout=5000)
+    assert calls[-1] == ('tube_front', 'tube_rear', 0.) and 'зазор не применяется' in view.status.text()
+    view.housing.setCurrentIndex(view.housing.findData('housing_front'))
+    assert view.clearance.isEnabled() and view.clearance.text() == '1,5'
+    for bad in ('', '-1', 'nan', '101', '1,2,3'):
+        view.clearance.setText(bad)
+        assert view.canvas.result is None and view._pending is None and 'от 0 до 100' in view.status.text()
+    assert len(calls) == 3 and d.document == original
+    d._saved = deepcopy(d.document)
+    d.close()
+    assert view._closed
+
+
+def test_single_notch_view_mode_change_rejects_silently_changed_snapshot(qtbot, monkeypatch):
+    from suspensionlab.core.cad_assembly_projection_job import CadAssemblyProjection
+    from suspensionlab.core.cad_tube_notch_job import TubeNotchPreview
+    from suspensionlab.ui import tube_notch_preview
+
+    p = CadAssemblyProjection((((0., 0., 1., 1.),),) * 3, (0., 0., 0., 2., 3., 4.))
+    class FakeJob:
+        def run(self, doc, tube, cutter, *, radial_clearance_mm=0.):
+            return TubeNotchPreview(p, p, p, p)
+        def cancel(self):
+            pass
+    monkeypatch.setattr(tube_notch_preview, 'TubeNotchPreviewJob', FakeJob)
+    c = AppController()
+    d = SchemeArmAssemblyDialog(c, make_doc(c))
+    qtbot.addWidget(d)
+    view = d.notch_preview
+    view.enable.setChecked(True)
+    view._timer.stop()
+    view._start()
+    qtbot.waitUntil(lambda: view.canvas.result is not None, timeout=5000)
+    d.document['scheme']['front_axle']['arb']['enabled'] = 1
+    view.only_tube.setChecked(True)
+    assert view.canvas.result is None and 'снимок изменился' in view.status.text()
+    d._saved = deepcopy(d.document)
     d.close()

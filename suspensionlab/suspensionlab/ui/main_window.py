@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 from .. import APP_NAME, __version__
 from ..config import diagnostic_log_path, log_file_path, settings_path
 from ..i18n import tr
+from ..model.cad_handoff import CadHandoff, HandoffError
 from ..model.project_io import ProjectIOError
 from ..model.session_arm_assembly import SessionArmAssembly
 from ..model.suspension_types import types_for_role
@@ -44,8 +45,11 @@ from .docks.diagnostics import DiagnosticsPanel
 from .docks.inspector import Inspector
 from .docks.project_tree import ProjectTree
 from .equilibrium_dialog import EquilibriumDialog
+from .fixed_arm_skeleton_dialog import FixedArmSkeletonDialog
+from .free_arm_dialog import FreeArmDialog
 from .front_tubes_dialog import FrontTubesDialog
 from .joint_concept_dialog import JointConceptDialog
+from .kinematics_workspace import KinematicsWorkspace
 from .niva_arms_dialog import NivaArmsDialog
 from .point_table_dialog import PointTableDialog
 from .rear_tube_dialog import RearTubeDialog
@@ -75,6 +79,8 @@ class MainWindow(QMainWindow):
         self._rear_tube_dialog: RearTubeDialog | None = None
         self._niva_arms_dialog: NivaArmsDialog | None = None
         self._arm_concept_dialog: ArmConceptDialog | None = None
+        self._fixed_arm_skeleton_dialog: FixedArmSkeletonDialog | None = None
+        self._free_arm_dialog: FreeArmDialog | None = None
         self._weldment_dialog: WeldmentDialog | None = None
         self._theme = str(self._settings.value("view/theme", self.controller.project.view.theme))
 
@@ -130,6 +136,9 @@ class MainWindow(QMainWindow):
             self._tabs.addTab(canvas, tr(f"view.tab.{key}"))
         self._vehicle_view = VehicleSchematicView(self.controller, self._tabs)
         self._tabs.addTab(self._vehicle_view, tr("vehicle_schematic.tab"))
+        self._kinematics = KinematicsWorkspace(self.controller, self._tabs)
+        self._kinematics.cadHandoffRequested.connect(self._open_fixed_arm_handoff)
+        self._tabs.addTab(self._kinematics, "Кинематика 3D")
         self._tabs.currentChanged.connect(lambda _index: self._update_status())
 
         self._stack.addWidget(self._empty)
@@ -341,6 +350,86 @@ class MainWindow(QMainWindow):
         if dialog is not None:
             dialog.deleteLater()
 
+    def _open_arm_workspace(self) -> None:
+        box = QMessageBox(self)
+        box.setObjectName('arm_workspace_start')
+        box.setWindowTitle('Эксперимент: редактор рычага')
+        box.setText('Выберите источник для редактора рычага.')
+        box.setInformativeText(
+            'По расчётному снимку: снимок переднего левого нижнего рычага фиксируется отдельно '
+            'в редакторе из текущего проекта. С нуля: три опоры задаются вручную, проект не используется. '
+            'Это пока разные редакторы и форматы .slarm; преобразования между ними нет. '
+            'Если выбранный редактор уже открыт, его данные сохраняются.'
+        )
+        snapshot = box.addButton('По расчётному снимку', QMessageBox.ButtonRole.AcceptRole)
+        snapshot.setObjectName('arm_workspace_snapshot')
+        independent = box.addButton('С нуля по трём точкам', QMessageBox.ButtonRole.AcceptRole)
+        independent.setObjectName('arm_workspace_independent')
+        cancel = box.addButton('Отмена', QMessageBox.ButtonRole.RejectRole)
+        cancel.setObjectName('arm_workspace_cancel')
+        box.setDefaultButton(cancel)
+        box.exec()
+        chosen = box.clickedButton()
+        if chosen is snapshot:
+            self._open_fixed_arm_skeleton()
+        elif chosen is independent:
+            self._open_free_arm()
+
+    def _open_free_arm(self) -> None:
+        if self._free_arm_dialog is None:
+            dialog = FreeArmDialog(self)
+            self._free_arm_dialog = dialog
+            dialog.finished.connect(self._close_free_arm)
+        self._free_arm_dialog.show()
+        self._free_arm_dialog.raise_()
+        self._free_arm_dialog.activateWindow()
+
+    def _close_free_arm(self, _result: int) -> None:
+        dialog = self._free_arm_dialog
+        self._free_arm_dialog = None
+        if dialog is not None:
+            dialog.deleteLater()
+
+    def _open_fixed_arm_skeleton(self) -> None:
+        if self._fixed_arm_skeleton_dialog is None:
+            dialog = FixedArmSkeletonDialog(self.controller, self)
+            self._fixed_arm_skeleton_dialog = dialog
+            dialog.finished.connect(self._close_fixed_arm_skeleton)
+        self._fixed_arm_skeleton_dialog.show()
+        self._fixed_arm_skeleton_dialog.raise_()
+        self._fixed_arm_skeleton_dialog.activateWindow()
+
+    def _open_fixed_arm_handoff(self, handoff: CadHandoff) -> None:
+        if self._fixed_arm_skeleton_dialog is not None:
+            QMessageBox.information(self, 'Передача в CAD',
+                                    'Редактор скелета уже открыт. Его данные не заменены; закройте его и повторите передачу.')
+            self._fixed_arm_skeleton_dialog.raise_()
+            self._fixed_arm_skeleton_dialog.activateWindow()
+            return
+        dialog = FixedArmSkeletonDialog(self.controller, self)
+        try:
+            dialog.accept_handoff(handoff)
+        except HandoffError as error:
+            if dialog.shutdown():
+                dialog.deleteLater()
+            else:
+                self._fixed_arm_skeleton_dialog = dialog
+                dialog.finished.connect(self._close_fixed_arm_skeleton)
+                dialog.show()
+            QMessageBox.warning(self, 'Передача в CAD', str(error))
+            return
+        self._fixed_arm_skeleton_dialog = dialog
+        dialog.finished.connect(self._close_fixed_arm_skeleton)
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def _close_fixed_arm_skeleton(self, _result: int) -> None:
+        dialog = self._fixed_arm_skeleton_dialog
+        self._fixed_arm_skeleton_dialog = None
+        if dialog is not None:
+            dialog.deleteLater()
+
     def _open_weldment(self) -> None:
         if self._weldment_dialog is None:
             dialog = WeldmentDialog(self.controller, self)
@@ -449,6 +538,13 @@ class MainWindow(QMainWindow):
         self.action_arm_concept = QAction(tr("arm_concept.menu"), self)
         self.action_arm_concept.triggered.connect(self._open_arm_concept)
 
+        self.action_arm_workspace = QAction("Эксперимент: редактор рычага — выбрать источник…", self)
+        self.action_arm_workspace.triggered.connect(self._open_arm_workspace)
+        self.action_fixed_arm_skeleton = QAction("Эксперимент: скелет рычага по расчётному снимку…", self)
+        self.action_fixed_arm_skeleton.triggered.connect(self._open_fixed_arm_skeleton)
+        self.action_free_arm = QAction("Эксперимент: независимый рычаг по трём точкам…", self)
+        self.action_free_arm.triggered.connect(self._open_free_arm)
+
         self.action_weldment = QAction(tr("weldment.menu"), self)
         self.action_weldment.triggered.connect(self._open_weldment)
 
@@ -542,17 +638,13 @@ class MainWindow(QMainWindow):
         menu_file.addAction(self.action_open)
         menu_file.addAction(self.action_step_inventory)
         menu_file.addAction(self.action_cad_preview)
-        menu_file.addAction(self.action_cad_registration)
-        menu_file.addAction(self.action_sketch_draft)
-        menu_file.addAction(self.action_niva_arms)
-        menu_file.addAction(self.action_joint_concept)
-        menu_file.addAction(self.action_front_tubes)
-        menu_file.addAction(self.action_rear_tube)
-        menu_file.addAction(self.action_arm_concept)
-        menu_file.addAction(self.action_new_scheme_assembly)
-        menu_file.addAction(self.action_open_scheme_assembly)
-        menu_file.addAction(self.action_scheme_arm_part)
-        menu_file.addAction(self.action_weldment)
+        experiments = menu_file.addMenu(tr("workspace_flow.experiments_menu"))
+        for action in (self.action_cad_registration, self.action_sketch_draft, self.action_niva_arms,
+                       self.action_joint_concept, self.action_front_tubes, self.action_rear_tube,
+                       self.action_arm_concept, self.action_arm_workspace, self.action_fixed_arm_skeleton, self.action_free_arm,
+                       self.action_new_scheme_assembly, self.action_open_scheme_assembly,
+                       self.action_scheme_arm_part, self.action_weldment):
+            experiments.addAction(action)
         menu_file.addAction(self.action_recover_autosave)
         menu_file.addAction(self.action_allow_autosave)
         menu_file.addAction(self.action_templates)
@@ -701,6 +793,11 @@ class MainWindow(QMainWindow):
         state = self._settings.value("window/state")
         if state is not None:
             self.restoreState(state)
+        else:
+            # The focused suspension workspace already contains its own editor.
+            # Advanced panels remain available from View and user layouts are preserved.
+            for dock in (self._tree_dock, self._inspector_dock, self._diagnostics_dock):
+                dock.hide()
 
     def _sync_unit_combos(self, units: UnitSettings) -> None:
         """Приводит выпадающие списки единиц в соответствие с настройками."""
@@ -860,6 +957,7 @@ class MainWindow(QMainWindow):
         """Новый пустой проект."""
         if self._confirm_discard_changes():
             self.controller.new_project()
+            self._tabs.setCurrentWidget(self._kinematics)
             self._show_workspace()
 
     def _new_from_template(self) -> None:
@@ -871,11 +969,11 @@ class MainWindow(QMainWindow):
             project = dialog.selected_project()
             if project is not None:
                 self.controller.new_project(project=project)
-                self._tabs.setCurrentWidget(self._vehicle_view)
+                self._tabs.setCurrentWidget(self._kinematics)
                 self._show_workspace()
             elif dialog.selected_key():
                 self.controller.new_project(dialog.selected_key())
-                self._tabs.setCurrentWidget(self._vehicle_view)
+                self._tabs.setCurrentWidget(self._kinematics)
                 self._show_workspace()
 
     def _open_project(self) -> None:
@@ -892,6 +990,7 @@ class MainWindow(QMainWindow):
         except ProjectIOError as error:
             self._show_error(error)
             return
+        self._tabs.setCurrentWidget(self._kinematics)
         self._show_workspace()
 
     def _recover_autosave(self) -> None:
@@ -1018,18 +1117,24 @@ class MainWindow(QMainWindow):
     def _fit_active_view(self) -> None:
         if self._tabs.currentWidget() is self._vehicle_view:
             self._vehicle_view.preview.reset_camera()
+        elif self._tabs.currentWidget() is self._kinematics:
+            self._kinematics.preview.reset_camera()
         else:
             self._current_canvas().fit_to_view()
 
     def _zoom_active_view(self, factor: float) -> None:
         if self._tabs.currentWidget() is self._vehicle_view:
             self._vehicle_view.zoom_by(factor)
+        elif self._tabs.currentWidget() is self._kinematics:
+            view = self._kinematics.preview
+            view.zoom = max(0.2, min(8.0, view.zoom * factor))
+            view.update()
         else:
             self._current_canvas().zoom_by(factor)
 
     def _set_view_mode(self, mode: str) -> None:
         """Переключает проекцию на всех вкладках и в меню."""
-        if self._tabs.currentWidget() is self._vehicle_view:
+        if self._tabs.currentWidget() in (self._vehicle_view, self._kinematics):
             self._tabs.setCurrentWidget(self._canvases["both"])
         self._syncing_view = True
         try:
@@ -1157,6 +1262,12 @@ class MainWindow(QMainWindow):
         if self._weldment_dialog is not None and not self._weldment_dialog.confirm_close():
             event.ignore()
             return
+        if self._fixed_arm_skeleton_dialog is not None and not self._fixed_arm_skeleton_dialog.confirm_close():
+            event.ignore()
+            return
+        if self._free_arm_dialog is not None and not self._free_arm_dialog.confirm_close():
+            event.ignore()
+            return
         if self._joint_concept_dialog is not None and not self._joint_concept_dialog.confirm_close():
             event.ignore()
             return
@@ -1167,11 +1278,14 @@ class MainWindow(QMainWindow):
             event.ignore()
             return
         arm_stopped = self._arm_concept_dialog is None or self._arm_concept_dialog.shutdown()
+        fixed_arm_stopped = self._fixed_arm_skeleton_dialog is None or self._fixed_arm_skeleton_dialog.shutdown()
+        free_arm_stopped = self._free_arm_dialog is None or self._free_arm_dialog.shutdown()
         weldment_stopped = self._weldment_dialog is None or self._weldment_dialog.shutdown()
         rear_stopped = self._rear_tube_dialog is None or self._rear_tube_dialog.shutdown()
         front_stopped = self._front_tubes_dialog is None or self._front_tubes_dialog.shutdown()
         joint_stopped = self._joint_concept_dialog is None or self._joint_concept_dialog.shutdown()
-        if not arm_stopped or not weldment_stopped or not rear_stopped or not front_stopped or not joint_stopped:
+        if (not arm_stopped or not fixed_arm_stopped or not free_arm_stopped or not weldment_stopped or
+                not rear_stopped or not front_stopped or not joint_stopped):
             event.ignore()
             return
         self._save_settings()

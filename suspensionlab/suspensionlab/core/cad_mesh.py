@@ -78,6 +78,32 @@ class CadMesh:
             object.__setattr__(self, "triangle_instances", instances)
             object.__setattr__(self, "instance_groups", tuple(int(x) for x in parents))
 
+    def all_parts_present(self) -> bool:
+        """Проверка групп предварительного CAD без прохода по сетке для каждой детали.
+
+        CadMesh уже проверил диапазон и тип индексов. Для малого числа групп
+        оставляем простой путь: построение гистограммы там может быть дороже.
+        Для больших сборок ограничиваем временный int64-массив размером чанка.
+        """
+        parts = self.triangle_parts
+        if parts is None:
+            return False
+        count = len(self.part_names)
+        if count <= 8:
+            return all((parts == index).any() for index in range(count))
+        found = np.zeros(count, dtype=bool)
+        try:
+            for start in range(0, len(parts), 100_000):
+                bins = np.bincount(parts[start:start + 100_000], minlength=count)
+                if len(bins) != count:
+                    return False
+                found |= bins > 0
+                if found.all():
+                    return True
+        except ValueError:
+            return False
+        return False
+
     def isolated_instance(self, instance: int) -> CadMesh:
         """Отфильтровать один предварительно распознанный экземпляр."""
         if self.triangle_instances is None or not 0 < instance < len(self.instance_groups):
@@ -103,8 +129,9 @@ class CadMesh:
         return center, max(radius, 1.)
 
 
-def project_points(triangles: np.ndarray, center: np.ndarray, yaw: float, elevation: float) -> tuple[np.ndarray, np.ndarray]:
-    """Проекция заранее центрированной камеры без повторного вычисления границ."""
+def project_points_depth(triangles: np.ndarray, center: np.ndarray, yaw: float,
+                         elevation: float) -> tuple[np.ndarray, np.ndarray]:
+    """Проекция и средняя глубина без сортировки, в исходном порядке треугольников."""
     if not np.isfinite(yaw) or not np.isfinite(elevation):
         raise ValueError("Углы камеры должны быть конечными")
     points = triangles - center
@@ -113,6 +140,12 @@ def project_points(triangles: np.ndarray, center: np.ndarray, yaw: float, elevat
     x, y, z = points[:, :, 0], points[:, :, 1], points[:, :, 2]
     projected = np.stack((cy * x + sy * y, -sy * se * x + cy * se * y + ce * z), axis=-1)
     distance = (sy * ce * x - cy * ce * y + se * z).mean(axis=1)
+    return projected, distance
+
+
+def project_points(triangles: np.ndarray, center: np.ndarray, yaw: float, elevation: float) -> tuple[np.ndarray, np.ndarray]:
+    """Проекция заранее центрированной камеры без повторного вычисления границ."""
+    projected, distance = project_points_depth(triangles, center, yaw, elevation)
     return projected, np.argsort(distance, kind="stable")
 
 
