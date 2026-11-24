@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSplitter,
     QTabWidget,
     QVBoxLayout,
@@ -285,18 +286,21 @@ class FreeArmDialog(QDialog):
             self._fields[key].setEnabled(False)
             notch.toggled.connect(self._update_inner_controls)
         self._inner_check.toggled.connect(self._update_inner_controls)
-        self._trim_undo = QPushButton('Отменить принятую подрезку', panel)
+        self._trim_undo = QPushButton('Назад: подрезки', panel)
         self._trim_undo.setObjectName('free_arm_trim_undo')
+        self._trim_undo.setAccessibleName('Отменить последний принятый шаг подрезок')
         self._trim_undo.setAutoDefault(False)
-        self._trim_undo.setMaximumWidth(300)
+        self._trim_undo.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
         self._trim_undo.setEnabled(False)
-        self._trim_undo.setToolTip('Один шаг может менять несколько подрезок. Незавершённый ввод сначала примените или верните.')
+        self._trim_undo.setToolTip('Отменить один принятый шаг подрезок, который может менять несколько резов. '
+                                   'Незавершённый ввод сначала примените или верните.')
         self._trim_undo.clicked.connect(self._undo_trim)
         form.addRow(self._trim_undo)
-        self._trim_redo = QPushButton('Повторить принятую подрезку', panel)
+        self._trim_redo = QPushButton('Вперёд: подрезки', panel)
         self._trim_redo.setObjectName('free_arm_trim_redo')
+        self._trim_redo.setAccessibleName('Повторить отменённый шаг подрезок')
         self._trim_redo.setAutoDefault(False)
-        self._trim_redo.setMaximumWidth(300)
+        self._trim_redo.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
         self._trim_redo.setEnabled(False)
         self._trim_redo.setToolTip('История сбрасывается при изменении труб или корпусов и при открытии файла')
         self._trim_redo.clicked.connect(self._redo_trim)

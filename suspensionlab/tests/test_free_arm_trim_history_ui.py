@@ -282,12 +282,16 @@ def test_history_buttons_accessible_after_reopening_parameters(qtbot, monkeypatc
     dialog._settings_toggle.setChecked(True)
     dialog._parameters_scroll.ensureWidgetVisible(dialog._trim_undo)
     qtbot.waitUntil(lambda: dialog._trim_undo.isVisible())
-    rect = dialog._trim_undo.rect()
-    top_left = dialog._trim_undo.mapTo(dialog._parameters_scroll.viewport(), rect.topLeft())
-    bottom_right = dialog._trim_undo.mapTo(dialog._parameters_scroll.viewport(), rect.bottomRight())
     viewport = dialog._parameters_scroll.viewport().rect()
-    assert viewport.contains(top_left) and viewport.contains(bottom_right)
-    assert dialog._trim_undo.fontMetrics().horizontalAdvance(dialog._trim_undo.text()) + 16 <= rect.width()
+    for button in (dialog._trim_undo, dialog._trim_redo):
+        dialog._parameters_scroll.ensureWidgetVisible(button)
+        rect = button.rect()
+        top_left = button.mapTo(dialog._parameters_scroll.viewport(), rect.topLeft())
+        bottom_right = button.mapTo(dialog._parameters_scroll.viewport(), rect.bottomRight())
+        assert viewport.contains(top_left) and viewport.contains(bottom_right)
+        assert rect.width() >= button.sizeHint().width()
+        assert button.fontMetrics().horizontalAdvance(button.text()) <= rect.width()
+    dialog._parameters_scroll.ensureWidgetVisible(dialog._trim_undo)
     click(qtbot, dialog._trim_undo)
     assert dialog.tube_joint is None and dialog._trim_redo.isEnabled()
     dialog.close()
@@ -310,4 +314,25 @@ def test_central_housing_with_inner_notches_is_not_rolled_back(qtbot, monkeypatc
     dialog.apply_fields()
     assert dialog.housing.outer_diameter_mm == 125
     assert not dialog._trim_undo.isEnabled() and not dialog._trim_redo.isEnabled()
+    dialog.close()
+
+
+def test_history_buttons_expand_for_larger_font(qtbot, monkeypatch):
+    from PySide6.QtGui import QFont
+
+    dialog, _ = editor(qtbot, monkeypatch, inner=False)
+    select_joint(dialog)
+    for button in (dialog._trim_undo, dialog._trim_redo):
+        font = QFont(button.font())
+        font.setPointSize(22)
+        button.setFont(font)
+    dialog._parameter_panel.layout().activate()
+    for button in (dialog._trim_undo, dialog._trim_redo):
+        dialog._parameters_scroll.ensureWidgetVisible(button)
+        qtbot.waitUntil(lambda button=button: button.width() >= button.sizeHint().width())
+        assert button.fontMetrics().horizontalAdvance(button.text()) <= button.width()
+        origin = button.mapTo(dialog._parameters_scroll.viewport(), button.rect().topLeft())
+        opposite = button.mapTo(dialog._parameters_scroll.viewport(), button.rect().bottomRight())
+        assert dialog._parameters_scroll.viewport().rect().contains(origin)
+        assert dialog._parameters_scroll.viewport().rect().contains(opposite)
     dialog.close()
