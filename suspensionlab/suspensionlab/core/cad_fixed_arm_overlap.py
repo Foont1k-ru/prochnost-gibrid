@@ -111,10 +111,16 @@ def measure_proximity(document: dict[str, Any]) -> list[dict[str, Any]]:
     Ошибка отдельной пары не выдаётся за нулевое расстояние и не скрывает другие пары.
     Ошибка построения исходных тел отклоняет весь отчёт.
     """
+    from ..model.free_arm_io import FORMAT as FREE_ARM_FORMAT
     from .cad_fixed_arm_overlap_job import DISTANCE_TOLERANCE_MM
 
-    parts = _build_parts(document)
-    names = ('tube_front', 'tube_rear', 'housing_front', 'housing_rear')[:len(parts)]
+    if document.get('format') == FREE_ARM_FORMAT:
+        from .cad_free_arm_overlap import build_independent_parts
+
+        names, parts = build_independent_parts(document)
+    else:
+        parts = tuple(_build_parts(document))
+        names = ('tube_front', 'tube_rear', 'housing_front', 'housing_rear')[:len(parts)]
     volumes = [_volume(part) for part in parts]
     if any(value <= 0 for value in volumes):
         raise ValueError('invalid_volume')

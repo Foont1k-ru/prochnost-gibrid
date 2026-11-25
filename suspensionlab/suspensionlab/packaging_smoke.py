@@ -304,6 +304,23 @@ def run_cad_check() -> None:
         _require(len(result.triangles) > 0 and result.skipped_faces == result.recovered_faces == 0,
                  "В собранном приложении не построена труба задней тяги")
 
+    # Проверка независимого документа в изолированном процессе собранного exe;
+    # расчётный снимок не создаётся, результат не является проверкой безопасности.
+    from .core.cad_fixed_arm_overlap_job import FixedArmOverlapJob
+    from .model.free_arm import FreeArmDraft
+    from .model.free_arm_housing import FreeArmBallHousing, FreeArmHousingDraft
+    from .model.free_arm_housing_io import to_data as free_arm_housing_data
+
+    independent = FreeArmHousingDraft(
+        FreeArmDraft((0, 0, 0), (0, 200, 0), (300, 100, 10), 10, 2),
+        FreeArmBallHousing(120, 30, 200, (0, 0, 1), (10, -30, 12)),
+    )
+    pairs = FixedArmOverlapJob().run_proximity(free_arm_housing_data(independent)).pairs
+    _require([(p.left, p.right) for p in pairs] == [
+        ('tube_front', 'tube_rear'), ('tube_front', 'ball_housing'), ('tube_rear', 'ball_housing'),
+    ] and all(p.status != 'error' for p in pairs),
+        "Изолированный анализ независимых CAD-деталей недоступен")
+
     # Проверяем и пользовательский путь повторного открытия в упакованном Qt.
     from unittest.mock import patch
 

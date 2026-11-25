@@ -67,26 +67,32 @@ def read_free_arm_housing(path: str | Path) -> FreeArmHousingDraft:
         raise FreeArmHousingFileError('Не удалось прочитать или проверить независимый корпус') from error
 
 
-def read_independent_arm(path: str | Path) -> FreeArmDraft | FreeArmHousingDraft | FreeArmInnerHousingDraft | FreeArmMiterDraft | FreeArmTubeJointDraft:
-    """Прочитать один снимок файла и строго выбрать поддерживаемую версию без потери данных."""
+def independent_arm_from_data(data: Any) -> FreeArmDraft | FreeArmHousingDraft | FreeArmInnerHousingDraft | FreeArmMiterDraft | FreeArmTubeJointDraft:
+    """Строго выбрать версию независимого документа, не создавая снимок проекта."""
     from .free_arm_inner_housings_io import from_data as inner_from_data
     from .free_arm_miter_io import from_data as miter_from_data
     from .free_arm_tube_joint_io import from_data as joint_from_data
+
+    if isinstance(data, dict) and data.get('version') == VERSION:
+        return from_data(data)
+    if isinstance(data, dict) and data.get('version') == '3':
+        return inner_from_data(data)
+    if isinstance(data, dict) and data.get('version') == '4':
+        return miter_from_data(data)
+    if isinstance(data, dict) and data.get('version') == '5':
+        return joint_from_data(data)
+    return arm_from_data(data)
+
+
+def read_independent_arm(path: str | Path) -> FreeArmDraft | FreeArmHousingDraft | FreeArmInnerHousingDraft | FreeArmMiterDraft | FreeArmTubeJointDraft:
+    """Прочитать один снимок файла и строго выбрать поддерживаемую версию без потери данных."""
     source = Path(path)
     if source.suffix.lower() != SUFFIX:
         raise FreeArmFileError('Ожидался файл .slarm')
     try:
         data = json.loads(_read_project_bytes(source).decode('utf-8'), object_pairs_hook=_unique_object)
         json.dumps(data, allow_nan=False)
-        if isinstance(data, dict) and data.get('version') == VERSION:
-            return from_data(data)
-        if isinstance(data, dict) and data.get('version') == '3':
-            return inner_from_data(data)
-        if isinstance(data, dict) and data.get('version') == '4':
-            return miter_from_data(data)
-        if isinstance(data, dict) and data.get('version') == '5':
-            return joint_from_data(data)
-        return arm_from_data(data)
+        return independent_arm_from_data(data)
     except FreeArmFileError:
         raise
     except (OSError, UnicodeError, ValueError, TypeError, OverflowError, RecursionError, ProjectIOError) as error:

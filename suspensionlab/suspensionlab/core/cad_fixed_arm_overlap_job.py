@@ -124,8 +124,14 @@ def _read_numbers(item: dict[str, Any]) -> tuple[float, float]:
 
 
 def _expected_pairs(document: dict[str, Any]) -> list[tuple[str, str]]:
+    from ..model.free_arm_io import FORMAT as FREE_ARM_FORMAT
+
     names: tuple[str, ...] = ('tube_front', 'tube_rear')
-    if document.get('format') == PREVIEW_FORMAT and document.get('housings') is not None:
+    if document.get('format') == FREE_ARM_FORMAT:
+        from .cad_free_arm_overlap import independent_part_names
+
+        names = independent_part_names(document)
+    elif document.get('format') == PREVIEW_FORMAT and document.get('housings') is not None:
         names += ('housing_front', 'housing_rear')
     return list(combinations(names, 2))
 
@@ -348,8 +354,11 @@ class FixedArmOverlapJob:
     def run_auto(self, document: dict[str, Any], requirements: dict[str, float]) -> AutoSuggestionResult:
         """Проверяет все пары; кандидаты независимы и не изменяют исходный снимок."""
         from ..model.fixed_arm_clearances import validate_requirements
+        from ..model.free_arm_io import FORMAT as FREE_ARM_FORMAT
         from .fixed_arm_suggestions import satisfies
 
+        if document.get('format') == FREE_ARM_FORMAT:
+            raise OverlapJobError('invalid')
         housings = document.get('format') == PREVIEW_FORMAT and document.get('housings') is not None
         requirements = validate_requirements(requirements, housings=housings)
         baseline = self.run_proximity(document)
@@ -389,7 +398,17 @@ class FixedArmOverlapJob:
         if self._cancelled.is_set():
             raise OverlapJobError('cancelled')
         try:
-            if document.get('format') == PREVIEW_FORMAT:
+            from ..model.free_arm_io import FORMAT as FREE_ARM_FORMAT
+
+            if document.get('format') == FREE_ARM_FORMAT:
+                # Only read-only proximity is supported; snapshot suggestions/plans
+                # must never reinterpret or modify an independent document.
+                if mode != 'proximity':
+                    raise ValueError('unsupported')
+                from .cad_free_arm_overlap import independent_part_names
+
+                independent_part_names(document)
+            elif document.get('format') == PREVIEW_FORMAT:
                 validate_housing_preview(document)
             elif not weldment_source_matches(document):
                 raise ValueError('source')
