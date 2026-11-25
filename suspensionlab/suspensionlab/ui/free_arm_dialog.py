@@ -51,6 +51,7 @@ from ..model.free_arm_tube_joint_io import to_data as joint_to_data
 from ..model.free_arm_tube_joint_io import write_free_arm_tube_joint
 from .canvas.fixed_arm_projection import SkeletonProjection
 from .canvas.fixed_arm_scene import FixedArmScene, skeleton_scene
+from .free_arm_proximity import FreeArmProximity
 from .inline_tube_sketch import InlineTubeSketch
 from .weldment_3d import Weldment3D
 
@@ -361,6 +362,11 @@ class FreeArmDialog(QDialog):
         self._inline_sketch.move(8, 8)
         self._cad.availabilityChanged.connect(self._cad_availability_changed)
         self._tabs.addTab(self._cad, 'Предварительный CAD')
+        self._proximity_scroll = QScrollArea(self._tabs)
+        self._proximity_scroll.setWidgetResizable(True)
+        self._proximity = FreeArmProximity(self._is_proximity_current, self._proximity_scroll)
+        self._proximity_scroll.setWidget(self._proximity)
+        self._tabs.addTab(self._proximity_scroll, 'Анализ CAD')
         split.addWidget(scroll)
         split.addWidget(self._tabs)
         split.setStretchFactor(1, 1)
@@ -402,6 +408,7 @@ class FreeArmDialog(QDialog):
         for projection in self._projections:
             projection.set_preview(None)
         self._cad.set_document(None)
+        self._proximity.set_document(None)
         self._save.setEnabled(False)
         self._update_trim_history_buttons()
         self._status.setText('Ввод изменён: прежний эскиз и CAD скрыты. Примените или верните ввод.')
@@ -501,6 +508,15 @@ class FreeArmDialog(QDialog):
         return (self.draft is not None and self._accepted_form == self._form() and
                 document == self._document_for(self.draft, self.housing))
 
+    def _is_proximity_current(self, document: dict[str, Any]) -> bool:
+        return (not self._cad._closed and self._projection_session is None and self._inline_session is None and
+                self._is_current(document))
+
+    def _resume_proximity(self) -> None:
+        if (hasattr(self, '_proximity') and self.draft is not None and self._accepted_form == self._form() and
+                self._projection_session is None and self._inline_session is None and not self._cad._closed):
+            self._proximity.set_document(self._document_for(self.draft, self.housing))
+
     def _projection_text(self) -> tuple[str, ...] | None:
         if self._projection_session is None:
             return None
@@ -541,6 +557,7 @@ class FreeArmDialog(QDialog):
         self._save.setEnabled(self._inline_session is None and self.draft is not None and
                               self._accepted_form == self._form())
         self._update_trim_history_buttons()
+        self._resume_proximity()
 
     def _projection_point(self, canvas: SkeletonProjection, code: str) -> None:
         if self._projection_session is not None:
@@ -582,6 +599,7 @@ class FreeArmDialog(QDialog):
                                                    self._projection_radius))
         self._projection_session = _ProjectionSession(canvas, code, self._form(), self.draft, self.housing,
                                                       canvas.preview, initial, original_points, vertex)
+        self._proximity.set_document(None)
         self._parameter_panel.setEnabled(False)
         for index in range(self._tabs.count()):
             self._tabs.setTabEnabled(index, self._tabs.widget(index) is canvas)
@@ -788,6 +806,7 @@ class FreeArmDialog(QDialog):
         return tuple(self._inline_sketch.fields[key].text() for key in ('X', 'Y', 'Z', 'R'))
 
     def _close_inline_sketch(self) -> None:
+        was_open = self._inline_session is not None
         self._inline_session = None
         self._inline_initial = None
         if hasattr(self, '_inline_sketch'):
@@ -799,6 +818,8 @@ class FreeArmDialog(QDialog):
             self._save.setEnabled(self._projection_session is None and self.draft is not None and
                                   self._accepted_form == self._form())
         self._update_trim_history_buttons()
+        if was_open:
+            self._resume_proximity()
 
     def _inline_current(self) -> bool:
         session = self._inline_session
@@ -1127,6 +1148,7 @@ class FreeArmDialog(QDialog):
                                                (path[0][1] + path[-1][1]) / 2,
                                                (path[0][2] + path[-1][2]) / 2)
         self._inline_session = (leg, self._cad.generation, self._form(), draft, mesh)
+        self._proximity.set_document(None)
         dimensions = (*vertex, bend.radius_mm) if bend else None
         self._cad._view.set_sketch_overlay(path, vertex if bend else None, dimensions=dimensions)
         self._inline_sketch.begin(leg, vertex, bend.radius_mm if bend else None)
@@ -1291,6 +1313,7 @@ class FreeArmDialog(QDialog):
         for projection in self._projections:
             projection.set_preview(preview, points)
         self._cad.set_document(document)
+        self._proximity.set_document(document)
         self._save.setEnabled(True)
         self._record_trim_history(candidate, housing)
         self._status.setText('Черновик применён. Выбранные подрезки проверяются при построении CAD.'
@@ -1429,9 +1452,10 @@ class FreeArmDialog(QDialog):
         self._cancel_cad_cut_pick()
         self._close_projection_session()
         self._close_inline_sketch()
-        stopped = self._cad.shutdown()
+        analysis_stopped = self._proximity.shutdown()
+        cad_stopped = self._cad.shutdown()
         self._update_trim_history_buttons()
-        return stopped
+        return analysis_stopped and cad_stopped
 
     def reject(self) -> None:
         if self.confirm_close() and self.shutdown():

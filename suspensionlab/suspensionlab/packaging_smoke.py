@@ -320,6 +320,33 @@ def run_cad_check() -> None:
         ('tube_front', 'tube_rear'), ('tube_front', 'ball_housing'), ('tube_rear', 'ball_housing'),
     ] and all(p.status != 'error' for p in pairs),
         "Изолированный анализ независимых CAD-деталей недоступен")
+    from .ui.free_arm_dialog import FreeArmDialog
+
+    free_dialog = FreeArmDialog()
+    free_dialog.show()
+    try:
+        free_dialog._set_fields(independent.arm)
+        free_dialog._set_housing_fields(independent.housing)
+        free_dialog.apply_fields()
+        analysis = free_dialog._proximity
+        free_dialog._tabs.setCurrentWidget(free_dialog._proximity_scroll)
+        _require(analysis._button.isEnabled(), "Анализ независимого рычага не включён")
+        analysis._start()
+        deadline = monotonic() + 60
+        while analysis._worker is not None and monotonic() < deadline:
+            app.processEvents()
+            sleep(0.02)
+        _require(analysis._worker is None and analysis._table.rowCount() == 3 and
+                 not analysis._table.isHidden() and 'ошибок: 0' in analysis._status.text(),
+                 "Панель анализа независимого рычага недоступна: " + analysis._status.text())
+        free_dialog._fields['front_X'].setText('2')
+        _require(analysis._table.isHidden() and analysis._table.rowCount() == 0 and not analysis._button.isEnabled(),
+                 "Старый анализ не скрыт после изменения независимого рычага")
+    finally:
+        free_dialog._closing_confirmed = True
+        _require(free_dialog.shutdown(), "Не удалось остановить анализ независимого рычага")
+        free_dialog.close()
+        app.processEvents()
 
     # Проверяем и пользовательский путь повторного открытия в упакованном Qt.
     from unittest.mock import patch
