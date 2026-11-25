@@ -111,6 +111,9 @@ class CadJob:
                 if state.get("status") != "ok" or code != 0:
                     known = {"file_size", "deviation", "missing_cad", "units", "read", "no_shape", "mesh",
                              "limit", "memory", "missing_face", "coordinates", "no_faces", "unexpected"}
+                    known.update(f'{prefix}_{leg}_{reason}' for prefix in ('notch', 'tube_joint')
+                                 for leg in ('front', 'rear') for reason in ('no_overlap', 'empty_or_split', 'failed'))
+                    known.update(('tube_joint_miter_failed', 'ball_housing_failed'))
                     error_code = state.get("code")
                     raise CadPreviewError(error_code if error_code in known else "crash")
                 if not output.is_file() or output.stat().st_size > MAX_ARCHIVE_BYTES:
@@ -119,6 +122,8 @@ class CadJob:
                     members = archive.infolist()
                     if len(members) != 8 or sum(member.file_size for member in members) > MAX_ARCHIVE_BYTES:
                         raise CadPreviewError("output")
+                if self._cancelled.is_set():
+                    raise CadPreviewError("cancelled")
                 with np.load(output, allow_pickle=False) as data:
                     faces, skipped, recovered = data["faces"], data["skipped"], data["recovered"]
                     if any(value.shape != (1,) or value.dtype.kind not in "iu"
@@ -130,10 +135,24 @@ class CadJob:
                     instance_groups = data["instance_groups"]
                     if instance_groups.ndim != 1 or instance_groups.dtype.kind not in "iu":
                         raise CadPreviewError("output")
-                    return CadMesh(data["triangles"], int(faces[0]), int(skipped[0]), int(recovered[0]),
-                                   tuple(names.tolist()), data["groups"], tuple(instance_groups.tolist()),
-                                   data["instances"])
-            except CadPreviewError:
+                    if self._cancelled.is_set():
+                        raise CadPreviewError("cancelled")
+                    triangles = data["triangles"]
+                    if self._cancelled.is_set():
+                        raise CadPreviewError("cancelled")
+                    groups, instances = data["groups"], data["instances"]
+                    if self._cancelled.is_set():
+                        raise CadPreviewError("cancelled")
+                    mesh = CadMesh(triangles, int(faces[0]), int(skipped[0]), int(recovered[0]),
+                                   tuple(names.tolist()), groups, tuple(instance_groups.tolist()), instances)
+                if self._cancelled.is_set():
+                    raise CadPreviewError("cancelled")
+                return mesh
+            except CadPreviewError as error:
+                if self._cancelled.is_set() and error.code != "cancelled":
+                    raise CadPreviewError("cancelled") from error
                 raise
             except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError, zipfile.BadZipFile, MemoryError) as error:
+                if self._cancelled.is_set():
+                    raise CadPreviewError("cancelled") from error
                 raise CadPreviewError("output") from error

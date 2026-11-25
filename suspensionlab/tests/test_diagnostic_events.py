@@ -255,3 +255,158 @@ def test_point_import_events_report_outcome_without_path_or_coordinate(events, q
     assert [r['result'] for r in imports] == ['preview', 'ok']
     assert imports[-1]['points'] == 1 and imports[-1]['cells'] == 1
     assert 'secret' not in events.getvalue() and '123456.7' not in events.getvalue()
+
+
+def test_cad_performance_is_opt_in_bounded_and_excludes_model_data(events, qtbot, monkeypatch, tmp_path):
+    from suspensionlab.ui.canvas import cad_preview
+
+    time = [100.0]
+    monkeypatch.setattr(cad_preview, 'perf_counter', lambda: time[0])
+    original = cad_preview.interaction_geometry
+    def slow_interaction(mesh, highlight):
+        time[0] += .2
+        return original(mesh, highlight)
+    monkeypatch.setattr(cad_preview, 'interaction_geometry', slow_interaction)
+    dialog = CadPreviewDialog(settings=QSettings(str(tmp_path / 'secret.ini'), QSettings.Format.IniFormat))
+    qtbot.addWidget(dialog)
+    view = dialog._view
+    model = CadMesh(np.array([[[0., 0., 0.], [1., 0., 0.], [0., 1., 0.]]]), 1,
+                    part_names=('private-part',), triangle_parts=np.array([0]))
+    assert not dialog._performance_diagnostics.isChecked()
+    view.set_mesh(model)
+    assert not records(events)
+    dialog.show()
+    dialog._performance_diagnostics.setChecked(True)
+    assert view._perf_timer.isActive()
+    view.set_mesh(model, np.array([True]))
+    time[0] += 1.0
+    view._perf_tick()
+    log = records(events)
+    assert [r['stage'] for r in log] == ['enabled', 'mesh_interaction', 'mesh_setup', 'event_loop']
+    assert log[1]['duration_ms'] == 200 and log[1]['renderer'] == 'cpu' and log[1]['triangles'] == 1
+    assert log[-1]['duration_ms'] >= 750
+    assert all(set(record) == {'session', 'event', 'stage', 'renderer', 'duration_ms', 'triangles'} for record in log)
+    assert 'private-part' not in events.getvalue() and 'secret.ini' not in events.getvalue()
+    for _ in range(250):
+        view._perf_record('event_loop', 500)
+    assert len(records(events)) == 200
+    dialog._performance_diagnostics.setChecked(False)
+    assert not view._perf_timer.isActive()
+    view.set_mesh(model)
+    assert len(records(events)) == 200
+    dialog.close()
+
+
+def test_cad_performance_timer_stops_when_hidden(events, qtbot, tmp_path):
+    dialog = CadPreviewDialog(settings=QSettings(str(tmp_path / 'settings.ini'), QSettings.Format.IniFormat))
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog._performance_diagnostics.setChecked(True)
+    assert dialog._view._perf_timer.isActive()
+    dialog.hide()
+    assert not dialog._view._perf_timer.isActive()
+    dialog.show()
+    assert dialog._view._perf_timer.isActive()
+    dialog._performance_diagnostics.setChecked(False)
+    assert [r['stage'] for r in records(events)] == ['enabled', 'disabled']
+    dialog.close()
+
+
+def test_cad_performance_records_cpu_render_and_pick(events, qtbot, monkeypatch, tmp_path):
+    from PySide6.QtCore import QPoint, Qt
+
+    from suspensionlab.ui.canvas import cad_preview
+
+    time = [0.0]
+    monkeypatch.setattr(cad_preview, 'perf_counter', lambda: time[0])
+    rasterize, pick = cad_preview.rasterize, cad_preview.pick_triangle
+    def slow_rasterize(*args, **kwargs):
+        time[0] += .13
+        return rasterize(*args, **kwargs)
+    def slow_pick(*args, **kwargs):
+        time[0] += .17
+        return pick(*args, **kwargs)
+    monkeypatch.setattr(cad_preview, 'rasterize', slow_rasterize)
+    monkeypatch.setattr(cad_preview, 'pick_triangle', slow_pick)
+    dialog = CadPreviewDialog(settings=QSettings(str(tmp_path / 'settings.ini'), QSettings.Format.IniFormat))
+    qtbot.addWidget(dialog)
+    view = dialog._view
+    model = CadMesh(np.array([[[-1., 0., -1.], [1., 0., -1.], [0., 0., 1.]]]), 1,
+                    part_names=('part',), triangle_parts=np.array([0]))
+    view.set_mesh(model)
+    dialog.show()
+    qtbot.waitExposed(dialog)
+    dialog._performance_diagnostics.setChecked(True)
+    view._frame_key = None
+    view.update()
+    qtbot.waitUntil(lambda: any(r.get('stage') == 'frame_cpu' for r in records(events)))
+    qtbot.mouseClick(view, Qt.MouseButton.LeftButton, pos=QPoint(view.width() // 2, view.height() // 2))
+    log = records(events)
+    assert any(r.get('stage') == 'frame_cpu' and r['duration_ms'] == 130 for r in log)
+    assert any(r.get('stage') == 'pick' and r['duration_ms'] == 170 and r['renderer'] == 'cpu' for r in log)
+    dialog.close()
+
+
+def test_cad_performance_records_gl_setup_render_and_pick_with_mock(events, qtbot, monkeypatch, tmp_path):
+    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtGui import QColor, QImage
+
+    from suspensionlab.ui.canvas import cad_gl_renderer, cad_preview
+
+    clock = [10.0]
+    monkeypatch.setattr(cad_preview, 'perf_counter', lambda: clock[0])
+    class FakeRenderer:
+        vendor, renderer, version = 'test', 'test', 'test'
+        def __init__(self):
+            clock[0] += .1
+        def set_mesh(self, *args):
+            clock[0] += .2
+        def render(self, center, yaw, elevation, zoom, width, height, margin, offset, highlight, through, bg):
+            clock[0] += .12
+            image = QImage(width, height, QImage.Format.Format_RGBA8888)
+            image.fill(QColor('black'))
+            return image
+        def pick(self, *args):
+            clock[0] += .15
+            return 0
+        def close(self):
+            pass
+    monkeypatch.setattr(cad_gl_renderer, 'CadGlRenderer', FakeRenderer)
+    dialog = CadPreviewDialog(settings=QSettings(str(tmp_path / 'settings.ini'), QSettings.Format.IniFormat))
+    qtbot.addWidget(dialog)
+    model = CadMesh(np.array([[[-1., 0., -1.], [1., 0., -1.], [0., 0., 1.]]]), 1,
+                    part_names=('part',), triangle_parts=np.array([0]))
+    view = dialog._view
+    view.set_mesh(model)
+    dialog.show()
+    qtbot.waitExposed(dialog)
+    dialog._performance_diagnostics.setChecked(True)
+    view._renderer_button.click()
+    qtbot.waitUntil(lambda: any(r.get('stage') == 'frame_gl' for r in records(events)))
+    qtbot.mouseClick(view, Qt.MouseButton.LeftButton, pos=QPoint(view.width() // 2, view.height() // 2))
+    log = records(events)
+    for stage, duration in (('gpu_setup', 300), ('frame_gl', 120), ('pick', 150)):
+        assert any(r.get('stage') == stage and r['duration_ms'] == duration and r['renderer'] == 'gl' for r in log)
+    dialog.close()
+
+
+def test_cad_performance_times_ui_pick_even_on_error(events, qtbot, monkeypatch, tmp_path):
+    from suspensionlab.ui import cad_preview_dialog
+    from suspensionlab.ui.canvas import cad_preview
+
+    clock = [20.0]
+    monkeypatch.setattr(cad_preview, 'perf_counter', lambda: clock[0])
+    monkeypatch.setattr(cad_preview_dialog, 'perf_counter', lambda: clock[0])
+    dialog = CadPreviewDialog(settings=QSettings(str(tmp_path / 'settings.ini'), QSettings.Format.IniFormat))
+    qtbot.addWidget(dialog)
+    dialog._performance_diagnostics.setChecked(True)
+    def failed_pick(index):
+        clock[0] += .09
+        raise ValueError('private-geometry-name')
+    monkeypatch.setattr(dialog, '_apply_triangle_pick', failed_pick)
+    with pytest.raises(ValueError):
+        dialog._pick_triangle(0)
+    assert records(events)[-1]['stage'] == 'pick_ui'
+    assert records(events)[-1]['duration_ms'] == 90
+    assert 'private-geometry-name' not in events.getvalue()
+    dialog.close()

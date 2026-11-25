@@ -1,0 +1,87 @@
+{
+  "environment": {
+    "platform": "Linux-6.1.158+-x86_64-with-glibc2.36",
+    "python": "3.11.2",
+    "numpy": "2.4.6",
+    "repeats": 10,
+    "scene": "synthetic random triangles, fixed seed",
+    "order": "alternating after warmup"
+  },
+  "cases": [
+    {
+      "triangles": 50000,
+      "groups": 1,
+      "fast_triangles": 4904,
+      "before": {
+        "median_ms": 38.88,
+        "min_ms": 38.02,
+        "max_ms": 54.69
+      },
+      "after": {
+        "median_ms": 36.49,
+        "min_ms": 33.68,
+        "max_ms": 43.31
+      }
+    },
+    {
+      "triangles": 50000,
+      "groups": 100,
+      "fast_triangles": 4801,
+      "before": {
+        "median_ms": 56.53,
+        "min_ms": 52.03,
+        "max_ms": 65.55
+      },
+      "after": {
+        "median_ms": 49.51,
+        "min_ms": 47.47,
+        "max_ms": 58.51
+      }
+    },
+    {
+      "triangles": 200000,
+      "groups": 1,
+      "fast_triangles": 19111,
+      "before": {
+        "median_ms": 170.37,
+        "min_ms": 158.28,
+        "max_ms": 199.05
+      },
+      "after": {
+        "median_ms": 152.09,
+        "min_ms": 143.12,
+        "max_ms": 157.74
+      }
+    },
+    {
+      "triangles": 200000,
+      "groups": 100,
+      "fast_triangles": 19572,
+      "before": {
+        "median_ms": 177.98,
+        "min_ms": 162.32,
+        "max_ms": 192.63
+      },
+      "after": {
+        "median_ms": 148.65,
+        "min_ms": 141.56,
+        "max_ms": 238.69
+      }
+    },
+    {
+      "triangles": 200001,
+      "groups": 100,
+      "fast_triangles": 5752,
+      "before": {
+        "median_ms": 92.01,
+        "min_ms": 90.17,
+        "max_ms": 108.54
+      },
+      "after": {
+        "median_ms": 87.01,
+        "min_ms": 83.71,
+        "max_ms": 95.58
+      }
+    }
+  ]
+}

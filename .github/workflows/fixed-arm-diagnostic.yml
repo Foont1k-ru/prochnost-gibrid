@@ -1,0 +1,73 @@
+name: Диагностика фиксированного рычага Windows
+
+on:
+  push:
+    paths:
+      - '.github/workflows/fixed-arm-diagnostic.yml'
+      - 'suspensionlab/suspensionlab/model/fixed_arm_skeleton*.py'
+      - 'suspensionlab/suspensionlab/model/fixed_arm_housings.py'
+      - 'suspensionlab/suspensionlab/model/fixed_arm_clearances.py'
+      - 'suspensionlab/suspensionlab/ui/fixed_arm_housings_dialog.py'
+      - 'suspensionlab/suspensionlab/ui/fixed_arm_overlap.py'
+      - 'suspensionlab/suspensionlab/core/cad_fixed_arm_overlap*.py'
+      - 'suspensionlab/suspensionlab/core/fixed_arm_suggestions.py'
+      - 'suspensionlab/suspensionlab/core/fixed_arm_plans.py'
+      - 'suspensionlab/suspensionlab/ui/fixed_arm_skeleton_dialog.py'
+      - 'suspensionlab/suspensionlab/ui/canvas/fixed_arm_*.py'
+      - 'suspensionlab/tests/test_fixed_arm*.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fixed-arm:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.12']
+    timeout-minutes: 12
+    defaults:
+      run:
+        working-directory: suspensionlab
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PYTHONUTF8: '1'
+      PYTHONFAULTHANDLER: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Установить приложение, Qt и CAD
+        run: python -m pip install -e ".[dev,cad]"
+      - name: Проверить снимок, полые трубы и интерфейс
+        run: >-
+          python -u -m pytest -v -o faulthandler_timeout=90
+          tests/test_fixed_arm_skeleton.py tests/test_fixed_arm_skeleton_io.py
+          tests/test_fixed_arm_skeleton_ui.py tests/test_fixed_arm_skeleton_file_ui.py
+          tests/test_fixed_arm_scene_ui.py tests/test_fixed_arm_projection_drag_ui.py tests/test_fixed_arm_projection_distance_ui.py
+          tests/test_fixed_arm_interactive_ui.py tests/test_fixed_arm_tubes_cad.py tests/test_fixed_arm_tubes_cad_ui.py
+          tests/test_fixed_arm_housings.py tests/test_fixed_arm_housings_ui.py tests/test_fixed_arm_housings_cad.py
+          tests/test_fixed_arm_notches.py tests/test_fixed_arm_notches_ui.py tests/test_fixed_arm_notches_cad.py
+          tests/test_fixed_arm_notches_io.py tests/test_fixed_arm_overlap_ui.py tests/test_fixed_arm_overlap_cad.py
+          tests/test_fixed_arm_overlap_all_job.py tests/test_fixed_arm_overlap_all_cad.py tests/test_fixed_arm_overlap_all_ui.py
+          tests/test_fixed_arm_proximity_job.py tests/test_fixed_arm_proximity_cad.py tests/test_fixed_arm_proximity_ui.py
+          tests/test_fixed_arm_suggestions.py tests/test_fixed_arm_suggestions_ui.py
+          tests/test_fixed_arm_auto.py tests/test_fixed_arm_auto_ui.py
+          tests/test_fixed_arm_plans.py tests/test_fixed_arm_plans_ui.py
+          tests/test_fixed_arm_clearance_io.py tests/test_fixed_arm_clearance_ui.py
+          tests/test_fixed_arm_tube_joint.py tests/test_fixed_arm_tube_joint_io.py
+          tests/test_fixed_arm_tube_joint_cad.py tests/test_fixed_arm_tube_joint_ui.py
+          tests/test_fixed_arm_miter_cad.py tests/test_fixed_arm_miter_io.py tests/test_fixed_arm_miter_ui.py
+          tests/test_fixed_arm_context_ui.py tests/test_fixed_arm_length_ui.py tests/test_fixed_arm_full_flow_ui.py
+          tests/test_fixed_arm_close_lifecycle_ui.py tests/test_bend_length.py
+          --junitxml=fixed-arm-results.xml
+      - name: Сохранить отчёт
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fixed-arm-windows-python-${{ matrix.python }}-results
+          path: suspensionlab/fixed-arm-results.xml
+          if-no-files-found: warn

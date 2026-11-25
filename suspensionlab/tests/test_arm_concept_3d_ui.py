@@ -27,7 +27,9 @@ def test_live_editor_3d_cancels_obsolete_work_and_saves_only_current(qtbot, tmp_
             self.started.set()
             assert self.release.wait(10)
             radius = document['parts'][0]['geometry']['radius_mm']
-            return CadMesh(np.array([[[radius, 0, 0], [radius, 1, 0], [radius, 0, 1]]]), 1)
+            return CadMesh(np.array([[[radius, 0, 0], [radius, 1, 0], [radius, 0, 1]],
+                                     [[radius, 2, 0], [radius, 3, 0], [radius, 2, 1]]]), 2,
+                           part_names=('tube_front', 'tube_rear'), triangle_parts=np.array([0, 1]))
     monkeypatch.setattr(module, 'WeldmentCadJob', Job)
     c = AppController()
     before = c.project.to_dict()

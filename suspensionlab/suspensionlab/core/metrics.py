@@ -6,7 +6,7 @@ from math import asin, atan2, cos, degrees, isfinite, radians, sin, tan
 
 import numpy as np
 
-from .double_wishbone import DoubleWishbone, KinematicsError, Pose
+from .double_wishbone import DoubleWishbone, KinematicsError, Pose, RigidFiveLinkSolver
 
 
 @dataclass(frozen=True)
@@ -25,7 +25,7 @@ class CornerMetrics:
 
 
 def _wheel_directions(
-    model: DoubleWishbone, pose: Pose, static_camber_deg: float, static_toe_deg: float
+    model: RigidFiveLinkSolver, pose: Pose, static_camber_deg: float, static_toe_deg: float
 ) -> tuple[np.ndarray, np.ndarray]:
     """Нормаль и продольная ось колеса с начальной настройкой."""
     if not all(isfinite(v) and abs(v) < 89.0 for v in (static_camber_deg, static_toe_deg)):
@@ -43,6 +43,16 @@ def _validate_wheel_projections(normal: np.ndarray, forward: np.ndarray, travel_
     """Угол и его производная не определены при исчезающей проекции оси."""
     if normal[1] ** 2 + normal[2] ** 2 < 1e-16 or forward[0] ** 2 + forward[1] ** 2 < 1e-16:
         raise KinematicsError(travel_mm, "проекция оси колеса вырождена")
+
+
+def wheel_angles(
+    model: RigidFiveLinkSolver, pose: Pose, *, static_camber_deg: float = 0.0, static_toe_deg: float = 0.0,
+) -> tuple[float, float]:
+    """Развал и схождение одного колеса относительно кузова, без оси поворота."""
+    normal, forward = _wheel_directions(model, pose, static_camber_deg, static_toe_deg)
+    _validate_wheel_projections(normal, forward, pose.travel_mm)
+    return (-degrees(atan2(normal[2], model.sign * normal[1])),
+            -model.sign * degrees(atan2(forward[1], forward[0])))
 
 
 def corner_metrics(

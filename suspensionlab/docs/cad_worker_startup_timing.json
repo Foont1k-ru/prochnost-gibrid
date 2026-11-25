@@ -1,0 +1,32 @@
+{
+  "environment": {
+    "platform": "Linux-6.1.158+-x86_64-with-glibc2.36",
+    "python": "3.11.2",
+    "numpy": "2.4.6",
+    "ocp": "8.0.1.1.0",
+    "repeats": 10,
+    "order": "alternating; includes process exit"
+  },
+  "cases": {
+    "empty_python": {
+      "median_ms": 48.66,
+      "min_ms": 32.25,
+      "max_ms": 64.96
+    },
+    "numpy": {
+      "median_ms": 139.92,
+      "min_ms": 114.31,
+      "max_ms": 168.94
+    },
+    "weldment_module": {
+      "median_ms": 165.08,
+      "min_ms": 164.79,
+      "max_ms": 265.34
+    },
+    "weldment_and_ocp_check": {
+      "median_ms": 1370.14,
+      "min_ms": 1221.87,
+      "max_ms": 1573.06
+    }
+  }
+}

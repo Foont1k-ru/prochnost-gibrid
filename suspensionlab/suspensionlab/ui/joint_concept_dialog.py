@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from shiboken6 import isValid
 
 from ..i18n import tr
 from ..model.autosave_guard import same_project_file
@@ -178,6 +179,10 @@ class JointConceptDialog(QDialog):
         self._baseline = self._input_state()
         self._update_edit_status()
 
+    def _interaction_active(self) -> bool:
+        # Modal calls can return after close and DeferredDelete (including parent shutdown).
+        return isValid(self) and not self._three_d._closed
+
     def _state_for(self, kind: str) -> tuple[Any, ...]:
         return kind, tuple(field.text() for field in self._fields[kind].values())
 
@@ -206,6 +211,8 @@ class JointConceptDialog(QDialog):
             answer = QMessageBox.question(self, tr('weldment.discard_title'), tr('joint_concept.discard'),
                                           QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                                           QMessageBox.StandardButton.No)
+            if not self._interaction_active():
+                return
             if (answer != QMessageBox.StandardButton.Yes or revision != self._revision or
                     old_state != self._state_for(old) or new_state != self._input_state()):
                 with QSignalBlocker(self._kind):
@@ -226,7 +233,8 @@ class JointConceptDialog(QDialog):
         answer = QMessageBox.question(self, tr('weldment.discard_title'), tr('joint_concept.discard'),
                                       QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                                       QMessageBox.StandardButton.No)
-        return answer == QMessageBox.StandardButton.Yes and state == self._input_state() and revision == self._revision
+        return (self._interaction_active() and answer == QMessageBox.StandardButton.Yes and
+                state == self._input_state() and revision == self._revision)
 
     def _new_draft(self) -> None:
         if not self.confirm_close():
@@ -241,7 +249,7 @@ class JointConceptDialog(QDialog):
     def _open_file(self) -> None:
         state, revision = self._input_state(), self._revision
         selected, _ = QFileDialog.getOpenFileName(self, tr('joint_concept.open'), '', tr('arm_concept.assembly_filter'))
-        if not selected:
+        if not selected or not self._interaction_active():
             return
         if state != self._input_state() or revision != self._revision:
             QMessageBox.warning(self, tr('joint_concept.title'), tr('weldment.changed'))
@@ -254,7 +262,7 @@ class JointConceptDialog(QDialog):
         except (KimFormatError, OSError, ValueError, RuntimeError):
             QMessageBox.warning(self, tr('joint_concept.title'), tr('joint_concept.open_failed'))
             return
-        if not self.confirm_close():
+        if not self.confirm_close() or not self._interaction_active():
             return
         if state != self._input_state() or revision != self._revision:
             QMessageBox.warning(self, tr('joint_concept.title'), tr('weldment.changed'))
@@ -316,7 +324,7 @@ class JointConceptDialog(QDialog):
             return
         revision, generation, state = self._revision, self._three_d.generation, self._input_state()
         selected, _ = QFileDialog.getSaveFileName(self, tr('joint_concept.save'), '', tr('arm_concept.assembly_filter'))
-        if not selected:
+        if not selected or not self._interaction_active():
             return
         path = Path(selected)
         if path.suffix.lower() != '.kima':
@@ -335,14 +343,20 @@ class JointConceptDialog(QDialog):
             write_document(path, 'assembly', candidate, overwrite=False)
         except (KimFormatError, OSError, ValueError, TypeError, RuntimeError):
             QMessageBox.warning(self, tr('joint_concept.title'), tr('weldment.save_failed'))
-            self._refresh()
+            if self._interaction_active():
+                self._refresh()
             return
         self._baseline = self._input_state()
         self._update_edit_status()
         self._saved.setText(tr('weldment.saved', path=str(path)))
 
     def shutdown(self) -> bool:
-        return self._three_d.shutdown()
+        stopped = self._three_d.shutdown()
+        if stopped:
+            # The panel is terminal after shutdown. Its bound current-document
+            # callback otherwise retains this dialog through a reference cycle.
+            self._three_d._is_current = None
+        return stopped
 
     def reject(self) -> None:
         if self.confirm_close() and self.shutdown():

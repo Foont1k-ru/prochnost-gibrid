@@ -1,0 +1,134 @@
+{
+  "environment": {
+    "platform": "Linux-6.1.158+-x86_64-with-glibc2.36",
+    "python": "3.11.2",
+    "numpy": "2.4.6",
+    "qt": "6.11.3",
+    "qpa": "offscreen",
+    "repeats": 5,
+    "scene": "synthetic random triangles, fixed seed",
+    "device_pixel_ratio": 1.0
+  },
+  "cases": [
+    {
+      "triangles": 12000,
+      "groups": 100,
+      "fast_triangles": 12000,
+      "group_simplification": {
+        "median_ms": 0.0,
+        "min_ms": 0.0,
+        "max_ms": 0.01
+      },
+      "partial_mask_simplification": {
+        "median_ms": 0.0,
+        "min_ms": 0.0,
+        "max_ms": 0.01
+      },
+      "view_setup": {
+        "median_ms": 5.57,
+        "min_ms": 5.23,
+        "max_ms": 6.39
+      }
+    },
+    {
+      "triangles": 50000,
+      "groups": 1,
+      "fast_triangles": 4904,
+      "group_simplification": {
+        "median_ms": 43.55,
+        "min_ms": 41.54,
+        "max_ms": 46.2
+      },
+      "partial_mask_simplification": {
+        "median_ms": 46.8,
+        "min_ms": 41.02,
+        "max_ms": 58.48
+      },
+      "view_setup": {
+        "median_ms": 69.66,
+        "min_ms": 63.36,
+        "max_ms": 79.29
+      }
+    },
+    {
+      "triangles": 50000,
+      "groups": 100,
+      "fast_triangles": 4801,
+      "group_simplification": {
+        "median_ms": 56.53,
+        "min_ms": 53.75,
+        "max_ms": 62.24
+      },
+      "partial_mask_simplification": {
+        "median_ms": 51.73,
+        "min_ms": 51.51,
+        "max_ms": 57.5
+      },
+      "view_setup": {
+        "median_ms": 79.9,
+        "min_ms": 79.06,
+        "max_ms": 80.14
+      }
+    },
+    {
+      "triangles": 200000,
+      "groups": 1,
+      "fast_triangles": 19111,
+      "group_simplification": {
+        "median_ms": 197.23,
+        "min_ms": 179.44,
+        "max_ms": 203.71
+      },
+      "partial_mask_simplification": {
+        "median_ms": 167.57,
+        "min_ms": 163.51,
+        "max_ms": 169.38
+      },
+      "view_setup": {
+        "median_ms": 256.69,
+        "min_ms": 252.7,
+        "max_ms": 273.05
+      }
+    },
+    {
+      "triangles": 200000,
+      "groups": 100,
+      "fast_triangles": 19572,
+      "group_simplification": {
+        "median_ms": 171.85,
+        "min_ms": 165.02,
+        "max_ms": 188.86
+      },
+      "partial_mask_simplification": {
+        "median_ms": 192.66,
+        "min_ms": 182.22,
+        "max_ms": 228.21
+      },
+      "view_setup": {
+        "median_ms": 294.35,
+        "min_ms": 269.9,
+        "max_ms": 388.46
+      }
+    },
+    {
+      "triangles": 200001,
+      "groups": 100,
+      "fast_triangles": 5752,
+      "group_simplification": {
+        "median_ms": 89.4,
+        "min_ms": 89.14,
+        "max_ms": 92.83
+      },
+      "partial_mask_simplification": {
+        "median_ms": 121.73,
+        "min_ms": 118.42,
+        "max_ms": 144.51
+      },
+      "view_setup": {
+        "median_ms": 214.43,
+        "min_ms": 191.11,
+        "max_ms": 228.55
+      }
+    }
+  ]
+}

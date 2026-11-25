@@ -1,0 +1,91 @@
+{
+  "environment": {
+    "platform": "Linux-6.1.158+-x86_64-with-glibc2.36",
+    "python": "3.11.2",
+    "numpy": "2.4.6",
+    "pillow": "13.0.0",
+    "resolution_px": [
+      800,
+      600
+    ],
+    "repeat": 5,
+    "scene": "synthetic random triangles, fixed seed"
+  },
+  "cases": [
+    {
+      "triangles": 12000,
+      "results": {
+        "zoom_1_highlight_0_through_0": {
+          "median_ms": 24.09,
+          "min_ms": 22.22,
+          "max_ms": 31.05
+        },
+        "zoom_1_highlight_1_through_0": {
+          "median_ms": 22.8,
+          "min_ms": 20.86,
+          "max_ms": 25.81
+        },
+        "zoom_1_highlight_1_through_1": {
+          "median_ms": 23.55,
+          "min_ms": 20.62,
+          "max_ms": 34.75
+        },
+        "zoom_4_highlight_1_through_0": {
+          "median_ms": 23.42,
+          "min_ms": 22.92,
+          "max_ms": 30.61
+        }
+      }
+    },
+    {
+      "triangles": 50000,
+      "results": {
+        "zoom_1_highlight_0_through_0": {
+          "median_ms": 113.93,
+          "min_ms": 83.81,
+          "max_ms": 122.87
+        },
+        "zoom_1_highlight_1_through_0": {
+          "median_ms": 101.9,
+          "min_ms": 92.17,
+          "max_ms": 121.72
+        },
+        "zoom_1_highlight_1_through_1": {
+          "median_ms": 105.27,
+          "min_ms": 102.95,
+          "max_ms": 115.41
+        },
+        "zoom_4_highlight_1_through_0": {
+          "median_ms": 125.49,
+          "min_ms": 113.34,
+          "max_ms": 153.08
+        }
+      }
+    },
+    {
+      "triangles": 200000,
+      "results": {
+        "zoom_1_highlight_0_through_0": {
+          "median_ms": 428.53,
+          "min_ms": 355.58,
+          "max_ms": 446.86
+        },
+        "zoom_1_highlight_1_through_0": {
+          "median_ms": 401.9,
+          "min_ms": 381.83,
+          "max_ms": 466.58
+        },
+        "zoom_1_highlight_1_through_1": {
+          "median_ms": 378.17,
+          "min_ms": 369.93,
+          "max_ms": 480.13
+        },
+        "zoom_4_highlight_1_through_0": {
+          "median_ms": 435.86,
+          "min_ms": 409.24,
+          "max_ms": 458.16
+        }
+      }
+    }
+  ]
+}

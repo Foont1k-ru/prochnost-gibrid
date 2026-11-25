@@ -1,0 +1,1245 @@
+{
+  "environment": {
+    "platform": "Linux-6.1.158+-x86_64-with-glibc2.36",
+    "python": "3.11.2",
+    "numpy": "2.4.6",
+    "ocp": "8.0.1.1.0",
+    "repeat": 7,
+    "deviation_mm": 2.0,
+    "method": "fresh subprocess; alternating instrumented and production; compare exact outputs; overlapping stage durations"
+  },
+  "cases": {
+    "free_straight": {
+      "triangles": 288,
+      "groups": 2,
+      "samples": {
+        "instrumented": [
+          {
+            "cadmesh_validate_ms": 0.1476440002079471,
+            "job_total_ms": 969.1099199999371,
+            "input_before_launch_ms": 2.228793000085716,
+            "popen_ms": 0.43861799986189,
+            "launch_to_wait_ms": 965.2159819997905,
+            "post_wait_ms": 1.6651450000608747,
+            "ocp_check_import_ms": 619.8213649995523,
+            "build_free_arm_tubes_ms": 7.656631999907404,
+            "_mesh_shape_grouped_ms": 4.924701000163623,
+            "create_grouped_mesh_ms": 633.8496329999543,
+            "save_npz_ms": 0.7938120002108917,
+            "process_start_to_entry_ms": 54.556469000090146,
+            "worker_module_import_ms": 72.62748399989505,
+            "worker_main_ms": 634.7989700002472,
+            "after_main_to_wait_ms": 203.22490299986384,
+            "output_bytes": 26100
+          },
+          {
+            "cadmesh_validate_ms": 0.16064400006143842,
+            "job_total_ms": 1004.6521499998562,
+            "input_before_launch_ms": 1.6174169995792909,
+            "popen_ms": 0.3119430002698209,
+            "launch_to_wait_ms": 1001.1321070001031,
+            "post_wait_ms": 1.9026260001737683,
+            "ocp_check_import_ms": 611.1706709998543,
+            "build_free_arm_tubes_ms": 7.600431999890134,
+            "_mesh_shape_grouped_ms": 5.163848999927723,
+            "create_grouped_mesh_ms": 625.3549850002855,
+            "save_npz_ms": 0.8322580001731694,
+            "process_start_to_entry_ms": 50.44135100024505,
+            "worker_module_import_ms": 70.25624200014136,
+            "worker_main_ms": 626.3523489997169,
+            "after_main_to_wait_ms": 254.07553500008362,
+            "output_bytes": 26100
+          },
+          {
+            "cadmesh_validate_ms": 0.20701300036307657,
+            "job_total_ms": 1119.5724750000409,
+            "input_before_launch_ms": 1.863145999777771,
+            "popen_ms": 0.3690000003189198,
+            "launch_to_wait_ms": 1115.5325839999932,
+            "post_wait_ms": 2.176745000269875,
+            "ocp_check_import_ms": 676.9239459995333,
+            "build_free_arm_tubes_ms": 8.072949000052176,
+            "_mesh_shape_grouped_ms": 5.548765000185085,
+            "create_grouped_mesh_ms": 691.9115400000919,
+            "save_npz_ms": 0.8478700001433026,
+            "process_start_to_entry_ms": 72.41026200017586,
+            "worker_module_import_ms": 78.33870800004661,
+            "worker_main_ms": 692.9362400001082,
+            "after_main_to_wait_ms": 271.83894399968267,
+            "output_bytes": 26100
+          },
+          {
+            "cadmesh_validate_ms": 0.14588099975298974,
+            "job_total_ms": 1119.5873159999792,
+            "input_before_launch_ms": 1.7984389996854588,
+            "popen_ms": 0.4327990000092541,
+            "launch_to_wait_ms": 1116.26829800025,
+            "post_wait_ms": 1.5205790000436537,
+            "ocp_check_import_ms": 674.8916699998517,
+            "build_free_arm_tubes_ms": 7.576487999813253,
+            "_mesh_shape_grouped_ms": 5.74065899991183,
+            "create_grouped_mesh_ms": 689.922445999855,
+            "save_npz_ms": 0.8449140000266198,
+            "process_start_to_entry_ms": 69.3305469999359,
+            "worker_module_import_ms": 113.88815600003,
+            "worker_main_ms": 690.9431290000612,
+            "after_main_to_wait_ms": 242.09587399991506,
+            "output_bytes": 26100
+          },
+          {
+            "cadmesh_validate_ms": 0.2035389998127357,
+            "job_total_ms": 1068.5624070001722,
+            "input_before_launch_ms": 1.4925039999980072,
+            "popen_ms": 0.33213799997611204,
+            "launch_to_wait_ms": 1065.0718490001054,
+            "post_wait_ms": 1.9980540000688052,
+            "ocp_check_import_ms": 671.5581600001315,
+            "build_free_arm_tubes_ms": 8.59103899983893,
+            "_mesh_shape_grouped_ms": 5.468987999847741,
+            "create_grouped_mesh_ms": 687.2063799996795,
+            "save_npz_ms": 0.7731169998805854,
+            "process_start_to_entry_ms": 49.98907200024405,
+            "worker_module_import_ms": 68.99559799967392,
+            "worker_main_ms": 688.1406450002032,
+            "after_main_to_wait_ms": 257.94039399988833,
+            "output_bytes": 26100
+          },
+          {
+            "cadmesh_validate_ms": 0.13267600024846615,
+            "job_total_ms": 969.776002999879,
+            "input_before_launch_ms": 1.6570509997109184,
+            "popen_ms": 1.650648000122601,
+            "launch_to_wait_ms": 966.677097000229,
+            "post_wait_ms": 1.4418549999390962,
+            "ocp_check_import_ms": 619.0167440004188,
+            "build_free_arm_tubes_ms": 7.406137000089075,
+            "_mesh_shape_grouped_ms": 4.998052000246389,
+            "create_grouped_mesh_ms": 632.7436659998966,
+            "save_npz_ms": 0.7468680000783934,
+            "process_start_to_entry_ms": 51.55665100028273,
+            "worker_module_import_ms": 70.30978299962953,
+            "worker_main_ms": 633.6525859996982,
+            "after_main_to_wait_ms": 211.1506620003638,
+            "output_bytes": 26100
+          },
+          {
+            "cadmesh_validate_ms": 0.13953999996374478,
+            "job_total_ms": 1169.0557800002352,
+            "input_before_launch_ms": 1.552606000132073,
+            "popen_ms": 0.3473179999673448,
+            "launch_to_wait_ms": 1165.9898309999335,
+            "post_wait_ms": 1.513343000169698,
+            "ocp_check_import_ms": 713.1059390003429,
+            "build_free_arm_tubes_ms": 8.229940999626706,
+            "_mesh_shape_grouped_ms": 5.5816000003687805,
+            "create_grouped_mesh_ms": 728.2425930002319,
+            "save_npz_ms": 0.8348420001311752,
+            "process_start_to_entry_ms": 50.56531600030212,
+            "worker_module_import_ms": 73.75687199964887,
+            "worker_main_ms": 729.2596319998665,
+            "after_main_to_wait_ms": 312.3948869997548,
+            "output_bytes": 26100
+          }
+        ],
+        "production": [
+          {
+            "cadmesh_validate_ms": 0.34625399985088734,
+            "job_total_ms": 970.7023689998096,
+            "input_before_launch_ms": 1.256448999811255,
+            "popen_ms": 0.26557599994703196,
+            "launch_to_wait_ms": 965.2091630000541,
+            "post_wait_ms": 4.236756999944191
+          },
+          {
+            "cadmesh_validate_ms": 0.1401999998051906,
+            "job_total_ms": 968.8157800001136,
+            "input_before_launch_ms": 1.7914630002451304,
+            "popen_ms": 0.3405699999348144,
+            "launch_to_wait_ms": 965.5126949996884,
+            "post_wait_ms": 1.5116220001800684
+          },
+          {
+            "cadmesh_validate_ms": 0.2559889999247389,
+            "job_total_ms": 1012.523721999969,
+            "input_before_launch_ms": 1.4826930000708671,
+            "popen_ms": 0.2618499997879553,
+            "launch_to_wait_ms": 1008.5634869997193,
+            "post_wait_ms": 2.4775420001788007
+          },
+          {
+            "cadmesh_validate_ms": 0.19563700016078656,
+            "job_total_ms": 967.9995519995828,
+            "input_before_launch_ms": 1.4886729995851056,
+            "popen_ms": 0.27547100035008043,
+            "launch_to_wait_ms": 964.9946430004093,
+            "post_wait_ms": 1.516235999588389
+          },
+          {
+            "cadmesh_validate_ms": 0.13290600008986075,
+            "job_total_ms": 1004.1981499998656,
+            "input_before_launch_ms": 1.4566569998351042,
+            "popen_ms": 0.24375900011364138,
+            "launch_to_wait_ms": 1001.2284099998396,
+            "post_wait_ms": 1.513083000190818
+          },
+          {
+            "cadmesh_validate_ms": 0.229374999889842,
+            "job_total_ms": 1004.7508070001641,
+            "input_before_launch_ms": 1.4908709999872372,
+            "popen_ms": 0.24774600024102256,
+            "launch_to_wait_ms": 1001.1218230001759,
+            "post_wait_ms": 2.1381130000008852
+          },
+          {
+            "cadmesh_validate_ms": 0.1789929997357831,
+            "job_total_ms": 1118.436309000117,
+            "input_before_launch_ms": 1.5084189999470254,
+            "popen_ms": 0.27725200015993323,
+            "launch_to_wait_ms": 1115.4227320002974,
+            "post_wait_ms": 1.5051579998726083
+          }
+        ]
+      },
+      "summary": {
+        "instrumented": {
+          "_mesh_shape_grouped_ms": {
+            "median": 5.469,
+            "min": 4.925,
+            "max": 5.741
+          },
+          "after_main_to_wait_ms": {
+            "median": 254.076,
+            "min": 203.225,
+            "max": 312.395
+          },
+          "build_free_arm_tubes_ms": {
+            "median": 7.657,
+            "min": 7.406,
+            "max": 8.591
+          },
+          "cadmesh_validate_ms": {
+            "median": 0.148,
+            "min": 0.133,
+            "max": 0.207
+          },
+          "create_grouped_mesh_ms": {
+            "median": 687.206,
+            "min": 625.355,
+            "max": 728.243
+          },
+          "input_before_launch_ms": {
+            "median": 1.657,
+            "min": 1.493,
+            "max": 2.229
+          },
+          "job_total_ms": {
+            "median": 1068.562,
+            "min": 969.11,
+            "max": 1169.056
+          },
+          "launch_to_wait_ms": {
+            "median": 1065.072,
+            "min": 965.216,
+            "max": 1165.99
+          },
+          "ocp_check_import_ms": {
+            "median": 671.558,
+            "min": 611.171,
+            "max": 713.106
+          },
+          "output_bytes": {
+            "median": 26100,
+            "min": 26100,
+            "max": 26100
+          },
+          "popen_ms": {
+            "median": 0.369,
+            "min": 0.312,
+            "max": 1.651
+          },
+          "post_wait_ms": {
+            "median": 1.665,
+            "min": 1.442,
+            "max": 2.177
+          },
+          "process_start_to_entry_ms": {
+            "median": 51.557,
+            "min": 49.989,
+            "max": 72.41
+          },
+          "save_npz_ms": {
+            "median": 0.832,
+            "min": 0.747,
+            "max": 0.848
+          },
+          "worker_main_ms": {
+            "median": 688.141,
+            "min": 626.352,
+            "max": 729.26
+          },
+          "worker_module_import_ms": {
+            "median": 72.627,
+            "min": 68.996,
+            "max": 113.888
+          }
+        },
+        "production": {
+          "cadmesh_validate_ms": {
+            "median": 0.196,
+            "min": 0.133,
+            "max": 0.346
+          },
+          "input_before_launch_ms": {
+            "median": 1.489,
+            "min": 1.256,
+            "max": 1.791
+          },
+          "job_total_ms": {
+            "median": 1004.198,
+            "min": 968.0,
+            "max": 1118.436
+          },
+          "launch_to_wait_ms": {
+            "median": 1001.122,
+            "min": 964.995,
+            "max": 1115.423
+          },
+          "popen_ms": {
+            "median": 0.266,
+            "min": 0.244,
+            "max": 0.341
+          },
+          "post_wait_ms": {
+            "median": 1.516,
+            "min": 1.505,
+            "max": 4.237
+          }
+        }
+      }
+    },
+    "free_bent": {
+      "triangles": 576,
+      "groups": 2,
+      "samples": {
+        "instrumented": [
+          {
+            "cadmesh_validate_ms": 0.14670099972136086,
+            "job_total_ms": 1168.8162109999212,
+            "input_before_launch_ms": 1.7166369998449227,
+            "popen_ms": 0.3662019998955657,
+            "launch_to_wait_ms": 1165.402487999927,
+            "post_wait_ms": 1.6970860001492838,
+            "ocp_check_import_ms": 728.1133759997829,
+            "build_free_arm_tubes_ms": 10.61061200016411,
+            "_mesh_shape_grouped_ms": 9.434878000320168,
+            "create_grouped_mesh_ms": 750.8347299999514,
+            "save_npz_ms": 1.3501829998858739,
+            "process_start_to_entry_ms": 54.20688899994275,
+            "worker_module_import_ms": 75.73618500009616,
+            "worker_main_ms": 752.470734000326,
+            "after_main_to_wait_ms": 282.9798069997196,
+            "output_bytes": 49140
+          },
+          {
+            "cadmesh_validate_ms": 0.14242199995351257,
+            "job_total_ms": 1118.7668190000295,
+            "input_before_launch_ms": 1.6151670001818275,
+            "popen_ms": 0.3455999999459891,
+            "launch_to_wait_ms": 1115.6931989999066,
+            "post_wait_ms": 1.4584529999410734,
+            "ocp_check_import_ms": 671.5109119995759,
+            "build_free_arm_tubes_ms": 8.286316000067018,
+            "_mesh_shape_grouped_ms": 8.569630999772926,
+            "create_grouped_mesh_ms": 690.4001289999542,
+            "save_npz_ms": 0.8613219997641863,
+            "process_start_to_entry_ms": 54.553858999952354,
+            "worker_module_import_ms": 77.44239099974948,
+            "worker_main_ms": 691.4289470000767,
+            "after_main_to_wait_ms": 292.26078900001085,
+            "output_bytes": 49140
+          },
+          {
+            "cadmesh_validate_ms": 0.1690600001893472,
+            "job_total_ms": 1219.487373999982,
+            "input_before_launch_ms": 1.3400309999269666,
+            "popen_ms": 0.409022000440018,
+            "launch_to_wait_ms": 1215.9946730002957,
+            "post_wait_ms": 2.1526699997593823,
+            "ocp_check_import_ms": 743.3585990006577,
+            "build_free_arm_tubes_ms": 10.513134999655449,
+            "_mesh_shape_grouped_ms": 8.538335000139341,
+            "create_grouped_mesh_ms": 764.6479110003384,
+            "save_npz_ms": 0.9319810001215956,
+            "process_start_to_entry_ms": 57.39183800005776,
+            "worker_module_import_ms": 96.22736600022108,
+            "worker_main_ms": 765.7889639999667,
+            "after_main_to_wait_ms": 296.57510000015463,
+            "output_bytes": 49140
+          },
+          {
+            "cadmesh_validate_ms": 0.15894399984972551,
+            "job_total_ms": 1119.1525370004456,
+            "input_before_launch_ms": 2.011497000239615,
+            "popen_ms": 0.4172459998699196,
+            "launch_to_wait_ms": 1115.3793839998798,
+            "post_wait_ms": 1.7616560003261839,
+            "ocp_check_import_ms": 652.863022000929,
+            "build_free_arm_tubes_ms": 8.419737999702193,
+            "_mesh_shape_grouped_ms": 10.743630999968445,
+            "create_grouped_mesh_ms": 674.0902410001581,
+            "save_npz_ms": 0.9834450002017547,
+            "process_start_to_entry_ms": 56.907742000021244,
+            "worker_module_import_ms": 71.9079939999574,
+            "worker_main_ms": 675.3146139999444,
+            "after_main_to_wait_ms": 311.2403909999557,
+            "output_bytes": 49140
+          },
+          {
+            "cadmesh_validate_ms": 0.15220500017676386,
+            "job_total_ms": 1068.740999000056,
+            "input_before_launch_ms": 1.6619220000393398,
+            "popen_ms": 0.48714800004745484,
+            "launch_to_wait_ms": 1065.4300640003385,
+            "post_wait_ms": 1.6490129996782343,
+            "ocp_check_import_ms": 656.6779939994376,
+            "build_free_arm_tubes_ms": 8.477803000005224,
+            "_mesh_shape_grouped_ms": 8.47103399974003,
+            "create_grouped_mesh_ms": 675.5847689996699,
+            "save_npz_ms": 0.9287780003432999,
+            "process_start_to_entry_ms": 57.71359600021242,
+            "worker_module_import_ms": 72.89423700012776,
+            "worker_main_ms": 676.7031999997926,
+            "after_main_to_wait_ms": 258.1114580002577,
+            "output_bytes": 49140
+          },
+          {
+            "cadmesh_validate_ms": 0.14987800022936426,
+            "job_total_ms": 1118.6283259999072,
+            "input_before_launch_ms": 1.5834929999982705,
+            "popen_ms": 0.35862300001099356,
+            "launch_to_wait_ms": 1115.3195930000948,
+            "post_wait_ms": 1.725239999814221,
+            "ocp_check_import_ms": 658.7401679998948,
+            "build_free_arm_tubes_ms": 8.48252500009039,
+            "_mesh_shape_grouped_ms": 8.425915999850986,
+            "create_grouped_mesh_ms": 677.7703669999937,
+            "save_npz_ms": 0.9054979996108159,
+            "process_start_to_entry_ms": 52.934636999907525,
+            "worker_module_import_ms": 76.13101400011146,
+            "worker_main_ms": 678.897286999927,
+            "after_main_to_wait_ms": 307.3484050000843,
+            "output_bytes": 49140
+          },
+          {
+            "cadmesh_validate_ms": 0.16032499979701242,
+            "job_total_ms": 1020.0173090001954,
+            "input_before_launch_ms": 1.6808919999675709,
+            "popen_ms": 0.3139649998047389,
+            "launch_to_wait_ms": 1016.7527499997959,
+            "post_wait_ms": 1.5836670004318876,
+            "ocp_check_import_ms": 632.4364100000821,
+            "build_free_arm_tubes_ms": 8.583200999964902,
+            "_mesh_shape_grouped_ms": 8.504586000071868,
+            "create_grouped_mesh_ms": 651.5868770002271,
+            "save_npz_ms": 0.8388820001528074,
+            "process_start_to_entry_ms": 52.07304599980489,
+            "worker_module_import_ms": 69.95014500034813,
+            "worker_main_ms": 652.5983370001995,
+            "after_main_to_wait_ms": 242.12314699980197,
+            "output_bytes": 49140
+          }
+        ],
+        "production": [
+          {
+            "cadmesh_validate_ms": 0.16010000035748817,
+            "job_total_ms": 1118.9624749999894,
+            "input_before_launch_ms": 1.8843600000764127,
+            "popen_ms": 0.32021499964685063,
+            "launch_to_wait_ms": 1115.3209369999786,
+            "post_wait_ms": 1.7571779999343562
+          },
+          {
+            "cadmesh_validate_ms": 0.15851400030442164,
+            "job_total_ms": 1171.7624070001875,
+            "input_before_launch_ms": 1.403645000209508,
+            "popen_ms": 0.3490589997454663,
+            "launch_to_wait_ms": 1168.5722120000719,
+            "post_wait_ms": 1.7865499999061285
+          },
+          {
+            "cadmesh_validate_ms": 0.16755399974499596,
+            "job_total_ms": 1169.484601000022,
+            "input_before_launch_ms": 1.7993999999816879,
+            "popen_ms": 0.28155800009699306,
+            "launch_to_wait_ms": 1165.7729009998548,
+            "post_wait_ms": 1.9123000001854962
+          },
+          {
+            "cadmesh_validate_ms": 0.1546070002405031,
+            "job_total_ms": 1119.2047639997327,
+            "input_before_launch_ms": 1.8726630000855948,
+            "popen_ms": 0.25535399981890805,
+            "launch_to_wait_ms": 1115.5915709996407,
+            "post_wait_ms": 1.7405300000064017
+          },
+          {
+            "cadmesh_validate_ms": 0.16365500005122158,
+            "job_total_ms": 1119.257010000183,
+            "input_before_launch_ms": 2.0043030003762397,
+            "popen_ms": 0.40228199986813706,
+            "launch_to_wait_ms": 1115.6652109998504,
+            "post_wait_ms": 1.5874959999564453
+          },
+          {
+            "cadmesh_validate_ms": 0.1556259999233589,
+            "job_total_ms": 1068.6642929999834,
+            "input_before_launch_ms": 1.7597490000298421,
+            "popen_ms": 0.32601599968984374,
+            "launch_to_wait_ms": 1065.239991999988,
+            "post_wait_ms": 1.6645519999656244
+          },
+          {
+            "cadmesh_validate_ms": 0.1582630002303631,
+            "job_total_ms": 968.6738199998217,
+            "input_before_launch_ms": 1.7734159996507515,
+            "popen_ms": 0.2732850002757914,
+            "launch_to_wait_ms": 965.1943710000523,
+            "post_wait_ms": 1.706033000118623
+          }
+        ]
+      },
+      "summary": {
+        "instrumented": {
+          "_mesh_shape_grouped_ms": {
+            "median": 8.538,
+            "min": 8.426,
+            "max": 10.744
+          },
+          "after_main_to_wait_ms": {
+            "median": 292.261,
+            "min": 242.123,
+            "max": 311.24
+          },
+          "build_free_arm_tubes_ms": {
+            "median": 8.483,
+            "min": 8.286,
+            "max": 10.611
+          },
+          "cadmesh_validate_ms": {
+            "median": 0.152,
+            "min": 0.142,
+            "max": 0.169
+          },
+          "create_grouped_mesh_ms": {
+            "median": 677.77,
+            "min": 651.587,
+            "max": 764.648
+          },
+          "input_before_launch_ms": {
+            "median": 1.662,
+            "min": 1.34,
+            "max": 2.011
+          },
+          "job_total_ms": {
+            "median": 1118.767,
+            "min": 1020.017,
+            "max": 1219.487
+          },
+          "launch_to_wait_ms": {
+            "median": 1115.379,
+            "min": 1016.753,
+            "max": 1215.995
+          },
+          "ocp_check_import_ms": {
+            "median": 658.74,
+            "min": 632.436,
+            "max": 743.359
+          },
+          "output_bytes": {
+            "median": 49140,
+            "min": 49140,
+            "max": 49140
+          },
+          "popen_ms": {
+            "median": 0.366,
+            "min": 0.314,
+            "max": 0.487
+          },
+          "post_wait_ms": {
+            "median": 1.697,
+            "min": 1.458,
+            "max": 2.153
+          },
+          "process_start_to_entry_ms": {
+            "median": 54.554,
+            "min": 52.073,
+            "max": 57.714
+          },
+          "save_npz_ms": {
+            "median": 0.929,
+            "min": 0.839,
+            "max": 1.35
+          },
+          "worker_main_ms": {
+            "median": 678.897,
+            "min": 652.598,
+            "max": 765.789
+          },
+          "worker_module_import_ms": {
+            "median": 75.736,
+            "min": 69.95,
+            "max": 96.227
+          }
+        },
+        "production": {
+          "cadmesh_validate_ms": {
+            "median": 0.159,
+            "min": 0.155,
+            "max": 0.168
+          },
+          "input_before_launch_ms": {
+            "median": 1.799,
+            "min": 1.404,
+            "max": 2.004
+          },
+          "job_total_ms": {
+            "median": 1119.205,
+            "min": 968.674,
+            "max": 1171.762
+          },
+          "launch_to_wait_ms": {
+            "median": 1115.592,
+            "min": 965.194,
+            "max": 1168.572
+          },
+          "popen_ms": {
+            "median": 0.32,
+            "min": 0.255,
+            "max": 0.402
+          },
+          "post_wait_ms": {
+            "median": 1.741,
+            "min": 1.587,
+            "max": 1.912
+          }
+        }
+      }
+    },
+    "snapshot_bent": {
+      "triangles": 576,
+      "groups": 2,
+      "samples": {
+        "instrumented": [
+          {
+            "cadmesh_validate_ms": 0.1617630000509962,
+            "job_total_ms": 1070.153614999981,
+            "input_before_launch_ms": 3.3105779998550133,
+            "popen_ms": 0.3690759999699367,
+            "launch_to_wait_ms": 1065.2567490001275,
+            "post_wait_ms": 1.5862879999986035,
+            "ocp_check_import_ms": 627.3669639999753,
+            "build_weldment_tubes_preview_ms": 9.857240000201273,
+            "_mesh_shape_grouped_ms": 10.076865999963047,
+            "create_grouped_mesh_ms": 650.9749950000696,
+            "save_npz_ms": 0.9073530000023311,
+            "process_start_to_entry_ms": 51.65339999985008,
+            "worker_module_import_ms": 72.0720210001673,
+            "worker_main_ms": 652.0585270000083,
+            "after_main_to_wait_ms": 289.46618999998464,
+            "output_bytes": 49140
+          },
+          {
+            "cadmesh_validate_ms": 0.1517589998911717,
+            "job_total_ms": 1070.341998999993,
+            "input_before_launch_ms": 3.3820009998635214,
+            "popen_ms": 0.5685690002792398,
+            "launch_to_wait_ms": 1065.292781000153,
+            "post_wait_ms": 1.6672169999765174,
+            "ocp_check_import_ms": 663.5145199998078,
+            "build_weldment_tubes_preview_ms": 9.645797999837669,
+            "_mesh_shape_grouped_ms": 8.221705000323709,
+            "create_grouped_mesh_ms": 685.0204150000536,
+            "save_npz_ms": 0.8911580002859409,
+            "process_start_to_entry_ms": 55.91925099997752,
+            "worker_module_import_ms": 75.99423999999999,
+            "worker_main_ms": 686.0835059997044,
+            "after_main_to_wait_ms": 247.28773700007878,
+            "output_bytes": 49140
+          },
+          {
+            "cadmesh_validate_ms": 0.1751809995766962,
+            "job_total_ms": 1005.9804369998346,
+            "input_before_launch_ms": 3.19097800002055,
+            "popen_ms": 0.3391280001778796,
+            "launch_to_wait_ms": 1001.1653980000119,
+            "post_wait_ms": 1.6240609998021682,
+            "ocp_check_import_ms": 598.8005869999142,
+            "build_weldment_tubes_preview_ms": 9.348378999675333,
+            "_mesh_shape_grouped_ms": 8.35096800028623,
+            "create_grouped_mesh_ms": 620.0317329999052,
+            "save_npz_ms": 0.8921089997784293,
+            "process_start_to_entry_ms": 49.987910999789165,
+            "worker_module_import_ms": 69.58631800034709,
+            "worker_main_ms": 621.1033029999271,
+            "after_main_to_wait_ms": 260.47976000018025,
+            "output_bytes": 49140
+          },
+          {
+            "cadmesh_validate_ms": 0.1613720000932517,
+            "job_total_ms": 970.0702219997765,
+            "input_before_launch_ms": 3.3390099997632205,
+            "popen_ms": 0.320743000429502,
+            "launch_to_wait_ms": 965.1635019999958,
+            "post_wait_ms": 1.5677100000175415,
+            "ocp_check_import_ms": 601.9680599997628,
+            "build_weldment_tubes_preview_ms": 9.261424999749579,
+            "_mesh_shape_grouped_ms": 8.028754999941157,
+            "create_grouped_mesh_ms": 622.7389410000796,
+            "save_npz_ms": 0.7652670001334627,
+            "process_start_to_entry_ms": 52.77378300024793,
+            "worker_module_import_ms": 75.34011400002782,
+            "worker_main_ms": 623.6802569997053,
+            "after_main_to_wait_ms": 213.36221299998215,
+            "output_bytes": 49140
+          },
+          {
+            "cadmesh_validate_ms": 0.16337200031557586,
+            "job_total_ms": 1021.211989999756,
+            "input_before_launch_ms": 2.962975999707851,
+            "popen_ms": 0.335252000240871,
+            "launch_to_wait_ms": 1016.7197480000141,
+            "post_wait_ms": 1.529266000034113,
+            "ocp_check_import_ms": 640.5961399996158,
+            "build_weldment_tubes_preview_ms": 9.274670999730006,
+            "_mesh_shape_grouped_ms": 8.455778999632457,
+            "create_grouped_mesh_ms": 661.8571610001709,
+            "save_npz_ms": 0.9265009998671303,
+            "process_start_to_entry_ms": 53.35283300019,
+            "worker_module_import_ms": 71.86742099975163,
+            "worker_main_ms": 662.9796009997335,
+            "after_main_to_wait_ms": 228.51376300013726,
+            "output_bytes": 49140
+          },
+          {
+            "cadmesh_validate_ms": 0.1503710000179126,
+            "job_total_ms": 970.1263930001005,
+            "input_before_launch_ms": 3.157187999931921,
+            "popen_ms": 0.3632890002336353,
+            "launch_to_wait_ms": 965.3617380004107,
+            "post_wait_ms": 1.6074669997578894,
+            "ocp_check_import_ms": 594.9289669997597,
+            "build_weldment_tubes_preview_ms": 9.12276099961673,
+            "_mesh_shape_grouped_ms": 7.91724200007593,
+            "create_grouped_mesh_ms": 615.4006510000727,
+            "save_npz_ms": 0.8719359998394793,
+            "process_start_to_entry_ms": 50.60446600009527,
+            "worker_module_import_ms": 70.35533699990992,
+            "worker_main_ms": 616.4353320000373,
+            "after_main_to_wait_ms": 227.9584600000817,
+            "output_bytes": 49140
+          },
+          {
+            "cadmesh_validate_ms": 0.21787600007883157,
+            "job_total_ms": 1006.5077210001618,
+            "input_before_launch_ms": 3.0897649999133137,
+            "popen_ms": 0.3182810000907921,
+            "launch_to_wait_ms": 1001.1823049999293,
+            "post_wait_ms": 2.2356510003191943,
+            "ocp_check_import_ms": 605.7487649995892,
+            "build_weldment_tubes_preview_ms": 11.628764999841223,
+            "_mesh_shape_grouped_ms": 8.174390000021958,
+            "create_grouped_mesh_ms": 629.1571779997867,
+            "save_npz_ms": 0.9064839996426599,
+            "process_start_to_entry_ms": 52.706008999848564,
+            "worker_module_import_ms": 70.35860800033333,
+            "worker_main_ms": 630.238909000127,
+            "after_main_to_wait_ms": 247.87144399988392,
+            "output_bytes": 49140
+          }
+        ],
+        "production": [
+          {
+            "cadmesh_validate_ms": 0.22423099972002092,
+            "job_total_ms": 1006.2359479998122,
+            "input_before_launch_ms": 3.4270880000804027,
+            "popen_ms": 0.28300999974817387,
+            "launch_to_wait_ms": 1001.1258009999437,
+            "post_wait_ms": 1.6830589997880452
+          },
+          {
+            "cadmesh_validate_ms": 0.18541800000093644,
+            "job_total_ms": 1007.26246000022,
+            "input_before_launch_ms": 3.6388710000210267,
+            "popen_ms": 0.28481500021371176,
+            "launch_to_wait_ms": 1001.7744820002008,
+            "post_wait_ms": 1.8491069999981846
+          },
+          {
+            "cadmesh_validate_ms": 0.19311200003357953,
+            "job_total_ms": 920.0411580000036,
+            "input_before_launch_ms": 3.3575460001884494,
+            "popen_ms": 0.28699599988613045,
+            "launch_to_wait_ms": 915.0215729996489,
+            "post_wait_ms": 1.66203900016626
+          },
+          {
+            "cadmesh_validate_ms": 0.1418950000697805,
+            "job_total_ms": 1069.463750000068,
+            "input_before_launch_ms": 3.3567909999874246,
+            "popen_ms": 0.2920599999924889,
+            "launch_to_wait_ms": 1064.6780000001854,
+            "post_wait_ms": 1.4289589998952579
+          },
+          {
+            "cadmesh_validate_ms": 0.16810899978736416,
+            "job_total_ms": 1078.794642000048,
+            "input_before_launch_ms": 3.0226779999793507,
+            "popen_ms": 9.57643099991401,
+            "launch_to_wait_ms": 1074.1735520000475,
+            "post_wait_ms": 1.5984120000211988
+          },
+          {
+            "cadmesh_validate_ms": 0.1605330003258132,
+            "job_total_ms": 920.332364999922,
+            "input_before_launch_ms": 3.3864570000332606,
+            "popen_ms": 0.4924230001961405,
+            "launch_to_wait_ms": 915.363010999954,
+            "post_wait_ms": 1.5828969999347464
+          },
+          {
+            "cadmesh_validate_ms": 0.15161999999691034,
+            "job_total_ms": 969.8846660003255,
+            "input_before_launch_ms": 2.9309480000847543,
+            "popen_ms": 0.24204900000768248,
+            "launch_to_wait_ms": 965.2797439998722,
+            "post_wait_ms": 1.6739740003686165
+          }
+        ]
+      },
+      "summary": {
+        "instrumented": {
+          "_mesh_shape_grouped_ms": {
+            "median": 8.222,
+            "min": 7.917,
+            "max": 10.077
+          },
+          "after_main_to_wait_ms": {
+            "median": 247.288,
+            "min": 213.362,
+            "max": 289.466
+          },
+          "build_weldment_tubes_preview_ms": {
+            "median": 9.348,
+            "min": 9.123,
+            "max": 11.629
+          },
+          "cadmesh_validate_ms": {
+            "median": 0.162,
+            "min": 0.15,
+            "max": 0.218
+          },
+          "create_grouped_mesh_ms": {
+            "median": 629.157,
+            "min": 615.401,
+            "max": 685.02
+          },
+          "input_before_launch_ms": {
+            "median": 3.191,
+            "min": 2.963,
+            "max": 3.382
+          },
+          "job_total_ms": {
+            "median": 1006.508,
+            "min": 970.07,
+            "max": 1070.342
+          },
+          "launch_to_wait_ms": {
+            "median": 1001.182,
+            "min": 965.164,
+            "max": 1065.293
+          },
+          "ocp_check_import_ms": {
+            "median": 605.749,
+            "min": 594.929,
+            "max": 663.515
+          },
+          "output_bytes": {
+            "median": 49140,
+            "min": 49140,
+            "max": 49140
+          },
+          "popen_ms": {
+            "median": 0.339,
+            "min": 0.318,
+            "max": 0.569
+          },
+          "post_wait_ms": {
+            "median": 1.607,
+            "min": 1.529,
+            "max": 2.236
+          },
+          "process_start_to_entry_ms": {
+            "median": 52.706,
+            "min": 49.988,
+            "max": 55.919
+          },
+          "save_npz_ms": {
+            "median": 0.892,
+            "min": 0.765,
+            "max": 0.927
+          },
+          "worker_main_ms": {
+            "median": 630.239,
+            "min": 616.435,
+            "max": 686.084
+          },
+          "worker_module_import_ms": {
+            "median": 71.867,
+            "min": 69.586,
+            "max": 75.994
+          }
+        },
+        "production": {
+          "cadmesh_validate_ms": {
+            "median": 0.168,
+            "min": 0.142,
+            "max": 0.224
+          },
+          "input_before_launch_ms": {
+            "median": 3.358,
+            "min": 2.931,
+            "max": 3.639
+          },
+          "job_total_ms": {
+            "median": 1006.236,
+            "min": 920.041,
+            "max": 1078.795
+          },
+          "launch_to_wait_ms": {
+            "median": 1001.126,
+            "min": 915.022,
+            "max": 1074.174
+          },
+          "popen_ms": {
+            "median": 0.287,
+            "min": 0.242,
+            "max": 9.576
+          },
+          "post_wait_ms": {
+            "median": 1.662,
+            "min": 1.429,
+            "max": 1.849
+          }
+        }
+      }
+    },
+    "snapshot_bent_housing": {
+      "triangles": 778,
+      "groups": 3,
+      "samples": {
+        "instrumented": [
+          {
+            "cadmesh_validate_ms": 0.14140300027065678,
+            "job_total_ms": 1268.0522480000036,
+            "input_before_launch_ms": 3.3987980000347306,
+            "popen_ms": 0.4730779996862111,
+            "launch_to_wait_ms": 1251.4676859996143,
+            "post_wait_ms": 13.185764000354538,
+            "ocp_check_import_ms": 617.35157800058,
+            "build_fixed_arm_housing_preview_ms": 216.21532900007878,
+            "_mesh_shape_grouped_ms": 11.32400200003758,
+            "create_grouped_mesh_ms": 854.9935510000068,
+            "save_npz_ms": 0.9292430004279595,
+            "process_start_to_entry_ms": 51.8537269999797,
+            "worker_module_import_ms": 73.586645999967,
+            "worker_main_ms": 856.0990559999482,
+            "after_main_to_wait_ms": 269.9215119996552,
+            "output_bytes": 65812
+          },
+          {
+            "cadmesh_validate_ms": 0.22383199984687963,
+            "job_total_ms": 1169.8801679999633,
+            "input_before_launch_ms": 2.7984190001006937,
+            "popen_ms": 0.39625399995202315,
+            "launch_to_wait_ms": 1165.245555999718,
+            "post_wait_ms": 1.8361930001447035,
+            "ocp_check_import_ms": 590.2629320003143,
+            "build_fixed_arm_housing_preview_ms": 216.1026280000442,
+            "_mesh_shape_grouped_ms": 10.994377999850258,
+            "create_grouped_mesh_ms": 827.156973000001,
+            "save_npz_ms": 0.8556200000384706,
+            "process_start_to_entry_ms": 56.8807409999863,
+            "worker_module_import_ms": 72.92350199986686,
+            "worker_main_ms": 828.2460229997923,
+            "after_main_to_wait_ms": 207.1884570000293,
+            "output_bytes": 65812
+          },
+          {
+            "cadmesh_validate_ms": 0.1578890000928368,
+            "job_total_ms": 1222.688842000025,
+            "input_before_launch_ms": 3.058426999814401,
+            "popen_ms": 0.46550100023523555,
+            "launch_to_wait_ms": 1217.9780220003522,
+            "post_wait_ms": 1.6523929998584208,
+            "ocp_check_import_ms": 597.994287000347,
+            "build_fixed_arm_housing_preview_ms": 234.45971099999952,
+            "_mesh_shape_grouped_ms": 11.093007999988913,
+            "create_grouped_mesh_ms": 853.67889500003,
+            "save_npz_ms": 0.9454559999539924,
+            "process_start_to_entry_ms": 49.12409700000353,
+            "worker_module_import_ms": 67.67280900021433,
+            "worker_main_ms": 854.8078160001751,
+            "after_main_to_wait_ms": 246.3655840001593,
+            "output_bytes": 65812
+          },
+          {
+            "cadmesh_validate_ms": 0.1992799998333794,
+            "job_total_ms": 1220.4011200001332,
+            "input_before_launch_ms": 2.9450140000335523,
+            "popen_ms": 0.5674119997820526,
+            "launch_to_wait_ms": 1215.7908079998379,
+            "post_wait_ms": 1.6652980002618278,
+            "ocp_check_import_ms": 610.1590430002943,
+            "build_fixed_arm_housing_preview_ms": 234.34392099989054,
+            "_mesh_shape_grouped_ms": 11.638737999874138,
+            "create_grouped_mesh_ms": 866.3355590001629,
+            "save_npz_ms": 0.8920479999687814,
+            "process_start_to_entry_ms": 49.63268299979973,
+            "worker_module_import_ms": 67.80755099998714,
+            "worker_main_ms": 867.4100709999948,
+            "after_main_to_wait_ms": 230.9339439998439,
+            "output_bytes": 65812
+          },
+          {
+            "cadmesh_validate_ms": 0.16328499987139367,
+            "job_total_ms": 1256.5730790001908,
+            "input_before_launch_ms": 3.2975130002341757,
+            "popen_ms": 0.5298299997775757,
+            "launch_to_wait_ms": 1251.6654050000398,
+            "post_wait_ms": 1.6101609999168431,
+            "ocp_check_import_ms": 654.8083289994793,
+            "build_fixed_arm_housing_preview_ms": 222.1116460000303,
+            "_mesh_shape_grouped_ms": 12.007086999801686,
+            "create_grouped_mesh_ms": 899.0766209999492,
+            "save_npz_ms": 0.9425240000382473,
+            "process_start_to_entry_ms": 51.309986999967805,
+            "worker_module_import_ms": 70.48842099993635,
+            "worker_main_ms": 900.1962449997336,
+            "after_main_to_wait_ms": 229.66379700028483,
+            "output_bytes": 65812
+          },
+          {
+            "cadmesh_validate_ms": 0.16218400014622603,
+            "job_total_ms": 1220.325039999807,
+            "input_before_launch_ms": 3.2059879999906116,
+            "popen_ms": 0.34138299997721333,
+            "launch_to_wait_ms": 1215.4685109999264,
+            "post_wait_ms": 1.6505409998899268,
+            "ocp_check_import_ms": 596.6704759989625,
+            "build_fixed_arm_housing_preview_ms": 218.14444999972693,
+            "_mesh_shape_grouped_ms": 11.224164999930508,
+            "create_grouped_mesh_ms": 836.0069069999554,
+            "save_npz_ms": 0.8996629999273864,
+            "process_start_to_entry_ms": 56.4680029997362,
+            "worker_module_import_ms": 72.1575729999131,
+            "worker_main_ms": 837.083526999777,
+            "after_main_to_wait_ms": 249.75246900021375,
+            "output_bytes": 65812
+          },
+          {
+            "cadmesh_validate_ms": 0.1934759998221125,
+            "job_total_ms": 1322.326478999912,
+            "input_before_launch_ms": 5.542557999888231,
+            "popen_ms": 0.3366380001352809,
+            "launch_to_wait_ms": 1315.0195600001098,
+            "post_wait_ms": 1.7643609999140608,
+            "ocp_check_import_ms": 616.3833900009195,
+            "build_fixed_arm_housing_preview_ms": 217.5969959998838,
+            "_mesh_shape_grouped_ms": 11.206680000213964,
+            "create_grouped_mesh_ms": 855.2588890001971,
+            "save_npz_ms": 0.9411500000169326,
+            "process_start_to_entry_ms": 68.62048400034837,
+            "worker_module_import_ms": 75.40172999961214,
+            "worker_main_ms": 856.3845969997601,
+            "after_main_to_wait_ms": 314.60482400007095,
+            "output_bytes": 65812
+          }
+        ],
+        "production": [
+          {
+            "cadmesh_validate_ms": 0.22785199962527258,
+            "job_total_ms": 1258.2035969999197,
+            "input_before_launch_ms": 4.890744000022096,
+            "popen_ms": 0.5366579998735688,
+            "launch_to_wait_ms": 1251.5999120000743,
+            "post_wait_ms": 1.7129409998233314
+          },
+          {
+            "cadmesh_validate_ms": 0.20033200007674168,
+            "job_total_ms": 1170.052265999857,
+            "input_before_launch_ms": 3.2855949998520373,
+            "popen_ms": 0.1418390002072556,
+            "launch_to_wait_ms": 1165.095656000176,
+            "post_wait_ms": 1.6710149998289126
+          },
+          {
+            "cadmesh_validate_ms": 0.15453200012416346,
+            "job_total_ms": 1220.2675779999481,
+            "input_before_launch_ms": 3.169222999986232,
+            "popen_ms": 0.3826419997494668,
+            "launch_to_wait_ms": 1215.5246219999754,
+            "post_wait_ms": 1.5737329999865324
+          },
+          {
+            "cadmesh_validate_ms": 0.15680700016673654,
+            "job_total_ms": 1221.3785150001968,
+            "input_before_launch_ms": 3.111478999926476,
+            "popen_ms": 0.5065590003141551,
+            "launch_to_wait_ms": 1215.8388410002772,
+            "post_wait_ms": 2.4281949999931385
+          },
+          {
+            "cadmesh_validate_ms": 0.20339499997135135,
+            "job_total_ms": 1288.0230799996752,
+            "input_before_launch_ms": 3.2060389999060135,
+            "popen_ms": 0.3146929998365522,
+            "launch_to_wait_ms": 1283.1022529999245,
+            "post_wait_ms": 1.7147879998447024
+          },
+          {
+            "cadmesh_validate_ms": 0.17706300013742293,
+            "job_total_ms": 1170.5543880002551,
+            "input_before_launch_ms": 3.393941000013001,
+            "popen_ms": 0.48372099990956485,
+            "launch_to_wait_ms": 1165.424251999866,
+            "post_wait_ms": 1.7361950003760285
+          },
+          {
+            "cadmesh_validate_ms": 0.2643770003487589,
+            "job_total_ms": 1261.0868829997344,
+            "input_before_launch_ms": 3.5708649998014153,
+            "popen_ms": 0.397228000110772,
+            "launch_to_wait_ms": 1254.5675530000153,
+            "post_wait_ms": 2.9484649999176327
+          }
+        ]
+      },
+      "summary": {
+        "instrumented": {
+          "_mesh_shape_grouped_ms": {
+            "median": 11.224,
+            "min": 10.994,
+            "max": 12.007
+          },
+          "after_main_to_wait_ms": {
+            "median": 246.366,
+            "min": 207.188,
+            "max": 314.605
+          },
+          "build_fixed_arm_housing_preview_ms": {
+            "median": 218.144,
+            "min": 216.103,
+            "max": 234.46
+          },
+          "cadmesh_validate_ms": {
+            "median": 0.163,
+            "min": 0.141,
+            "max": 0.224
+          },
+          "create_grouped_mesh_ms": {
+            "median": 854.994,
+            "min": 827.157,
+            "max": 899.077
+          },
+          "input_before_launch_ms": {
+            "median": 3.206,
+            "min": 2.798,
+            "max": 5.543
+          },
+          "job_total_ms": {
+            "median": 1222.689,
+            "min": 1169.88,
+            "max": 1322.326
+          },
+          "launch_to_wait_ms": {
+            "median": 1217.978,
+            "min": 1165.246,
+            "max": 1315.02
+          },
+          "ocp_check_import_ms": {
+            "median": 610.159,
+            "min": 590.263,
+            "max": 654.808
+          },
+          "output_bytes": {
+            "median": 65812,
+            "min": 65812,
+            "max": 65812
+          },
+          "popen_ms": {
+            "median": 0.466,
+            "min": 0.337,
+            "max": 0.567
+          },
+          "post_wait_ms": {
+            "median": 1.665,
+            "min": 1.61,
+            "max": 13.186
+          },
+          "process_start_to_entry_ms": {
+            "median": 51.854,
+            "min": 49.124,
+            "max": 68.62
+          },
+          "save_npz_ms": {
+            "median": 0.929,
+            "min": 0.856,
+            "max": 0.945
+          },
+          "worker_main_ms": {
+            "median": 856.099,
+            "min": 828.246,
+            "max": 900.196
+          },
+          "worker_module_import_ms": {
+            "median": 72.158,
+            "min": 67.673,
+            "max": 75.402
+          }
+        },
+        "production": {
+          "cadmesh_validate_ms": {
+            "median": 0.2,
+            "min": 0.155,
+            "max": 0.264
+          },
+          "input_before_launch_ms": {
+            "median": 3.286,
+            "min": 3.111,
+            "max": 4.891
+          },
+          "job_total_ms": {
+            "median": 1221.379,
+            "min": 1170.052,
+            "max": 1288.023
+          },
+          "launch_to_wait_ms": {
+            "median": 1215.839,
+            "min": 1165.096,
+            "max": 1283.102
+          },
+          "popen_ms": {
+            "median": 0.397,
+            "min": 0.142,
+            "max": 0.537
+          },
+          "post_wait_ms": {
+            "median": 1.715,
+            "min": 1.574,
+            "max": 2.948
+          }
+        }
+      }
+    }
+  }
+}

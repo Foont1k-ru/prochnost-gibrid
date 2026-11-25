@@ -1,0 +1,361 @@
+{
+  "environment": {
+    "platform": "Linux-6.1.158+-x86_64-with-glibc2.36",
+    "python": "3.11.2",
+    "numpy": "2.4.6",
+    "repeat": 10,
+    "groups": 100,
+    "producer": "synthetic, not CAD",
+    "method": "fresh subprocess; real CadJob output reader"
+  },
+  "cases": {
+    "12000": {
+      "samples": [
+        {
+          "cadmesh_validate_ms": 1.0344180000174674,
+          "total_ms": 169.27931899999749,
+          "process_and_wait_ms": 164.45628800011036,
+          "post_wait_ms": 4.8230309998871235,
+          "save_ms": 2.9714240004068415,
+          "archive_bytes": 1013236
+        },
+        {
+          "cadmesh_validate_ms": 1.2522900001386006,
+          "total_ms": 169.79719900018608,
+          "process_and_wait_ms": 164.6637029998601,
+          "post_wait_ms": 5.133496000325977,
+          "save_ms": 2.7270599998701073,
+          "archive_bytes": 1013236
+        },
+        {
+          "cadmesh_validate_ms": 0.6547630000568461,
+          "total_ms": 168.23877600018022,
+          "process_and_wait_ms": 165.1375219998954,
+          "post_wait_ms": 3.1012540002848255,
+          "save_ms": 2.0891849999316037,
+          "archive_bytes": 1013236
+        },
+        {
+          "cadmesh_validate_ms": 1.2635719999707362,
+          "total_ms": 169.68136300010883,
+          "process_and_wait_ms": 164.7015429998646,
+          "post_wait_ms": 4.979820000244217,
+          "save_ms": 2.613110999845958,
+          "archive_bytes": 1013236
+        },
+        {
+          "cadmesh_validate_ms": 0.713114000063797,
+          "total_ms": 168.5512879998896,
+          "process_and_wait_ms": 165.07916299997305,
+          "post_wait_ms": 3.4721249999165593,
+          "save_ms": 2.1596560000034515,
+          "archive_bytes": 1013236
+        },
+        {
+          "cadmesh_validate_ms": 0.8769269998083473,
+          "total_ms": 168.77400099974693,
+          "process_and_wait_ms": 165.04262299986294,
+          "post_wait_ms": 3.731377999883989,
+          "save_ms": 2.1459820000018226,
+          "archive_bytes": 1013236
+        },
+        {
+          "cadmesh_validate_ms": 1.5111960001377156,
+          "total_ms": 222.238398999707,
+          "process_and_wait_ms": 214.85969099967406,
+          "post_wait_ms": 7.37870800003293,
+          "save_ms": 2.130741999735619,
+          "archive_bytes": 1013236
+        },
+        {
+          "cadmesh_validate_ms": 0.896979000117426,
+          "total_ms": 222.58885700011888,
+          "process_and_wait_ms": 217.98054900000352,
+          "post_wait_ms": 4.608308000115358,
+          "save_ms": 2.989889999753359,
+          "archive_bytes": 1013236
+        },
+        {
+          "cadmesh_validate_ms": 0.706992000232276,
+          "total_ms": 168.55243199961478,
+          "process_and_wait_ms": 165.30532399974618,
+          "post_wait_ms": 3.2471079998686037,
+          "save_ms": 2.037449999988894,
+          "archive_bytes": 1013236
+        },
+        {
+          "cadmesh_validate_ms": 0.8073930002865382,
+          "total_ms": 168.62910999998348,
+          "process_and_wait_ms": 164.87184000015986,
+          "post_wait_ms": 3.7572699998236203,
+          "save_ms": 2.1614819997921586,
+          "archive_bytes": 1013236
+        }
+      ],
+      "summary": {
+        "archive_bytes": {
+          "median": 1013236.0,
+          "min": 1013236,
+          "max": 1013236
+        },
+        "cadmesh_validate_ms": {
+          "median": 0.887,
+          "min": 0.655,
+          "max": 1.511
+        },
+        "post_wait_ms": {
+          "median": 4.183,
+          "min": 3.101,
+          "max": 7.379
+        },
+        "process_and_wait_ms": {
+          "median": 165.061,
+          "min": 164.456,
+          "max": 217.981
+        },
+        "save_ms": {
+          "median": 2.161,
+          "min": 2.037,
+          "max": 2.99
+        },
+        "total_ms": {
+          "median": 169.027,
+          "min": 168.239,
+          "max": 222.589
+        }
+      }
+    },
+    "50000": {
+      "samples": [
+        {
+          "cadmesh_validate_ms": 4.948782000155916,
+          "total_ms": 178.56115600034173,
+          "process_and_wait_ms": 166.46398800003226,
+          "post_wait_ms": 12.097168000309466,
+          "save_ms": 6.366062000324746,
+          "archive_bytes": 4053236
+        },
+        {
+          "cadmesh_validate_ms": 3.2469050001964206,
+          "total_ms": 173.38524400020106,
+          "process_and_wait_ms": 165.27444500025013,
+          "post_wait_ms": 8.11079899995093,
+          "save_ms": 6.522994000079052,
+          "archive_bytes": 4053236
+        },
+        {
+          "cadmesh_validate_ms": 2.1075580002616334,
+          "total_ms": 172.07643099982306,
+          "process_and_wait_ms": 164.9705809995794,
+          "post_wait_ms": 7.105850000243663,
+          "save_ms": 6.548467999891727,
+          "archive_bytes": 4053236
+        },
+        {
+          "cadmesh_validate_ms": 4.365421000329661,
+          "total_ms": 174.1353130000789,
+          "process_and_wait_ms": 164.91096800018568,
+          "post_wait_ms": 9.22434499989322,
+          "save_ms": 5.906482000227697,
+          "archive_bytes": 4053236
+        },
+        {
+          "cadmesh_validate_ms": 1.98567000006733,
+          "total_ms": 171.693661000063,
+          "process_and_wait_ms": 164.86122400010572,
+          "post_wait_ms": 6.832436999957281,
+          "save_ms": 5.8612259999790695,
+          "archive_bytes": 4053236
+        },
+        {
+          "cadmesh_validate_ms": 4.181530000096245,
+          "total_ms": 173.4888599999067,
+          "process_and_wait_ms": 164.6955840001283,
+          "post_wait_ms": 8.793275999778416,
+          "save_ms": 6.080176999603282,
+          "archive_bytes": 4053236
+        },
+        {
+          "cadmesh_validate_ms": 2.123520000168355,
+          "total_ms": 171.62017700002252,
+          "process_and_wait_ms": 164.39686400008213,
+          "post_wait_ms": 7.22331299994039,
+          "save_ms": 5.880710999917937,
+          "archive_bytes": 4053236
+        },
+        {
+          "cadmesh_validate_ms": 4.20709700028965,
+          "total_ms": 173.6269190000712,
+          "process_and_wait_ms": 164.81496100004733,
+          "post_wait_ms": 8.811958000023878,
+          "save_ms": 5.973116999939521,
+          "archive_bytes": 4053236
+        },
+        {
+          "cadmesh_validate_ms": 1.9254320000072767,
+          "total_ms": 171.59223299995574,
+          "process_and_wait_ms": 164.77122700007385,
+          "post_wait_ms": 6.821005999881891,
+          "save_ms": 5.938446000072872,
+          "archive_bytes": 4053236
+        },
+        {
+          "cadmesh_validate_ms": 4.119096999602334,
+          "total_ms": 173.3833569996932,
+          "process_and_wait_ms": 164.7823459998108,
+          "post_wait_ms": 8.60101099988242,
+          "save_ms": 7.087217000389501,
+          "archive_bytes": 4053236
+        }
+      ],
+      "summary": {
+        "archive_bytes": {
+          "median": 4053236.0,
+          "min": 4053236,
+          "max": 4053236
+        },
+        "cadmesh_validate_ms": {
+          "median": 3.683,
+          "min": 1.925,
+          "max": 4.949
+        },
+        "post_wait_ms": {
+          "median": 8.356,
+          "min": 6.821,
+          "max": 12.097
+        },
+        "process_and_wait_ms": {
+          "median": 164.838,
+          "min": 164.397,
+          "max": 166.464
+        },
+        "save_ms": {
+          "median": 6.027,
+          "min": 5.861,
+          "max": 7.087
+        },
+        "total_ms": {
+          "median": 173.384,
+          "min": 171.592,
+          "max": 178.561
+        }
+      }
+    },
+    "200000": {
+      "samples": [
+        {
+          "cadmesh_validate_ms": 16.48363899994365,
+          "total_ms": 248.95051099974808,
+          "process_and_wait_ms": 214.91888199989262,
+          "post_wait_ms": 34.03162899985546,
+          "save_ms": 29.450461999658728,
+          "archive_bytes": 16053236
+        },
+        {
+          "cadmesh_validate_ms": 12.103498999749718,
+          "total_ms": 244.41806100003305,
+          "process_and_wait_ms": 215.39424800039342,
+          "post_wait_ms": 29.02381299963963,
+          "save_ms": 24.72926300015388,
+          "archive_bytes": 16053236
+        },
+        {
+          "cadmesh_validate_ms": 10.15145900009884,
+          "total_ms": 189.30950300000404,
+          "process_and_wait_ms": 164.80900999977166,
+          "post_wait_ms": 24.50049300023238,
+          "save_ms": 23.955182999998215,
+          "archive_bytes": 16053236
+        },
+        {
+          "cadmesh_validate_ms": 15.786946999924112,
+          "total_ms": 195.70989800013194,
+          "process_and_wait_ms": 164.8389369997858,
+          "post_wait_ms": 30.870961000346142,
+          "save_ms": 24.021747000006144,
+          "archive_bytes": 16053236
+        },
+        {
+          "cadmesh_validate_ms": 9.803143999761232,
+          "total_ms": 189.77690600013375,
+          "process_and_wait_ms": 164.84141000000818,
+          "post_wait_ms": 24.935496000125568,
+          "save_ms": 23.581064000154583,
+          "archive_bytes": 16053236
+        },
+        {
+          "cadmesh_validate_ms": 13.260255999739456,
+          "total_ms": 192.51189900023746,
+          "process_and_wait_ms": 164.72428399993078,
+          "post_wait_ms": 27.787615000306687,
+          "save_ms": 26.052385000184586,
+          "archive_bytes": 16053236
+        },
+        {
+          "cadmesh_validate_ms": 8.544056000118871,
+          "total_ms": 186.64383199984513,
+          "process_and_wait_ms": 164.59830499979944,
+          "post_wait_ms": 22.045527000045695,
+          "save_ms": 23.20344700001442,
+          "archive_bytes": 16053236
+        },
+        {
+          "cadmesh_validate_ms": 12.694556000042212,
+          "total_ms": 192.1651220000058,
+          "process_and_wait_ms": 164.76787099963985,
+          "post_wait_ms": 27.39725100036594,
+          "save_ms": 22.547940000094968,
+          "archive_bytes": 16053236
+        },
+        {
+          "cadmesh_validate_ms": 9.186408999994455,
+          "total_ms": 187.52858699963326,
+          "process_and_wait_ms": 164.95826199980002,
+          "post_wait_ms": 22.570324999833247,
+          "save_ms": 22.865144000206783,
+          "archive_bytes": 16053236
+        },
+        {
+          "cadmesh_validate_ms": 18.917379000413348,
+          "total_ms": 197.48251300006814,
+          "process_and_wait_ms": 164.56531900030313,
+          "post_wait_ms": 32.917193999765004,
+          "save_ms": 24.12764700011394,
+          "archive_bytes": 16053236
+        }
+      ],
+      "summary": {
+        "archive_bytes": {
+          "median": 16053236.0,
+          "min": 16053236,
+          "max": 16053236
+        },
+        "cadmesh_validate_ms": {
+          "median": 12.399,
+          "min": 8.544,
+          "max": 18.917
+        },
+        "post_wait_ms": {
+          "median": 27.592,
+          "min": 22.046,
+          "max": 34.032
+        },
+        "process_and_wait_ms": {
+          "median": 164.824,
+          "min": 164.565,
+          "max": 215.394
+        },
+        "save_ms": {
+          "median": 23.988,
+          "min": 22.548,
+          "max": 29.45
+        },
+        "total_ms": {
+          "median": 192.339,
+          "min": 186.644,
+          "max": 248.951
+        }
+      }
+    }
+  }
+}

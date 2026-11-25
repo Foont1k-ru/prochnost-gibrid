@@ -29,6 +29,7 @@ _EVENTS: dict[str, frozenset[str]] = {
     "project.autosave": frozenset({"result"}),
     "cad.start": frozenset({"operation", "deviation_um"}),
     "cad.result": frozenset({"operation", "result", "duration_ms", "faces", "skipped", "recovered", "triangles"}),
+    "cad.performance": frozenset({"stage", "renderer", "duration_ms", "triangles"}),
     "inventory.start": frozenset({"operation"}),
     "inventory.result": frozenset({"operation", "result", "duration_ms", "products", "occurrences", "unresolved"}),
     "antiroll.result": frozenset({"axis", "result", "rows", "missing"}),

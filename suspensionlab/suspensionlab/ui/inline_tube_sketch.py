@@ -1,0 +1,158 @@
+"""Компактный незакреплённый редактор изгиба поверх CAD, без модального окна."""
+from __future__ import annotations
+
+import math
+
+from PySide6.QtCore import QEvent, Qt, Signal
+from PySide6.QtWidgets import (
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QScrollArea,
+    QVBoxLayout,
+    QWidget,
+)
+
+
+class InlineTubeSketch(QFrame):
+    applied = Signal(object)
+    cancelled = Signal()
+    candidateChanged = Signal(object)
+
+    def __init__(self, parent: QWidget) -> None:
+        super().__init__(parent)
+        self.setObjectName('inlineTubeSketch')
+        self.setFrameShape(QFrame.Shape.StyledPanel)
+        self.setAutoFillBackground(True)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        self._scroll = QScrollArea(self)
+        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._scroll.setMinimumSize(1, 1)
+        content = QWidget(self._scroll)
+        self._scroll.setWidget(content)
+        outer.addWidget(self._scroll)
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(8, 6, 8, 6)
+        self.title = QLabel(self)
+        layout.addWidget(self.title)
+        hint = QLabel('XYZ вершины в координатах модели и R оси, мм; не длины детали. '
+                      'У корректного черновика подписи поверх деталей открывают поля.', self)
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        self._grid = QGridLayout()
+        self._labels: dict[str, QLabel] = {}
+        self._compact = False
+        self.fields: dict[str, QLineEdit] = {}
+        for index, key in enumerate(('X', 'Y', 'Z', 'R')):
+            label = QLabel(key, self)
+            self._labels[key] = label
+            field = QLineEdit(self)
+            field.setAccessibleName('Эскиз трубы: ' + key)
+            field.setObjectName('inline_sketch_' + key.lower())
+            field.setMaxLength(64)
+            field.setMaximumWidth(84)
+            field.installEventFilter(self)
+            field.textChanged.connect(self._changed)
+            self._grid.addWidget(label, 0, index)
+            self._grid.addWidget(field, 1, index)
+            self.fields[key] = field
+        layout.addLayout(self._grid)
+        self.status = QLabel(self)
+        self.status.setWordWrap(True)
+        layout.addWidget(self.status)
+        row = QHBoxLayout()
+        apply_button = QPushButton('Применить', self)
+        apply_button.setAutoDefault(False)
+        apply_button.clicked.connect(self._apply)
+        close_button = QPushButton('Закрыть', self)
+        close_button.setAutoDefault(False)
+        close_button.clicked.connect(self.cancelled.emit)
+        row.addWidget(apply_button)
+        row.addWidget(close_button)
+        layout.addLayout(row)
+        self.setMaximumWidth(380)
+        parent.installEventFilter(self)
+        self.hide()
+
+    def _fit_to_parent(self) -> None:
+        parent = self.parentWidget()
+        if parent is None:
+            return
+        available = max(1, parent.width() - 16)
+        compact = available < 372
+        if compact != self._compact:
+            self._compact = compact
+            for index, key in enumerate(('X', 'Y', 'Z', 'R')):
+                label, field = self._labels[key], self.fields[key]
+                self._grid.removeWidget(label)
+                self._grid.removeWidget(field)
+                row, column = (2 * (index // 2), index % 2) if compact else (0, index)
+                self._grid.addWidget(label, row, column)
+                self._grid.addWidget(field, row + 1, column)
+        self.setMaximumWidth(min(380, available))
+        self.setMaximumHeight(max(1, parent.height() - 16))
+        self.adjustSize()
+        self.move(8 if parent.width() >= 16 else 0, 8 if parent.height() >= 16 else 0)
+
+    def begin(self, leg: str, vertex: tuple[float, float, float], radius: float | None) -> None:
+        self.title.setText('Эскиз · ' + ('передняя труба' if leg == 'front' else 'задняя труба'))
+        self.status.setText('Для прямой трубы сначала задайте новую вершину и радиус.' if radius is None else '')
+        self.blockSignals(True)
+        try:
+            for key, value in zip(('X', 'Y', 'Z', 'R'), (*vertex, radius), strict=True):
+                self.fields[key].setText('' if value is None else repr(value))
+        finally:
+            self.blockSignals(False)
+        self._fit_to_parent()
+        self.show()
+        self.raise_()
+
+    def focus_dimension(self, key: str) -> None:
+        """Переход из подписи на модели в точное поле; данные не применяются."""
+        field = self.fields.get(key)
+        if field is not None and self.isVisible():
+            field.setFocus(Qt.FocusReason.MouseFocusReason)
+            field.selectAll()
+
+    def values(self) -> tuple[float, float, float, float]:
+        try:
+            values = tuple(float(self.fields[key].text().strip().replace(',', '.')) for key in ('X', 'Y', 'Z', 'R'))
+        except ValueError as error:
+            raise ValueError('Введите координаты XYZ и радиус.') from error
+        if not all(math.isfinite(value) for value in values):
+            raise ValueError('Все значения должны быть конечными числами.')
+        return values  # type: ignore[return-value]
+
+    def _changed(self, *_args: object) -> None:
+        try:
+            values = self.values()
+        except ValueError:
+            self.candidateChanged.emit(None)
+            return
+        self.candidateChanged.emit(values)
+
+    def _apply(self) -> None:
+        try:
+            values = self.values()
+        except ValueError as error:
+            self.status.setText(str(error))
+            return
+        self.applied.emit(values)
+
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802
+        if watched is self.parentWidget() and event.type() == QEvent.Type.Resize:
+            self._fit_to_parent()
+        if watched in self.fields.values() and event.type() == QEvent.Type.KeyPress:
+            if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                self._apply()
+                return True
+            if event.key() == Qt.Key.Key_Escape:
+                self.cancelled.emit()
+                return True
+        return super().eventFilter(watched, event)
